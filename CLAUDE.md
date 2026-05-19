@@ -33,7 +33,8 @@ check` = eslint `--max-warnings 0` + `vue-tsc` + vitest, 136 passed)
 is green, eager bundle ~41 KB gz (heavy renderers lazy). The next
 coding work is **Phase 5 (MCP server)** in `docs/plan.md`. Operational
 refs: `docs/harness.md`, `docs/orchestrator.md`, `docs/api.md`,
-`frontend/README.md`. Design docs (`docs/`) and the pi de-risking
+`docs/dashboard.md` (Phase 4; `frontend/README.md` is the dev
+quick-start). Design docs (`docs/`) and the pi de-risking
 `scratch/` dir remain the canonical context. New ADRs: ADR-19/20/21
 (Phase 2 — orchestrator runtime, pause/resume, async DB), ADR-22
 (resume forward-progress, pre-Phase-3 hardening), ADR-23 (SSE

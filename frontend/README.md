@@ -1,9 +1,14 @@
 # relay-v2 frontend
 
-Vue 3 + TypeScript + Vite dashboard for relay-v2. This is the Phase 4
-vertical-slice foundation (W1): scaffold, typed API client, SSE wrapper,
-and the lint/typecheck/test gate. Views are placeholders filled by later
-units (W2–W8).
+Vue 3 + TypeScript + Vite dashboard for relay-v2 — the Phase 4
+control plane (complete): Hub, Project view (runs/prompts/files panes),
+4-step New-Run wizard, Run detail with the live SSE timeline +
+iters/artifacts/worktree panes, prompts CRUD, project register /
+unregister.
+
+This README is the **developer quick-start**. The operational
+reference (architecture, state model, backend contract, mandates) is
+`docs/dashboard.md`; canonical design is `docs/spec.md` §9.
 
 ## Develop
 
@@ -45,12 +50,19 @@ npm run build    # vue-tsc -b && vite build (must also pass)
 1. **vue-router is v5** (not v4) — `src/lib/routes.ts`.
 2. **shiki**: `createHighlighterCore` + dynamic langs + JS regex engine
    (`@shikijs/engine-javascript`), never the convenience bundle —
-   contract documented in `src/lib/render.ts` (implemented in W6).
+   `src/lib/render.ts`.
 3. **mermaid**: dynamic `import('mermaid')` on first diagram render
-   only, never a static top-level import — see `src/lib/render.ts`.
+   only, never a static top-level import — `src/lib/render.ts`.
 4. **Vite SSE dev-proxy**: `/api` proxy uses a 1h `proxyTimeout` and a
    `configure(proxy)` hook that disables buffering for
    `text/event-stream` so the live tail does not stall —
    `vite.config.ts`.
-5. **vitest v4 `coverage.all`** is set explicitly (`true`, v8 provider)
-   in `vite.config.ts` since v4 changed the default.
+5. **vitest v4 removed the `coverage.all` toggle entirely** — it now
+   unconditionally counts every file matched by `coverage.include`, so
+   coverage scope is set via `coverage.include` in `vite.config.ts` (a
+   literal `coverage.all` is a v4 type error). See ADR-26.
+6. **Routed views are keyed by `route.fullPath`** (`src/App.vue`) so a
+   param-only navigation remounts — no per-run state or SSE stream is
+   carried across runs.
+
+Full rationale: ADR-26 (`docs/decisions.md`).
