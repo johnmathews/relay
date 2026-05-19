@@ -693,3 +693,119 @@ false signal.
   events.
 
 ---
+
+## ADR-19 — Orchestrator runtime: queue + supervised task set
+
+**Status:** Accepted (2026-05-19). Refines plan.md Phase 2's
+"`asyncio.TaskGroup` in lifespan" sketch.
+
+**Context.** plan.md Phase 2 says the orchestrator task is "created via
+`asyncio.TaskGroup` in `lifespan`, consuming an `asyncio.Queue` of
+run-start requests from `RelayCore`". A literal
+`async with asyncio.TaskGroup()` cannot stay open while continuing to
+accept new tasks for the server's lifetime — the block only exits when
+every child is done, the opposite of an open-ended daemon.
+
+**Alternatives considered.**
+1. Literal `async with TaskGroup()` wrapping the whole server lifetime —
+   doesn't fit: can't accept new runs after entering; wrong exit
+   semantics for a daemon.
+2. One detached `asyncio.create_task` per run, untracked — leaks tasks,
+   no clean shutdown, exceptions silently swallowed.
+3. A long-lived **supervisor** task draining an `asyncio.Queue`, owning
+   a tracked child-task set, bracketed by `RelayCore.start()` /
+   `aclose()` and bound to FastAPI's lifespan.
+
+**Decision.** Option 3. `RelayCore` owns the `asyncio.Queue`, a
+supervisor coroutine, and a `set[asyncio.Task]` of in-flight runs.
+`start()`/`aclose()` are driven by the app's `lifespan` (ADR-07). This
+is the open-ended-server equivalent of plan.md's TaskGroup intent — same
+structured-concurrency guarantees (every run tracked; shutdown cancels
+and drains them) without the closed-scope mismatch.
+
+**Consequences.**
+- `RelayCore` is the single shared service object (ADR-07/ADR-15); the
+  loop, and later REST/MCP, mutate state only through it. Route handlers
+  are deliberately *not* anticipated in Phase 2.
+- `aclose()` cancels the supervisor then every run task, swallowing both
+  `CancelledError` and run exceptions so shutdown can't stall.
+- The per-iter wall-clock cap (`runs.iter_timeout`) and external
+  cancellation are the orchestrator's job (the harness reports only the
+  lower-level stop_reason); a `try/finally` in the iter driver
+  guarantees the pi subprocess is terminated even on shutdown
+  cancellation.
+- spec.md §6 gains a "Runtime model" subsection; the canonical loop
+  pseudocode is unchanged.
+
+---
+
+## ADR-20 — Pause/resume persistence and resume-prompt composition
+
+**Status:** Accepted (2026-05-19).
+
+**Context.** A `pause` signal closes an iter and the run with
+`status=paused`; the human later answers and the run must continue. The
+saved next-prompt must survive a process restart, and the answer must
+reach the agent *without* violating fresh-context-per-iter (it must not
+arrive via pi session resume).
+
+**Alternatives considered.**
+1. Hold the paused next-prompt in memory only — lost on restart; resume
+   after a crash impossible.
+2. Add a dedicated `runs.next_prompt` column — schema churn for
+   transient state the `iters` table already models.
+3. Persist `{next_prompt, question, id}` in the pausing iter's existing
+   `iters.signal_args` JSON (spec.md §3.1 already documents this column
+   as `{next_prompt, summary, question, ...}`); recompose on resume.
+
+**Decision.** Option 3. On `pause` the loop writes `signal_args =
+{next_prompt, question, id}` and a `pause_requested` event. `resume_run`
+reads the latest paused iter's `signal_args`, composes the resumed iter's
+body as the saved `next_prompt` followed by a delimited
+`Answer to the paused question (...)` block, sets `runs.status` back to
+`running`, emits `pause_resolved`, restores the phase from
+`$RELAY_RUN_DIR/phase`, and re-enqueues continuing at the next `seq`.
+
+**Consequences.**
+- Fresh-context-per-iter holds: the answer travels in the prompt body,
+  never via `resume_from` (still always `None`).
+- The check-and-enqueue in `resume_run` is serialised by an
+  `asyncio.Lock` + an in-memory liveness guard so a duplicate resume
+  cannot spawn two loops for one run (→ `UNIQUE(run_id, seq)` violation).
+  Single-user MVP (ADR-12) makes contention rare; the guard is cheap and
+  the correct pattern before Phase 3 wires HTTP.
+- Projection-then-event ordering matches the loop's other transitions so
+  ADR-10 consumers (Phase 3 SSE) see a consistent status when the event
+  lands. No schema change; spec.md §6 documents the contract.
+
+---
+
+## ADR-21 — Async (`aiosqlite`) engine for orchestrator I/O
+
+**Status:** Accepted (2026-05-19). Executes the consequence ADR-17
+anticipated; recorded because it adds a runtime dependency.
+
+**Context.** ADR-17's consequences state: "The Phase 0 engine is
+synchronous; the async engine arrives with the orchestrator (Phase 2)
+and stays encapsulated in `relay_v2.db`." The orchestrator runs in an
+asyncio loop (ADR-19); synchronous SQLite calls there would block it.
+
+**Decision.** Add a second engine — `create_async_engine` over
+`sqlite+aiosqlite://` (30s busy timeout) plus an `async_sessionmaker` —
+alongside the existing sync engine, both behind `relay_v2.db`. The
+**sync** engine still does one job: idempotent `create_all` schema
+bootstrap (ADR-17). Every orchestrator-driven read/write uses the
+**async** engine. New deps: `aiosqlite` and `sqlalchemy[asyncio]`
+(pulls `greenlet`).
+
+**Consequences.**
+- Nothing above `relay_v2.db` constructs an engine; harness isolation
+  and "all writes through `RelayCore`" are unaffected.
+- `EventStore` serialises its own appends with an `asyncio.Lock`
+  (monotonic per-run `seq`), which also serialises SQLite's single
+  writer; the busy timeout absorbs residual cross-run contention.
+- This does **not** change spec.md §3.1 — the schema is unchanged, only
+  the access path gains an async engine. ADR-17 is not edited (it
+  foresaw this); this ADR records the dependency addition.
+
+---

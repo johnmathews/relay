@@ -44,8 +44,18 @@ class Settings(BaseSettings):
 
     @property
     def db_url(self) -> str:
-        """SQLAlchemy URL for the SQLite event store."""
+        """Sync SQLAlchemy URL — schema bootstrap only (ADR-17)."""
         return f"sqlite:///{self.db_path}"
+
+    @property
+    def async_db_url(self) -> str:
+        """Async SQLAlchemy URL — orchestrator runtime I/O (ADR-21).
+
+        The sync engine creates the schema once at startup; every
+        orchestrator-driven read/write goes through this async engine so
+        DB work never blocks the event loop.
+        """
+        return f"sqlite+aiosqlite:///{self.db_path}"
 
 
 @lru_cache

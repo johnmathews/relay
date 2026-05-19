@@ -440,6 +440,54 @@ session, ties it to the parent via `parent_run_id`, and feeds its result
 back to the parent. Out of scope for MVP — the engineering-team skill
 in v2 may not require subagents in the initial port.
 
+### 6.1 Runtime model (ADR-19, ADR-21)
+
+The pseudocode above is the contract; this is how it is hosted.
+`RelayCore` is the single shared service object — the loop, and (later)
+REST routes and MCP tools, mutate state only through it (ADR-07/ADR-15).
+It owns an `asyncio.Queue` of run-start requests and a long-lived
+**supervisor** task that drains the queue, launching one tracked child
+task per run. `RelayCore.start()` / `aclose()` bracket this and are
+driven by FastAPI's `lifespan`. This is the open-ended-server form of
+"`TaskGroup` in lifespan" (ADR-19): a literal `async with TaskGroup()`
+cannot keep accepting work for the daemon's lifetime.
+
+Concerns the pseudocode elides, all owned by the orchestrator:
+
+- **Per-iter timeout.** `runs.iter_timeout` is enforced by the
+  orchestrator (the harness has no internal timeout); a `try/finally`
+  around the event stream guarantees the pi subprocess is terminated
+  even if the run task is cancelled at shutdown.
+- **Cancellation.** `cancel_run` sets a per-run flag and cancels the
+  in-flight session; the iter closes with `exit_reason="cancelled"`.
+- **No usable closing signal.** A clean `agent_end` with no column-0
+  closing sentinel (including a fenced/indented one — the matcher is
+  line-anchored) *and* a marker-contract violation (`MarkerError`) both
+  close the iter with `exit_reason="agent_end_no_signal"` and fail the
+  run; this keeps `iters.exit_reason` within §3.1's set (the marker
+  headline is preserved in `signal_args` / the `run_ended` summary).
+- **DB access.** All orchestrator I/O uses an async (`aiosqlite`) engine
+  encapsulated in `relay_v2.db` (ADR-21); the sync engine survives only
+  for `create_all` schema bootstrap (ADR-17). The event log is the
+  single source of truth (ADR-10): every status transition also appends
+  an event; `runs.status` / `iters.*` are a projection updated in step.
+
+### 6.2 Pause / resume (ADR-20)
+
+`pause` closes the iter and the run with `status=paused` and persists
+`{next_prompt, question, id}` in that iter's `iters.signal_args` (the
+column §3.1 already reserves) plus a `pause_requested` event. No
+dedicated column is added. `resume_run(answer)` reads the latest paused
+iter's `signal_args`, composes the resumed iter's body as the saved
+`next_prompt` + a delimited answer block, flips `runs.status` to
+`running`, emits `pause_resolved`, restores the phase from
+`$RELAY_RUN_DIR/phase`, and re-enqueues at the next `seq`. Fresh
+context per iter still holds — the answer travels in the prompt, never
+via pi session resume (`resume_from` stays `None`). The artifacts dir
+(`RELAY_RUN_DIR`, §3.3) and a best-effort per-run git worktree (ADR-13;
+degrades to the project root when it is not a git work tree, e.g.
+fixture runs) are provisioned at `start_run`.
+
 ## 7. REST API surface
 
 OpenAPI auto-generated. Routes:

@@ -4,13 +4,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**Phase 0 (scaffold) is complete.** The repo has an installable
-`relay-v2` package under `src/relay_v2/` (FastAPI factory + `/health`,
-env-driven `config.py`, the spec.md §3.1 SQLite schema in `db/models.py`,
-a `relay` CLI with `serve` / `--version`), a passing `pytest` suite under
-`tests/`, and a green `ruff`/`mypy` gate. The next coding work is Phase 1
-(harness layer) in `docs/plan.md`. Design docs (`docs/`) and the pi
-de-risking `scratch/` directory remain the canonical context.
+**Phases 0–2 are complete.** On top of the Phase 0 scaffold and the
+Phase 1 harness layer, Phase 2 adds the orchestrator: `RelayCore` (the
+single shared service + queue/supervisor runtime, wired into the app
+lifespan), the append-only `EventStore`, the chained-iter `run_loop`
+(spec.md §6), run lifecycle (start/cancel/pause/resume), and the
+`RELAY_*` preamble builder. Verified end-to-end against a scripted
+harness double (`tests/orchestrator/`); `uv run pytest` is green
+(pi e2e gated behind `PI_INTEGRATION=1`), `ruff`/`mypy --strict` clean.
+The next coding work is **Phase 3 (REST API + persistence)** in
+`docs/plan.md`. Operational refs: `docs/harness.md`, `docs/orchestrator.md`.
+Design docs (`docs/`) and the pi de-risking `scratch/` directory remain
+the canonical context. New ADRs this phase: ADR-19 (orchestrator
+runtime), ADR-20 (pause/resume persistence), ADR-21 (async DB engine).
 
 ## What relay v2 is
 
@@ -100,11 +106,19 @@ implementation:
 - Schema management is hand-rolled `create_all` for the MVP (ADR-17);
   `src/relay_v2/db/migrations/` is a placeholder for future numbered
   upgrade scripts. Alembic is deferred.
+- Two DB engines, both behind `relay_v2.db` (ADR-21): a **sync** engine
+  for `create_all` schema bootstrap only; an **async** `aiosqlite`
+  engine (deps `aiosqlite`, `sqlalchemy[asyncio]` → `greenlet`) for all
+  orchestrator I/O. Nothing above `relay_v2.db` constructs an engine.
 - Backend: FastAPI + Pydantic v2 + Uvicorn; SQLite via SQLAlchemy.
 - Frontend: Vue 3 + Pinia + Pinia Colada + Vite, in `frontend/`.
 - Console script: `relay` (`relay serve`, `relay start`, `relay status`,
   `relay cancel`, `relay install-skill`). Default bind `127.0.0.1:7800`.
 - Pi integration tests are gated behind `PI_INTEGRATION=1`; harness
   unit tests run offline against the captured `scratch/*.jsonl` fixtures.
+  Orchestrator tests live under `tests/orchestrator/` and drive the loop
+  against a scripted `Harness` double (no pi). Tests stay under
+  `tests/` (`testpaths=["tests"]`), not the per-package `tests/` dirs
+  plan.md sketches.
 - A `Dockerfile`/compose plus a GitHub Actions workflow publishing to
   `ghcr.io/johnmathews/relay-v2` are required (Phase 8 + global policy).
