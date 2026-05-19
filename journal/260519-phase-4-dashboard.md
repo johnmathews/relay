@@ -123,5 +123,34 @@ reviewed rather than churned.
 CLAUDE.md current-state → Phases 0–4 + a frontend Toolchain entry;
 ADR-26 appended (append-only respected); spec §9.1 worktree-degraded
 note + §9.4 pointer to ADR-26 and the BrowserSource abstraction.
-`frontend/README.md` carries the operational form. Next coding work:
-Phase 5 (MCP server).
+Next coding work: Phase 5 (MCP server).
+
+### Post-merge doc-gap fix (4cbc0f6)
+
+A follow-up question ("do you need to update documentation?") surfaced
+a gap the wrap-up had missed: Phase 4 had broken the per-phase
+operational-doc convention. Every prior subsystem ships a canonical
+`docs/` reference with a `> Phase N deliverable. Implementation
+reference for …` header — `harness.md` (P1), `orchestrator.md` (P2),
+`api.md` (P3) — but Phase 4 had shipped only `frontend/README.md`,
+a dev quick-start, not the `docs/` reference. Two fixes, committed
+docs-only and pushed:
+
+1. **Created `docs/dashboard.md`** — the canonical Phase-4 operational
+   reference (architecture, state model, the backend contract it
+   consumes, replay, render pipeline, worktree degradation, the ADR-26
+   mandates), mirroring its siblings' shape. CLAUDE.md operational-refs
+   list now points at it.
+2. **De-staled `frontend/README.md`** — it still described the W1-only
+   foundation with "placeholder" views (W2–W8 shipped) and stated
+   mandate 5 as "`coverage.all` is set explicitly (`true`)", the exact
+   opposite of ADR-26's finding that vitest v4 *removed* `coverage.all`.
+   Reframed as the dev quick-start pointing at `docs/dashboard.md`;
+   mandate list corrected + the keyed-RouterView mandate added.
+
+Lesson: the engineering-team wrap-up updated the docs it thought of
+(CLAUDE.md, ADR, spec) but didn't check the structural convention
+("each phase ships a `docs/<subsystem>.md`") or re-read a doc a
+mid-build subagent had written (`frontend/README.md` went stale the
+moment W2 landed). Doc wrap-up should verify conventions and re-read
+docs authored earlier in the same session, not just append new notes.
