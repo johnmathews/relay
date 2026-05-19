@@ -983,3 +983,60 @@ the SSE generator both work without thread/loop seams.
 - No production code or runtime dependency change — test tooling only.
 
 ---
+
+## ADR-25 — Run-artifacts file browser as a second sandboxed root
+
+**Status:** Accepted (2026-05-19). Phase 4 backend pre-step; recorded
+because it adds a REST surface and a second sandbox root.
+
+**Context.** spec §9.1's Artifacts pane browses a run's
+`<data_dir>/runs/<run_id>/` directory — the agent's
+`improvement-plan.md`, `evaluation-report.md`, `discussions/`, etc. —
+"where the user reviews what did the agent actually do?" The Phase 3
+file browser (`api/files.py`, ADR via plan.md W3) is sandboxed to a
+project's `root_path`. Per spec §3.3 the artifacts dir is a *sibling of
+the worktree*, deliberately outside any project root — so it is
+unreachable through the existing file-browser endpoint. A gap analysis
+for Phase 4 flagged this as the one hard blocker; the dashboard cannot
+ship its core review surface without it.
+
+**Alternatives considered.**
+1. Widen the project file browser's sandbox to also allow the data dir
+   — rejected: collapses two distinct trust roots into one, weakens the
+   single-audited-sandbox property, and entangles project paths with
+   relay-internal storage.
+2. A general "read any path" endpoint with the run dir passed in —
+   rejected: reintroduces exactly the traversal surface the sandbox
+   exists to remove.
+3. A second, run-scoped browser that derives its root from the run id
+   and reuses the *same* audited resolver — chosen.
+
+**Decision.** Add `GET /api/runs/{run_id}/artifacts` (listing) and
+`GET /api/runs/{run_id}/artifacts/{file_path:path}` (content). The
+sandbox root is `settings.data_dir / "runs" / <run_id>`, derived
+server-side from the path segment — never client-supplied. The run must
+exist (`RelayCore.get_run`) → 404 otherwise; if the run exists but its
+artifacts dir does not, 404 `no artifacts for run`. The single audited
+`resolve_within_sandbox` from `api/files.py` is reused unchanged, and
+the directory-listing / file-content bodies are extracted into shared
+`serve_listing` / `serve_file` helpers that *both* the project file
+browser and the artifacts browser call — so there is exactly one
+audited confinement function and one serving implementation, not two
+(addresses the Phase 3 review's duplicate-logic finding proactively).
+Same guards as the project browser: binary (NUL in first 8 KiB) → 415,
+> 5 MiB → 413, read-only (no write/delete route).
+
+**Consequences.**
+- Two sandbox *roots* (project root; per-run artifacts dir) but one
+  audited resolver and one serving path — security surface stays
+  single-sourced.
+- Read-only and run-scoped; no `RelayCore` write path, no new engine
+  use. The route reads `app.state.settings.data_dir` (set by the
+  lifespan) and resolves the run via the existing `get_core` →
+  `get_run` (ADR-07/15 preserved — the route is a thin adapter).
+- spec §7 gains the two routes; spec §9.1's Artifacts pane is now
+  backed. The Worktree pane's live git status/diff remains a deliberate
+  post-MVP gap (Phase 4 scoping decision — degrade to read-only
+  `worktree_path`/`branch`).
+
+---

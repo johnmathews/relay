@@ -24,6 +24,8 @@ EXPECTED_PATHS = {
     "/api/runs/{run_id}/resume",
     "/api/runs/{run_id}/events",
     "/api/runs/{run_id}/preview",
+    "/api/runs/{run_id}/artifacts",
+    "/api/runs/{run_id}/artifacts/{file_path}",
     "/api/events/{run_id}",
     "/api/projects",
     "/api/projects/{project_id}",
@@ -61,4 +63,11 @@ def test_operations_are_tagged_by_resource() -> None:
         for op in ops.values()
         for tag in op.get("tags", [])
     }
-    assert {"runs", "projects", "prompts", "files", "events"} <= tags, tags
+    assert {
+        "runs",
+        "projects",
+        "prompts",
+        "files",
+        "events",
+        "artifacts",
+    } <= tags, tags

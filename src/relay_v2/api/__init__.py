@@ -22,6 +22,7 @@ def include_api_routers(app: FastAPI) -> None:
     right after building the app. Imports are local so the package
     import stays cheap and load order can't surprise us.
     """
+    from relay_v2.api.artifacts import router as artifacts_router
     from relay_v2.api.events import router as events_router
     from relay_v2.api.files import router as files_router
     from relay_v2.api.projects import router as projects_router
@@ -33,6 +34,7 @@ def include_api_routers(app: FastAPI) -> None:
     app.include_router(prompts_router)
     app.include_router(files_router)
     app.include_router(events_router)
+    app.include_router(artifacts_router)
 
 
 __all__ = ["include_api_routers"]

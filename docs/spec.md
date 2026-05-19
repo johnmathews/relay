@@ -528,6 +528,13 @@ GET    /api/projects/:id/files    list files         query: path=<relative> (def
 GET    /api/projects/:id/files/* get a file's content  text only; 415 for binary
                                                      path is the URL-encoded relative path
 
+# Run artifacts browser (read-only, sandboxed; ADR-25) ────────────────
+GET    /api/runs/:id/artifacts    list artifact files  query: path=<relative> (default: run artifacts root)
+                                                     returns: {entries: [{name, is_dir, size, modified}], path}
+GET    /api/runs/:id/artifacts/*  get an artifact's content  text only; 415 for binary
+                                                     sandbox root = <data_dir>/runs/<run_id>/ (spec §3.3),
+                                                     reuses the §7 file-browser audited resolver (ADR-25)
+
 # Prompts ─────────────────────────────────────────────────────────────
 GET    /api/prompts?project_id=N  list prompts (latest version of each)
 GET    /api/prompts/:id           get a prompt (specific version)
@@ -625,10 +632,12 @@ artifacts, managing prompts, and registering projects.
   - **Iters pane** — list of iters with seq, phase, signal_kind. Click
     to filter the timeline.
   - **Artifacts pane** — the run's `.relay/runs/<id>/` directory
-    browsed inline. The `improvement-plan.md`, `evaluation-report.md`,
-    and any other markdown artifacts render with proper formatting.
-    Diffs of edited files render via `diff2html`. This is where the
-    user reviews "what did the agent actually do?"
+    browsed inline via the `GET /api/runs/:id/artifacts[/*]` endpoints
+    (ADR-25 — a second sandboxed root reusing the §7 audited resolver).
+    The `improvement-plan.md`, `evaluation-report.md`, and any other
+    markdown artifacts render with proper formatting. Diffs of edited
+    files render via `diff2html`. This is where the user reviews "what
+    did the agent actually do?"
   - **Worktree pane** — git status, changed files, ability to diff
     individual files (uses git CLI under the hood via the
     orchestrator).

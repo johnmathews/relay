@@ -43,7 +43,13 @@ from fastapi.responses import JSONResponse
 
 from relay_v2.api.deps import get_core
 
-__all__ = ["SandboxViolation", "resolve_within_sandbox", "router"]
+__all__ = [
+    "SandboxViolation",
+    "resolve_within_sandbox",
+    "router",
+    "serve_file",
+    "serve_listing",
+]
 
 # Largest file body we will read into memory / return. Larger → HTTP 413.
 MAX_FILE_BYTES = 5 * 1024 * 1024  # 5 MiB
@@ -127,33 +133,27 @@ def _mtime_iso(p: Path) -> str:
     ).isoformat()
 
 
-router = APIRouter(prefix="/api", tags=["files"])
-
-
 def _err(status: int, detail: str) -> JSONResponse:
     return JSONResponse(status_code=status, content={"detail": detail})
 
 
-@router.get("/projects/{project_id}/files")
-async def list_files(
-    project_id: int,
-    request: Request,
-    path: str = Query(default=""),
-) -> JSONResponse:
-    """Directory listing. ``path`` defaults to the project root. Entries
-    are sorted dirs-first then files, each group by name ascending."""
-    core = get_core(request)
-    project = await core.get_project(project_id)
-    if project is None:
-        return _err(404, f"unknown project {project_id}")
+# ── shared serving logic (the single audited read-only file path) ──────
+# Both the project file browser and the run-artifacts browser (ADR-25)
+# call these with a different sandbox ``root``. Exactly one
+# ``resolve_within_sandbox`` and one serving implementation — no
+# duplication across the two trust roots.
 
-    root = Path(project.root_path)
+
+def serve_listing(root: Path, path: str) -> JSONResponse:
+    """Directory listing JSON for ``path`` resolved within ``root``.
+    Entries sorted dirs-first then name-ascending. Errors → typed JSON:
+    400 sandbox violation, 404 missing root / path / not-a-dir-as-dir."""
     try:
         target = resolve_within_sandbox(root, path)
     except SandboxViolation as exc:
         return _err(400, str(exc))
     except FileNotFoundError:
-        return _err(404, "project root does not exist")
+        return _err(404, "sandbox root does not exist")
 
     if not target.exists():
         return _err(404, f"path not found: {path!r}")
@@ -190,30 +190,18 @@ async def list_files(
     )
 
 
-@router.get("/projects/{project_id}/files/{file_path:path}")
-async def get_file(
-    project_id: int,
-    file_path: str,
-    request: Request,
-) -> JSONResponse:
-    """Return text file content. Binary (NUL byte in the first 8 KiB) →
-    415. Larger than :data:`MAX_FILE_BYTES` → 413. Decoded as UTF-8 with
-    ``errors="replace"`` — this endpoint is for human/dashboard display,
-    not byte-exact retrieval, so undecodable bytes become U+FFFD rather
-    than failing the request. A typed JSON envelope is returned (not a
-    raw body) so the dashboard client stays strongly typed."""
-    core = get_core(request)
-    project = await core.get_project(project_id)
-    if project is None:
-        return _err(404, f"unknown project {project_id}")
-
-    root = Path(project.root_path)
+def serve_file(root: Path, file_path: str) -> JSONResponse:
+    """Text file content JSON for ``file_path`` resolved within ``root``.
+    Binary (NUL in the first 8 KiB) → 415; larger than
+    :data:`MAX_FILE_BYTES` → 413; decoded UTF-8 ``errors="replace"``
+    (display, not byte-exact). A typed JSON envelope (not a raw body)
+    keeps the dashboard client strongly typed."""
     try:
         target = resolve_within_sandbox(root, file_path)
     except SandboxViolation as exc:
         return _err(400, str(exc))
     except FileNotFoundError:
-        return _err(404, "project root does not exist")
+        return _err(404, "sandbox root does not exist")
 
     if not target.exists():
         return _err(404, f"path not found: {file_path!r}")
@@ -243,3 +231,36 @@ async def get_file(
             "modified": _mtime_iso(target),
         },
     )
+
+
+router = APIRouter(prefix="/api", tags=["files"])
+
+
+@router.get("/projects/{project_id}/files")
+async def list_files(
+    project_id: int,
+    request: Request,
+    path: str = Query(default=""),
+) -> JSONResponse:
+    """Project-root directory listing (thin adapter over
+    :func:`serve_listing`; sandbox root = the project's ``root_path``)."""
+    core = get_core(request)
+    project = await core.get_project(project_id)
+    if project is None:
+        return _err(404, f"unknown project {project_id}")
+    return serve_listing(Path(project.root_path), path)
+
+
+@router.get("/projects/{project_id}/files/{file_path:path}")
+async def get_file(
+    project_id: int,
+    file_path: str,
+    request: Request,
+) -> JSONResponse:
+    """Project-root file content (thin adapter over :func:`serve_file`;
+    sandbox root = the project's ``root_path``)."""
+    core = get_core(request)
+    project = await core.get_project(project_id)
+    if project is None:
+        return _err(404, f"unknown project {project_id}")
+    return serve_file(Path(project.root_path), file_path)
