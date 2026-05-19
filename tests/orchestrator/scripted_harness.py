@@ -40,7 +40,20 @@ class HangScript:
     used to drive the per-iter timeout and external-cancel paths."""
 
 
-Script = TextScript | HangScript
+@dataclass
+class EventScript:
+    """One iter: emit an explicit list of normalized events, then a
+    given :class:`SessionEnded`. Lets the observability suite (Phase 7)
+    drive ``ToolUseStart``/``ToolUseEnd`` and a usage-bearing
+    ``SessionEnded.messages`` payload without pi. ``events`` should
+    include an ``AssistantText(kind="text")`` carrying a column-0
+    closing sentinel so the loop terminates as it would under pi."""
+
+    events: list[HarnessEvent]
+    final: SessionEnded
+
+
+Script = TextScript | HangScript | EventScript
 
 
 class ScriptedSession:
@@ -73,6 +86,16 @@ class ScriptedSession:
             )
             self._final = ended
             yield ended
+        elif isinstance(self._script, EventScript):
+            # Model the pi harness's Option-D guarantee (ADR-29):
+            # ``_final`` (with pi's verbatim usage messages) is
+            # available by the time the orchestrator can act on the
+            # terminal sentinel and break — so wait() returns it even
+            # when events() is abandoned mid-stream.
+            self._final = self._script.final
+            for ev in self._script.events:
+                yield ev
+            yield self._script.final
         else:  # HangScript — block until cancelled / timed out.
             if self._blocked is not None:
                 self._blocked.set()

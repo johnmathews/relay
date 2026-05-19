@@ -722,6 +722,27 @@ Per ADR-10.
   server. Langfuse's prompt-management feature is unused in MVP but
   available for the future prompt-library feature.
 
+> **Phase-7 implementation note (ADR-29).** The mirror lives in
+> `src/relay_v2/observability/` and is wired into the orchestrator as an
+> `Instrumentation` object passed by parameter (default: a literal
+> no-op). Span tree: `relay.run` (opened/closed in `RelayCore._run`'s
+> `try/finally`, so a crashed run still closes its span) → `relay.iter`
+> (per `run_loop` iteration; attribute `relay.iter_seq` = the `iters`
+> table `seq`, so a Langfuse trace lines up with the dashboard
+> timeline) → `relay.tool_call` (per `ToolUseEnd` in `_drive_iter`,
+> timed from event `ts`). GenAI attributes (`gen_ai.system`,
+> `gen_ai.request.model`, `gen_ai.usage.input_tokens` /
+> `output_tokens`; cache/cost under `relay.usage.*`) are set on the
+> iter span from `SessionEnded.messages[].usage` (ADR-18 — the only
+> token/cost source) **only when present**, never zero-filled.
+> `RELAY_OTEL_EXPORT=none` constructs no provider/exporter and makes no
+> network call. Langfuse OTLP target:
+> `{RELAY_LANGFUSE_HOST}/api/public/otel/v1/traces`, HTTP Basic
+> `base64("{public}:{secret}")`. Span-structure verification is
+> automated (`tests/observability/`, `InMemorySpanExporter`, no
+> network); the live-Langfuse-UI check is a manual journal-attested
+> step. Operational ref: `docs/observability.md`.
+
 ## 11. Configuration & deployment
 
 ### 11.1 Environment variables

@@ -1282,3 +1282,210 @@ rewriting for its own sake.
   project-wide (ADR-24, CLAUDE.md).
 
 ---
+
+## ADR-29 — Phase-7 OTel mirror: self-owned TracerProvider, deferred no-op, pinned `<2`, manual Langfuse acceptance
+
+**Status:** Accepted (2026-05-19). Implements ADR-10's "mirror to OTel
+as a bolt-on" consequence and `spec.md` §10. Resolves the `docs/plan.md`
+Phase-7 named risk ("Pi may not surface token counts … record
+`gen_ai.usage.*` only when present; gracefully omit") and the
+no-overhead requirement.
+
+**Context.** ADR-10 makes the SQLite `events` table the single source of
+truth and calls for an opt-in OTel mirror exported to self-hosted
+Langfuse (`RELAY_OTEL_EXPORT=langfuse|none`). Phase 7 wires that mirror
+into the orchestrator: a `relay.run` → `relay.iter` → `relay.tool_call`
+span tree, GenAI semantic-convention attributes where pi surfaces them.
+The instrumentation must be **additive** — no change to the event-store
+contract, the REST/SSE/MCP surface, or the loop's control flow — and
+when export is off it must impose **provably zero** overhead and make
+zero network calls (the plan's named risk surface).
+
+**Alternatives considered.**
+
+1. *No-op path = real OTel SDK `TracerProvider` with no span processor.*
+   Rejected: still constructs a provider, still pays proxy/sampler
+   machinery per span, and the natural way to wire it
+   (`trace.set_tracer_provider`) mutates **process-global** OTel state —
+   set-once, warns on override, and leaks across the test suite (every
+   test would share one provider). Hard to assert "no exporter
+   constructed".
+2. *No-op path = OTel API default (`ProxyTracerProvider`).* Lighter than
+   (1) but still routes every `start_span` through proxy objects and
+   still depends on global state; the "zero overhead / no exporter"
+   property becomes an assertion about OTel internals rather than about
+   our own code.
+3. *A thin in-project `Instrumentation` Protocol with two
+   implementations* — `_NoopInstrumentation` (every method a literal
+   no-op; constructs no provider, no exporter, touches no global state,
+   makes no network call) and `_OtelInstrumentation` (owns a **local**
+   `TracerProvider` + `BatchSpanProcessor(OTLPSpanExporter)`; tracers
+   come from that instance via `provider.get_tracer()`, never from the
+   global). `build_instrumentation(settings)` returns one or the other
+   from `settings.otel_export`.
+
+**Decision.** Option 3.
+
+- **Self-owned, non-global `TracerProvider`.** The Langfuse path builds
+  its own provider and reads tracers off it directly. Rationale: the
+  process-global provider is set-once and would make the suite
+  un-isolatable (each `test_otel_export` case needs its own
+  `InMemorySpanExporter`); a self-owned provider is also the honest
+  shape for a library that must not commandeer global OTel state from
+  whatever embeds it.
+- **No-op is a deferred literal no-op, not an SDK object.** With
+  `RELAY_OTEL_EXPORT=none`, `build_instrumentation` returns
+  `_NoopInstrumentation` and the OTLP exporter / SDK provider are
+  **never constructed** — the OTel SDK import is paid only on the
+  langfuse path. The span helpers are `@contextmanager`s yielding a
+  shared sentinel; the hot path is an attribute lookup and a generator
+  step. This is asserted directly (W-test monkeypatches `OTLPSpan
+  Exporter` to raise if constructed; the no-op test trips nothing).
+- **Pin `opentelemetry-{api,sdk,exporter-otlp-proto-http}>=1.27,<2`.**
+  Unlike ADR-27's `mcp<2` (where v2 *exists* and rearchitects the
+  mounted transport), OTel 2.0 does **not** exist yet — so this `<2`
+  cap is *precautionary*, not load-bearing, and is recorded as such
+  honestly rather than overclaimed. The floor `1.27` is a
+  recent-stable baseline; `uv.lock` records the exact resolved
+  versions. We deliberately do **not** depend on
+  `opentelemetry-semantic-conventions` (its GenAI module is explicitly
+  unstable/incubating); the four attribute keys we emit (`gen_ai.system`,
+  `gen_ai.request.model`, `gen_ai.usage.input_tokens`,
+  `gen_ai.usage.output_tokens`) are written as stable string literals —
+  these are exactly the keys Langfuse maps and they have been stable
+  across OTel GenAI drafts. Cache/cost have no stable GenAI key, so
+  they go under a `relay.usage.*` namespace.
+- **Langfuse OTLP contract (researched, not guessed).** Endpoint is
+  `{RELAY_LANGFUSE_HOST}/api/public/otel/v1/traces` (the traces-signal
+  path; `OTLPSpanExporter(endpoint=…)` takes the full URL, no auto
+  `/v1/traces` append). Auth is HTTP Basic:
+  `Authorization: Basic base64("{public_key}:{secret_key}")`. Sourced
+  from the current Langfuse self-hosted OpenTelemetry docs
+  (langfuse.com/integrations/native/opentelemetry), not memory.
+- **Span-tree placement (resolves the open questions).**
+  - `relay.run` opens/closes inside `RelayCore._run(ctx)`'s
+    `try/…/finally`, **not** `start_run` (which only enqueues). A
+    crashed or supervisor-cancelled run therefore still closes its
+    span (status `ERROR`), because `_run`'s existing finally always
+    runs.
+  - `relay.iter` is one span per `run_loop` while-iteration, child of
+    the run span, attribute `relay.iter_seq = seq`. `seq` is the same
+    integer written to the `iters` table, so a Langfuse trace lines up
+    one-to-one with the dashboard timeline (spec.md §9).
+  - `relay.tool_call` is created in `_drive_iter` on `ToolUseEnd`,
+    child of the iter span. `ToolUseStart` (carries `name`, `args`)
+    is buffered by `tool_id`; the span uses the start/end event `ts`
+    so Langfuse shows accurate tool durations.
+  - GenAI/usage attributes are set on the **iter** span from
+    `SessionEnded.messages[].usage` (the only token/cost source —
+    ADR-18), aggregated across assistant messages; each attribute is
+    set **only when present** in the payload — absent fields are
+    omitted, never zero-filled (the plan's named risk mitigation).
+- **Option D — the harness gates the final `AssistantText` on
+  `agent_end` (resolves a constraint the plan's premise missed).**
+  Implementation review found that the plan/ADR-18 assumption
+  "`SessionEnded.messages` is available at the integration point" is
+  **false on the normal close path**: pi emits `…turn_end, agent_end`;
+  the sentinel-bearing text is flushed at `turn_end`, the orchestrator
+  detects the terminal sentinel there and `break`s `_drive_iter`, so
+  `agent_end` (the *only* carrier of `messages[].usage`) is never
+  consumed and `wait()` synthesises an empty `SessionEnded`. Without a
+  fix, per-iter token/cost would be absent on every `done`/`handoff`/
+  `pause` iter — i.e. the common case. Alternatives weighed:
+  *(A)* ship best-effort, document the gap — usage almost always
+  absent; *(B)* post-hoc drain of the stdout pipe in `wait()` after
+  the break — **racy** against pi's process exit / our `terminate()`,
+  CI-untestable; *(C)* drain-in-loop, storing `agent_end` — changes
+  loop control flow **and** event-store contents (explicitly fenced
+  off by the Phase-7 scope; bigger SSE/dashboard/MCP regression
+  surface). **Chosen: D** — a one-event `AssistantText` lookahead in
+  `PiSession.events()` (harness-package only, ADR-04 isolation): the
+  most recent `AssistantText` is held and delivered immediately before
+  the *next* mapper output, so when that next raw line is `agent_end`
+  the harness consumes it and sets `_final` (real `messages`) **before**
+  the held sentinel text reaches the orchestrator. The orchestrator's
+  post-`break` `wait()` therefore returns pi's verbatim usage.
+  Properties: **deterministic** (`agent_end` consumed in-stream, not
+  raced — unlike B); external event order **unchanged** (held text is
+  flushed before any other event; thinking→text intra-turn order
+  preserved); the orchestrator still breaks before `SessionEnded`, so
+  **no `agent_end` row is added to the event store** — the ADR-10
+  contract and loop control flow are byte-for-byte intact (unlike C);
+  crash/timeout (no `agent_end`) still flushes the buffered text at
+  end-of-stream and `wait()` synthesises exactly as before. D dominates
+  B (same blast radius, but deterministic and offline-testable) and is
+  far cheaper than C. **Known separate follow-up (not in Phase 7
+  scope):** `agent_end`/`SessionEnded` is still never persisted as an
+  `events` row on the sentinel-close path — a pre-existing latent
+  ADR-10 completeness gap that D neither widens nor closes; closing it
+  is C's territory and deserves its own ADR + `spec.md §6` change.
+- **Threading is by parameter, not global.** `run_loop` and
+  `_drive_iter` gain an `otel: Instrumentation` keyword that **defaults
+  to a module-level no-op singleton**, so every existing call site and
+  test is unchanged and the addition is provably additive. The span
+  context managers record the exception and set span status on error
+  but **re-raise** — they never swallow, so loop control flow is
+  byte-for-byte unchanged whether OTel is on or off.
+
+**Verification — automated vs. manual (mirrors ADR-28 §3).**
+plan.md Phase-7 verification has two halves:
+
+1. *"verify span structure (no real network)"* — **automated**.
+   `tests/observability/test_otel_export.py` drives the real
+   `RelayCore` + `run_loop` against an extended `ScriptedHarness`
+   (`EventScript`: arbitrary `ToolUseStart/End` + a `SessionEnded`
+   with a real pi-shaped `messages` usage payload) with an
+   `_OtelInstrumentation` whose exporter is an in-memory
+   `InMemorySpanExporter`. It asserts the run→iter→tool_call parent
+   chain, `relay.iter_seq` correlation, the GenAI/usage attributes
+   (including the "absent → omitted, not zeroed" case), and the
+   no-op guarantees (no provider, no `OTLPSpanExporter` construction,
+   no network). Option D's harness guarantee is proved separately and
+   offline by `tests/harness/test_pi_session_lookahead.py`: a fake
+   subprocess replays a fixture-shaped `…turn_end, agent_end` stream;
+   the test breaks on the sentinel `AssistantText` exactly as
+   `_drive_iter` does and asserts `wait()` still returns the verbatim
+   usage `messages`, that full consumption preserves external order,
+   and that a no-`agent_end` (crash) stream still synthesises.
+   Deterministic, offline, in CI.
+2. *"with Langfuse running locally, a real run produces a trace tree
+   in the Langfuse UI"* — **manual, journal-attested**. It needs real
+   pi (Max subscription, network, multi-minute, non-deterministic) and
+   a live Langfuse, and its acceptance ("the tree nests correctly in
+   the UI") is qualitative — exactly the profile of the existing
+   `PI_INTEGRATION=1` e2e checks and the ADR-28 §3 pi acceptance.
+   Documented as a step-by-step procedure in `docs/observability.md`
+   and attested in the journal, not run by CI. Rejected: a
+   `PI_INTEGRATION=1` automated test — it could not assert "nests
+   correctly in the UI" without reimplementing Langfuse's ingestion.
+
+**Consequences.**
+- New: `src/relay_v2/observability/` (`__init__.py`, `otel.py`),
+  `tests/observability/test_otel_export.py`,
+  `tests/harness/test_pi_session_lookahead.py`, `docs/observability.md`
+  (operational ref, peer of `docs/mcp.md`/`docs/skills.md`),
+  `docs/langfuse-compose.example.yml` (self-host snippet referenced by
+  spec.md §10). Changed: `harness/pi.py` `PiSession.events()` gains the
+  Option-D one-event lookahead (harness-only); `core.py` opens the run
+  span in `_run`; `loop.py` wires iter/tool spans by defaulted
+  parameter. `spec.md` §10 gains a Phase-7 implementation note
+  pointing here.
+- Three new runtime deps (`opentelemetry-api`, `-sdk`,
+  `-exporter-otlp-proto-http`), pinned `>=1.27,<2`; `uv.lock` updated.
+  ~35→37 source files; `mypy --strict` stays clean (OTel SDK typing is
+  loose — precise local annotations + one narrowly-scoped, commented
+  `type: ignore` for the exporter kwargs, never a config loosening).
+- Additive only: the event store remains the single source of truth
+  (ADR-10) — OTel mirrors it and never writes to it; no REST/SSE/MCP
+  contract changed; `run_loop`/`_drive_iter` signatures gained one
+  defaulted keyword and the loop's observable behavior with
+  `RELAY_OTEL_EXPORT=none` is identical to pre-Phase-7. Option D is
+  harness-internal (ADR-04) and order-preserving, so the event store /
+  REST / SSE / MCP contracts are unchanged. Suite 183→192 passed, 3
+  pi-e2e still gated; `mypy --strict` clean across 37 source files;
+  backend coverage 93%.
+- Langfuse remains strictly opt-in and non-load-bearing (ADR-10): an
+  unreachable/misconfigured Langfuse degrades to dropped spans
+  (BatchSpanProcessor swallows export errors), never a failed run.
+
+---

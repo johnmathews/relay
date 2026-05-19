@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**Phases 0–5 are complete.** Phase 0 scaffold + Phase 1 harness layer +
+**Phases 0–7 are complete.** Phase 0 scaffold + Phase 1 harness layer +
 Phase 2 orchestrator (`RelayCore`, append-only `EventStore`, chained-iter
 `run_loop`, run lifecycle, `RELAY_*` preamble). Phase 3 adds the **REST
 API + persistence** (`src/relay_v2/api/`, `src/relay_v2/sse.py`): every
@@ -46,15 +46,26 @@ the v1 skill ported faithfully with six deliberate adaptations
 relay-provisioned worktree, inlined Phase-4 gate replacing
 `/done`+`/merge-push`, repointed sentinel pointers, `uv run`
 examples) — sentinel grammar verbatim (ADR-28). Skill+CLI only; no
-orchestrator/REST/SSE/MCP contract changed. `uv run pytest` green
-(**183 passed**, 3 pi-e2e gated), `ruff`/`mypy --strict` clean (35
-source files), backend coverage 91%. The next coding work is
-**Phase 7** in `docs/plan.md`. Operational refs: `docs/harness.md`,
+orchestrator/REST/SSE/MCP contract changed. Phase 7 adds the **OTel
+mirror** (`src/relay_v2/observability/`): an opt-in
+`relay.run`→`relay.iter`→`relay.tool_call` span tree mirroring the
+event store (ADR-10 — never a second source), exported OTLP/HTTP to
+self-hosted Langfuse when `RELAY_OTEL_EXPORT=langfuse`, a strict
+literal no-op (no provider/exporter/network) when `none`. GenAI/usage
+attributes come from pi's verbatim `SessionEnded.messages[].usage`
+(ADR-18); recovering them on the terminal-sentinel close path needed a
+one-event `AssistantText` lookahead in `PiSession.events()` —
+**Option D**, harness-only (ADR-04), order-preserving, deterministic,
+no loop/event-store contract change (ADR-29). `uv run pytest` green
+(**192 passed**, 3 pi-e2e gated), `ruff`/`mypy --strict` clean (37
+source files), backend coverage 93%. The next coding work is
+**Phase 8** in `docs/plan.md`. Operational refs: `docs/harness.md`,
 `docs/orchestrator.md`, `docs/api.md`, `docs/dashboard.md`,
-`docs/mcp.md`, `docs/skills.md` (Phase 6; the engineering-team
-skill + `relay install-skill` + the manual pi acceptance procedure;
-`docs/mcp-config.example.json` is the MCP client registration
-snippet; `frontend/README.md` is the dev quick-start).
+`docs/mcp.md`, `docs/skills.md`, `docs/observability.md` (Phase 7;
+the OTel mirror + Langfuse wiring + the manual trace-tree acceptance
+procedure; `docs/langfuse-compose.example.yml` is the self-host
+pointer; `docs/mcp-config.example.json` is the MCP client
+registration snippet; `frontend/README.md` is the dev quick-start).
 Design docs (`docs/`) and the pi de-risking `scratch/` dir remain the
 canonical context. New ADRs: ADR-19/20/21 (Phase 2 — orchestrator
 runtime, pause/resume, async DB), ADR-22 (resume forward-progress,
@@ -63,7 +74,11 @@ cutover), ADR-24 (API test toolchain), ADR-25 (run-artifacts second
 sandboxed root), ADR-26 (Phase-4 frontend toolchain mandates), ADR-27
 (Phase-5 MCP toolchain: bundled SDK, `mcp>=1.27.1,<2` pin, lifespan
 session-manager wiring), ADR-28 (Phase-6 skill port: single-session,
-repo-root + wheel force-include, manual behavioral verification).
+repo-root + wheel force-include, manual behavioral verification),
+ADR-29 (Phase-7 OTel mirror: self-owned non-global TracerProvider,
+deferred literal no-op, `opentelemetry-*>=1.27,<2` pins, Option-D
+pi-harness lookahead so terminal-sentinel iters still recover usage,
+automated span-structure tests + manual Langfuse-UI acceptance).
 
 ## What relay v2 is
 
@@ -178,6 +193,27 @@ implementation:
   `tests/mcp/` (`test_mcp_tools.py` in-process via `FastMCP.call_tool`;
   `test_mcp_mount.py` end-to-end through the real lifespan). Ops ref:
   `docs/mcp.md`.
+- OTel mirror (Phase 7, ADR-29): deps `opentelemetry-api`,
+  `opentelemetry-sdk`, `opentelemetry-exporter-otlp-proto-http`, all
+  pinned `>=1.27,<2` (the `<2` is *precautionary*, not load-bearing —
+  OTel 2.0 doesn't exist yet; recorded honestly as such). Deliberately
+  **no** `opentelemetry-semantic-conventions` dep (its GenAI module is
+  unstable) — `gen_ai.*` keys are stable string literals. The mirror
+  is an injected `Instrumentation` (the harness-style seam: `RelayCore(
+  …, otel=)`); `none` → a literal no-op that constructs no provider/
+  exporter and makes no network call; `langfuse` → a **self-owned,
+  non-global** `TracerProvider` + `BatchSpanProcessor(OTLPSpanExporter)`
+  to `{RELAY_LANGFUSE_HOST}/api/public/otel/v1/traces` with HTTP Basic
+  `base64(public:secret)`. Span emission is threaded into the loop by
+  defaulted parameter (run span in `core._run`, iter/tool spans in
+  `loop`/`_drive_iter`) — additive, no control-flow change. Usage on
+  the terminal-sentinel path relies on the Option-D one-event
+  `AssistantText` lookahead in `harness/pi.py` `PiSession.events()`
+  (harness-only, ADR-04; order-preserving; no event-store change).
+  Tests: `tests/observability/test_otel_export.py` (span structure via
+  `InMemorySpanExporter`, no network) +
+  `tests/harness/test_pi_session_lookahead.py` (Option D, offline fake
+  proc). Ops ref: `docs/observability.md`.
 - Frontend (`frontend/`, Phase 4): Vue 3 + vue-router **v5** + Pinia +
   Pinia Colada + Vite, TypeScript strict. Typed API client generated
   by `openapi-typescript` 7 + `openapi-fetch` off the running backend's

@@ -33,9 +33,17 @@ from relay_v2.harness import (
     SessionStarted,
     SignalConfig,
     SignalEmitted,
+    ToolUseEnd,
+    ToolUseStart,
 )
 from relay_v2.harness.signaling import MarkerError, detect_in_text
 from relay_v2.harness.signaling.sentinels import extract_phase_start
+from relay_v2.observability import (
+    NOOP_ITER_SPAN,
+    NOOP_RUN_SPAN,
+    IterSpan,
+    RunSpan,
+)
 from relay_v2.orchestrator.lifecycle import (
     RunContext,
     close_iter,
@@ -82,6 +90,10 @@ class _IterOutcome:
     # True once _drive_iter has already written a signal_emit for a
     # phase_start, so the carry-forward path doesn't double-record it.
     phase_start_emitted: bool = False
+    # SessionEnded.messages, captured for the OTel iter span's GenAI/
+    # usage attributes (ADR-29). The event store is unaffected — this is
+    # a read-only mirror of data already persisted via store_harness_event.
+    messages: list[Any] = field(default_factory=list)
 
     @property
     def text(self) -> str:
@@ -94,11 +106,17 @@ async def _drive_iter(
     iter_id: int,
     store: EventStore,
     cancel_event: asyncio.Event,
+    otel_iter: IterSpan = NOOP_ITER_SPAN,
 ) -> _IterOutcome:
     """Stream one iter's events: persist each, detect signals at turn
     boundaries, honour the per-iter timeout and external cancellation."""
     out = _IterOutcome()
     by_turn: dict[int, list[str]] = {}
+    # ToolUseStart carries name/args; ToolUseEnd carries duration. Buffer
+    # the start by tool_id so the OTel tool_call span (ADR-29) gets the
+    # name and an accurate start→end window. Pure mirror — control flow
+    # and the event-store writes below are unchanged.
+    tool_starts: dict[str, ToolUseStart] = {}
     # try/finally is load-bearing: if the run task is cancelled (aclose()
     # shutdown) CancelledError unwinds straight through asyncio.timeout;
     # without the finally the pi subprocess would leak (no terminate()).
@@ -112,6 +130,18 @@ async def _drive_iter(
                     if isinstance(ev, SessionStarted) and ev.session_id:
                         await set_iter_session(
                             store.sessionmaker, iter_id, ev.session_id
+                        )
+                    if isinstance(ev, ToolUseStart):
+                        tool_starts[ev.tool_id] = ev
+                    elif isinstance(ev, ToolUseEnd):
+                        st = tool_starts.pop(ev.tool_id, None)
+                        otel_iter.record_tool_call(
+                            name=st.name if st else "unknown",
+                            tool_id=ev.tool_id,
+                            is_error=ev.is_error,
+                            duration_ms=ev.duration_ms,
+                            start_ts=st.ts if st else ev.ts,
+                            end_ts=ev.ts,
                         )
                     if not (
                         isinstance(ev, AssistantText) and ev.kind == "text"
@@ -156,6 +186,10 @@ async def _drive_iter(
         await session.cancel()
         result = await session.wait()
         out.stop_reason = result.stop_reason
+        # Mirror only: pi's verbatim messages already persisted via
+        # store_harness_event above; copied here purely for the OTel
+        # iter span's usage attributes (ADR-18 / ADR-29).
+        out.messages = list(result.messages)
     return out
 
 
@@ -192,6 +226,7 @@ async def run_loop(
     store: EventStore,
     cancel_event: asyncio.Event,
     session_handle: SessionHandle,
+    otel_run: RunSpan = NOOP_RUN_SPAN,
 ) -> LoopResult:
     sm = store.sessionmaker
     seq = ctx.start_seq
@@ -224,93 +259,117 @@ async def run_loop(
             iter_id=iter_id,
         )
 
-        session = await harness.spawn(
-            prompt=full_prompt,
-            cwd=ctx.cwd,
-            env={},  # PI_AGENT_SDK is injected inside the harness
-            signal_config=_SIGNAL_CONFIG,
-            resume_from=last_session_id,
-        )
-        session_handle.session = session
-        outcome = await _drive_iter(
-            ctx, session, iter_id, store, cancel_event
-        )
-        session_handle.session = None
+        # ADR-29: one relay.iter span per iteration, child of the run
+        # span, attribute relay.iter_seq == this iter's `seq` (== the
+        # iters table seq) so a Langfuse trace lines up with the
+        # dashboard timeline. The `with` only wraps — every return /
+        # the handoff continue below behaves exactly as before; the
+        # span just ends on the way out.
+        with otel_run.iter_span(seq=seq, phase=phase) as iter_span:
+            session = await harness.spawn(
+                prompt=full_prompt,
+                cwd=ctx.cwd,
+                env={},  # PI_AGENT_SDK is injected inside the harness
+                signal_config=_SIGNAL_CONFIG,
+                resume_from=last_session_id,
+            )
+            session_handle.session = session
+            outcome = await _drive_iter(
+                ctx, session, iter_id, store, cancel_event, iter_span
+            )
+            session_handle.session = None
+            # GenAI/usage from pi's verbatim messages (ADR-18); set only
+            # when present, never zero-filled. Mirror only.
+            iter_span.set_usage(outcome.messages)
 
-        # Phase carry-forward: the *last* phase-start of the iter wins
-        # (sentinels.md), independent of which signal closed the iter.
-        seen = extract_phase_start(outcome.text)
-        if seen:
-            phase = seen
-            (ctx.run_dir / "phase").write_text(phase)
-            # When a terminal signal shared the turn with the
-            # phase-start, detect_in_text returned the terminal and
-            # _drive_iter never emitted the phase_start event. Record it
-            # now so the timeline/replay (Phase 4) sees the transition.
-            if not outcome.phase_start_emitted:
-                await store.append(
-                    ctx.run_id,
-                    "signal_emit",
-                    {"kind": "phase_start", "args": {"phase": seen}},
-                    iter_id=iter_id,
+            # Phase carry-forward: the *last* phase-start of the iter
+            # wins (sentinels.md), independent of which signal closed it.
+            seen = extract_phase_start(outcome.text)
+            if seen:
+                phase = seen
+                (ctx.run_dir / "phase").write_text(phase)
+                # When a terminal signal shared the turn with the
+                # phase-start, detect_in_text returned the terminal and
+                # _drive_iter never emitted the phase_start event.
+                # Record it now so the timeline/replay sees the
+                # transition.
+                if not outcome.phase_start_emitted:
+                    await store.append(
+                        ctx.run_id,
+                        "signal_emit",
+                        {"kind": "phase_start", "args": {"phase": seen}},
+                        iter_id=iter_id,
+                    )
+
+            if outcome.cancelled:
+                iter_span.set_exit("cancelled")
+                await _finish_iter(
+                    store, run_id=ctx.run_id, iter_id=iter_id, seq=seq,
+                    signal_kind=None, signal_args=None,
+                    exit_reason="cancelled",
+                )
+                return LoopResult("cancelled", reason="cancelled")
+            if outcome.timed_out:
+                iter_span.set_exit("timeout")
+                await _finish_iter(
+                    store, run_id=ctx.run_id, iter_id=iter_id, seq=seq,
+                    signal_kind=None, signal_args=None,
+                    exit_reason="timeout",
+                )
+                return LoopResult("failed", reason="timeout")
+
+            signal = outcome.signal
+            if signal is None:
+                # No usable closing signal: a clean agent_end with
+                # nothing, a marker-contract violation, or a crash. The
+                # first two are spec.md §3.1's 'agent_end_no_signal'; a
+                # crash keeps its own reason. (A fenced/indented
+                # sentinel never matched at column 0, so it lands here
+                # — the plan.md fenced-block case.)
+                if (
+                    outcome.marker_headline
+                    or outcome.stop_reason == "clean"
+                ):
+                    reason = "agent_end_no_signal"
+                else:
+                    reason = outcome.stop_reason  # 'crash'
+                args = (
+                    {"marker_error": outcome.marker_headline}
+                    if outcome.marker_headline
+                    else None
+                )
+                iter_span.set_exit(reason)
+                await _finish_iter(
+                    store, run_id=ctx.run_id, iter_id=iter_id, seq=seq,
+                    signal_kind=None, signal_args=args,
+                    exit_reason=reason,
+                )
+                return LoopResult(
+                    "failed", reason=reason,
+                    summary=outcome.marker_headline,
                 )
 
-        if outcome.cancelled:
+            iter_span.set_exit("signal")
             await _finish_iter(
                 store, run_id=ctx.run_id, iter_id=iter_id, seq=seq,
-                signal_kind=None, signal_args=None, exit_reason="cancelled",
+                signal_kind=signal.kind, signal_args=signal.args,
+                exit_reason="signal",
             )
-            return LoopResult("cancelled", reason="cancelled")
-        if outcome.timed_out:
-            await _finish_iter(
-                store, run_id=ctx.run_id, iter_id=iter_id, seq=seq,
-                signal_kind=None, signal_args=None, exit_reason="timeout",
-            )
-            return LoopResult("failed", reason="timeout")
-
-        signal = outcome.signal
-        if signal is None:
-            # No usable closing signal: a clean agent_end with nothing,
-            # a marker-contract violation, or a crash. The first two are
-            # spec.md §3.1's 'agent_end_no_signal'; a crash keeps its
-            # own reason. (A fenced/indented sentinel never matched at
-            # column 0, so it lands here — the plan.md fenced-block case.)
-            if outcome.marker_headline or outcome.stop_reason == "clean":
-                reason = "agent_end_no_signal"
-            else:
-                reason = outcome.stop_reason  # 'crash'
-            args = (
-                {"marker_error": outcome.marker_headline}
-                if outcome.marker_headline
-                else None
-            )
-            await _finish_iter(
-                store, run_id=ctx.run_id, iter_id=iter_id, seq=seq,
-                signal_kind=None, signal_args=args, exit_reason=reason,
-            )
-            return LoopResult(
-                "failed", reason=reason, summary=outcome.marker_headline
-            )
-
-        await _finish_iter(
-            store, run_id=ctx.run_id, iter_id=iter_id, seq=seq,
-            signal_kind=signal.kind, signal_args=signal.args,
-            exit_reason="signal",
-        )
-        if signal.kind == "done":
-            return LoopResult(
-                "done", reason="signal", summary=signal.args.get("summary")
-            )
-        if signal.kind == "pause":
-            return LoopResult(
-                "paused",
-                reason="signal",
-                question=signal.args.get("question", ""),
-                next_prompt=signal.args.get("next_prompt", ""),
-                pause_id=signal.args.get("id", ""),
-            )
-        # handoff — carry the compressed prompt; context stays fresh.
-        body = signal.args["next_prompt"]
-        last_session_id = None
+            if signal.kind == "done":
+                return LoopResult(
+                    "done", reason="signal",
+                    summary=signal.args.get("summary"),
+                )
+            if signal.kind == "pause":
+                return LoopResult(
+                    "paused",
+                    reason="signal",
+                    question=signal.args.get("question", ""),
+                    next_prompt=signal.args.get("next_prompt", ""),
+                    pause_id=signal.args.get("id", ""),
+                )
+            # handoff — carry the compressed prompt; context stays fresh.
+            body = signal.args["next_prompt"]
+            last_session_id = None
 
     return LoopResult("failed", reason="max_iters")

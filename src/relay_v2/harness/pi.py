@@ -249,7 +249,30 @@ class PiSession:
         self.session_id = session_hint
 
     async def events(self) -> AsyncIterator[HarnessEvent]:
+        """Stream normalized events with a one-event ``AssistantText``
+        lookahead (Option D, ADR-29).
+
+        pi emits ``…turn_end, agent_end``: the sentinel-bearing text is
+        flushed at ``turn_end`` and ``agent_end`` (the only carrier of
+        ``messages[].usage``) follows. The orchestrator detects the
+        terminal sentinel on that ``AssistantText`` and ``break``s — so
+        without lookahead it would never consume ``agent_end`` and
+        ``wait()`` would synthesize an empty :class:`SessionEnded`,
+        losing token/cost.
+
+        Fix: hold the most recent ``AssistantText`` by exactly one
+        event. It is delivered immediately before the *next* mapper
+        output (any kind), so external event order is unchanged and the
+        event store is unaffected (the orchestrator still breaks before
+        ``SessionEnded`` is yielded — no ``agent_end`` row, ADR-10
+        contract intact). The win: when that next raw line is
+        ``agent_end``, ``self._final`` is captured *before* the held
+        text is handed over, so the post-``break`` ``wait()`` returns
+        pi's verbatim usage messages. Deterministic — ``agent_end`` is
+        consumed in-stream, not raced against process exit.
+        """
         assert self._proc.stdout is not None
+        pending: AssistantText | None = None
         async for raw in self._proc.stdout:
             line = raw.decode("utf-8", "replace").strip()
             if not line:
@@ -264,8 +287,30 @@ class PiSession:
                 if isinstance(out, SessionStarted) and not self.session_id:
                     self.session_id = out.session_id
                 if isinstance(out, SessionEnded):
+                    # Capture _final BEFORE the held sentinel text is
+                    # delivered, so the orchestrator's post-break
+                    # wait() already has the usage payload.
                     self._final = out
-                yield out
+                    if pending is not None:
+                        yield pending
+                        pending = None
+                    yield out
+                elif isinstance(out, AssistantText):
+                    # Hold the latest text; flush any prior one first so
+                    # a thinking→text pair within a turn keeps its order.
+                    if pending is not None:
+                        yield pending
+                    pending = out
+                else:
+                    if pending is not None:
+                        yield pending
+                        pending = None
+                    yield out
+        # Stream ended without agent_end (crash/timeout): still deliver
+        # the buffered text; wait() synthesizes the terminal event as
+        # before.
+        if pending is not None:
+            yield pending
 
     async def cancel(self) -> None:
         self._cancelled = True

@@ -1,0 +1,44 @@
+# Self-hosted Langfuse — minimal example for relay-v2's OTel mirror.
+#
+# Langfuse v3 self-host is a multi-service stack (web + worker +
+# Postgres + ClickHouse + Redis + S3/MinIO). Reproducing and
+# maintaining that here would drift from upstream, so the honest,
+# low-maintenance approach is: run Langfuse's officially-maintained
+# compose, then point relay at it.
+#
+#   git clone https://github.com/langfuse/langfuse
+#   cd langfuse && docker compose up -d        # serves http://localhost:3000
+#
+# Then, in the Langfuse UI: create an organisation + project, copy the
+# project's API keys, and wire relay-v2 to it. relay only needs three
+# env vars (spec.md §11; see docs/observability.md):
+#
+#   RELAY_OTEL_EXPORT=langfuse
+#   RELAY_LANGFUSE_HOST=http://localhost:3000
+#   RELAY_LANGFUSE_PUBLIC_KEY=pk-lf-...
+#   RELAY_LANGFUSE_SECRET_KEY=sk-lf-...
+#
+# relay exports OTLP/HTTP spans to
+# {RELAY_LANGFUSE_HOST}/api/public/otel/v1/traces with HTTP Basic auth
+# (base64("{public}:{secret}")). No Langfuse-side OTel config is needed
+# — the ingestion endpoint is built in.
+#
+# If you prefer to vendor a stack here rather than clone upstream, the
+# fragment below is the relay-relevant slice; fill the backing-service
+# section from upstream's compose (kept out of this repo on purpose so
+# it cannot silently rot against Langfuse releases).
+
+services:
+  langfuse-web:
+    image: langfuse/langfuse:3
+    ports:
+      - "3000:3000"
+    environment:
+      # Point these at the Postgres/ClickHouse/Redis/S3 services from
+      # the upstream Langfuse compose (github.com/langfuse/langfuse).
+      DATABASE_URL: ${LANGFUSE_DATABASE_URL:?set from upstream compose}
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?openssl rand -base64 32}
+      SALT: ${LANGFUSE_SALT:?openssl rand -base64 32}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:?openssl rand -hex 32}
+    restart: unless-stopped
