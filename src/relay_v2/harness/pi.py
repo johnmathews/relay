@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import re
 import time
 from collections.abc import AsyncIterator, Iterable, Iterator
 from pathlib import Path
@@ -41,7 +43,44 @@ from relay_v2.harness.protocol import (
     ToolUseUpdate,
 )
 
-__all__ = ["PiHarness", "PiSession", "map_pi_events"]
+__all__ = [
+    "PiHarness",
+    "PiSession",
+    "map_pi_events",
+    "pi_version_mismatch_warning",
+]
+
+logger = logging.getLogger(__name__)
+
+_VERSION_RE = re.compile(r"(\d+\.\d+\.\d+)")
+
+
+def pi_version_mismatch_warning(
+    reported: str, expected: str
+) -> str | None:
+    """Return a warning string if the reported pi version differs from
+    the pinned one, else ``None`` (OQ-5).
+
+    ``reported`` is raw ``pi --version`` output; the first
+    ``MAJOR.MINOR.PATCH`` token is compared. Unparseable output yields a
+    warning too — an unknown version is as risky as a wrong one. This is
+    advisory only: the caller logs it and continues (the harness never
+    aborts on version drift; the event mapper degrades gracefully on
+    additive schema changes, and a hard pin lives in `.tool-versions`).
+    """
+    m = _VERSION_RE.search(reported)
+    if m is None:
+        return (
+            f"could not parse pi version from {reported!r}; "
+            f"expected {expected} (see .tool-versions)"
+        )
+    found = m.group(1)
+    if found != expected:
+        return (
+            f"pi version {found} does not match the pinned {expected} "
+            f"(see .tool-versions); event-schema drift is possible"
+        )
+    return None
 
 
 class _PiEventMapper:
@@ -263,6 +302,32 @@ class PiHarness:
 
     def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings or get_settings()
+        self._version_checked = False
+
+    async def _maybe_check_version(self) -> None:
+        """Best-effort, once per harness: log a warning if the installed
+        pi differs from the pin (OQ-5). Never raises — pi may be absent
+        (offline/scripted tests) and version drift is non-fatal. Uses the
+        same no-shell exec form as :meth:`spawn`."""
+        if self._version_checked:
+            return
+        self._version_checked = True
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self._settings.pi_bin,
+                "--version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            out, _ = await proc.communicate()
+            warning = pi_version_mismatch_warning(
+                out.decode(errors="replace"),
+                self._settings.pi_expected_version,
+            )
+            if warning:
+                logger.warning("pi version check: %s", warning)
+        except Exception as exc:  # noqa: BLE001 - advisory probe only
+            logger.debug("pi version probe skipped: %s", exc)
 
     def _build_argv(
         self, prompt: str, model: str, provider: str, resume_from: str | None
@@ -292,6 +357,7 @@ class PiHarness:
         signal_config: object,  # SignalConfig — used by the orchestrator (Phase 2)
         resume_from: str | None = None,
     ) -> PiSession:
+        await self._maybe_check_version()
         argv = self._build_argv(
             prompt,
             self._settings.pi_model,

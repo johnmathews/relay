@@ -79,6 +79,9 @@ class _IterOutcome:
     cancelled: bool = False
     stop_reason: str = "clean"
     text_parts: list[str] = field(default_factory=list)
+    # True once _drive_iter has already written a signal_emit for a
+    # phase_start, so the carry-forward path doesn't double-record it.
+    phase_start_emitted: bool = False
 
     @property
     def text(self) -> str:
@@ -138,6 +141,8 @@ async def _drive_iter(
                         {"kind": sig.kind, "args": sig.args},
                         iter_id=iter_id,
                     )
+                    if sig.kind == "phase_start":
+                        out.phase_start_emitted = True
                     if sig.kind in _TERMINAL:
                         out.signal = sig
                         break
@@ -194,7 +199,12 @@ async def run_loop(
     body = ctx.body
     last_session_id: str | None = None  # always None between iters
 
-    while seq < ctx.max_iters:
+    # ADR-22: a resumed run is guaranteed >=1 post-answer iter even if it
+    # paused on its last budgeted iter. For a fresh run (start_seq == 0)
+    # effective_max == max_iters, so fresh-run behavior is unchanged.
+    effective_max = max(ctx.max_iters, seq + 1)
+
+    while seq < effective_max:
         seq += 1
         preamble = build_preamble(ctx.run_dir, phase)
         full_prompt = compose_prompt(ctx.run_dir, phase, body)
@@ -233,6 +243,17 @@ async def run_loop(
         if seen:
             phase = seen
             (ctx.run_dir / "phase").write_text(phase)
+            # When a terminal signal shared the turn with the
+            # phase-start, detect_in_text returned the terminal and
+            # _drive_iter never emitted the phase_start event. Record it
+            # now so the timeline/replay (Phase 4) sees the transition.
+            if not outcome.phase_start_emitted:
+                await store.append(
+                    ctx.run_id,
+                    "signal_emit",
+                    {"kind": "phase_start", "args": {"phase": seen}},
+                    iter_id=iter_id,
+                )
 
         if outcome.cancelled:
             await _finish_iter(

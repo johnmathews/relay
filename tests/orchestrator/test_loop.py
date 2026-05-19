@@ -14,7 +14,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
 
 from relay_v2.config import Settings
@@ -194,6 +194,41 @@ def test_pause_then_resume(tmp_path: Path) -> None:
         assert "pause_resolved" in kinds
 
 
+def test_resume_at_max_iters_boundary(tmp_path: Path) -> None:
+    """A run that pauses on its last budgeted iter (paused.seq ==
+    max_iters) must still make forward progress when resumed: the
+    effective cap is max(max_iters, paused_seq+1), so the answer iter
+    runs and the run completes (ADR-22). Regression for the boundary
+    bug where ``while seq < max_iters`` was immediately false on
+    resume and the run ended failed/max_iters."""
+    settings = _settings(tmp_path)
+    harness = ScriptedHarness([TextScript(PAUSE_BLOCK),
+                               TextScript(DONE_BLOCK)])
+
+    async def scenario(core: RelayCore) -> str:
+        pid = await core.register_project(tmp_path, "p")
+        run_id = await core.start_run(pid, "Start.", max_iters=1)
+        first = await core.wait_for_run(run_id)
+        assert first.status == "paused"
+        await core.resume_run(run_id, "Use option A.")
+        second = await core.wait_for_run(run_id)
+        assert second.status == "done"
+        return run_id
+
+    run_id = _run(scenario, settings, harness)
+    with _read(settings) as s:
+        run = s.get(Run, run_id)
+        assert run is not None and run.status == "done"
+        iters = list(
+            s.scalars(select(Iter).where(Iter.run_id == run_id)
+                      .order_by(Iter.seq))
+        )
+        # Paused at seq 1 (== max_iters); resume runs a seq-2 answer iter.
+        assert [it.seq for it in iters] == [1, 2]
+        assert iters[0].signal_kind == "pause"
+        assert iters[1].signal_kind == "done"
+
+
 def test_fenced_sentinel_no_real_signal_fails_cleanly(
     tmp_path: Path,
 ) -> None:
@@ -273,7 +308,9 @@ def test_cancel_run(tmp_path: Path) -> None:
     async def scenario(core: RelayCore) -> str:
         pid = await core.register_project(tmp_path, "p")
         run_id = await core.start_run(pid, "Go.", iter_timeout=30)
-        await asyncio.sleep(0.2)  # let the iter spawn + start hanging
+        # Deterministic: wait for the exact moment the iter is hung,
+        # not a wall-clock sleep (no scheduling race).
+        await asyncio.wait_for(harness.blocked.wait(), timeout=5)
         await core.cancel_run(run_id)
         result = await core.wait_for_run(run_id)
         assert result.status == "cancelled"
@@ -330,3 +367,178 @@ def test_list_and_get_run(tmp_path: Path, script: Script) -> None:
         assert one is not None and one.id == run_id
 
     _run(scenario, settings, harness)
+
+
+# ── W6: RelayCore error-guards + concurrency (Phase 3 leans on these) ──
+
+
+def test_start_run_unknown_project_raises(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    harness = ScriptedHarness([TextScript(DONE_BLOCK)])
+
+    async def scenario(core: RelayCore) -> None:
+        with pytest.raises(ValueError, match="unknown project_id"):
+            await core.start_run(999, "Go.")
+
+    _run(scenario, settings, harness)
+
+
+def test_cancel_run_unknown_run_id_is_noop(tmp_path: Path) -> None:
+    """cancel_run on an unknown id returns silently (Phase 3 DELETE
+    must not 500 on a missing/typo'd run)."""
+    settings = _settings(tmp_path)
+    harness = ScriptedHarness([TextScript(DONE_BLOCK)])
+
+    async def scenario(core: RelayCore) -> None:
+        await core.cancel_run("does-not-exist")  # no exception
+
+    _run(scenario, settings, harness)
+
+
+def test_resume_run_not_paused_raises(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    harness = ScriptedHarness([TextScript(DONE_BLOCK)])
+
+    async def scenario(core: RelayCore) -> None:
+        pid = await core.register_project(tmp_path, "p")
+        run_id = await core.start_run(pid, "Go.")
+        result = await core.wait_for_run(run_id)
+        assert result.status == "done"
+        with pytest.raises(ValueError, match="is not paused"):
+            await core.resume_run(run_id, "answer")
+
+    _run(scenario, settings, harness)
+
+
+def test_resume_run_duplicate_guard(tmp_path: Path) -> None:
+    """A second resume of an already-resumed run is rejected — the
+    guard that prevents two loops racing to UNIQUE(run_id, seq)."""
+    settings = _settings(tmp_path)
+    harness = ScriptedHarness([TextScript(PAUSE_BLOCK),
+                               TextScript(DONE_BLOCK)])
+
+    async def scenario(core: RelayCore) -> None:
+        pid = await core.register_project(tmp_path, "p")
+        run_id = await core.start_run(pid, "Go.")
+        assert (await core.wait_for_run(run_id)).status == "paused"
+        await core.resume_run(run_id, "A")  # flips status -> running
+        with pytest.raises(ValueError, match=run_id):
+            await core.resume_run(run_id, "A again")
+        assert (await core.wait_for_run(run_id)).status == "done"
+
+    _run(scenario, settings, harness)
+
+
+def test_wait_for_run_unknown_id_raises_key_error(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    harness = ScriptedHarness([TextScript(DONE_BLOCK)])
+
+    async def scenario(core: RelayCore) -> None:
+        with pytest.raises(KeyError):
+            await core.wait_for_run("nope")
+
+    _run(scenario, settings, harness)
+
+
+def test_two_concurrent_runs_keep_isolated_seqs(tmp_path: Path) -> None:
+    """Two runs in flight at once: both complete and each run's event
+    seq is an independent, gap-free 1..N (EventStore lock invariant)."""
+    settings = _settings(tmp_path)
+    harness = ScriptedHarness([TextScript(DONE_BLOCK),
+                               TextScript(DONE_BLOCK)])
+
+    async def scenario(core: RelayCore) -> tuple[str, str]:
+        pid = await core.register_project(tmp_path, "p")
+        r1 = await core.start_run(pid, "Go 1.")
+        r2 = await core.start_run(pid, "Go 2.")
+        assert (await core.wait_for_run(r1)).status == "done"
+        assert (await core.wait_for_run(r2)).status == "done"
+        return r1, r2
+
+    r1, r2 = _run(scenario, settings, harness)
+    with _read(settings) as s:
+        for rid in (r1, r2):
+            seqs = [
+                e.seq for e in s.scalars(
+                    select(Event).where(Event.run_id == rid)
+                    .order_by(Event.seq)
+                )
+            ]
+            assert seqs == list(range(1, len(seqs) + 1))
+            assert len(seqs) >= 3  # run_started .. run_ended at minimum
+
+
+def test_phase_start_event_emitted_on_handoff_turn(tmp_path: Path) -> None:
+    """W8: a turn that carries phase-start *and* a terminal signal
+    (HANDOFF_ITER1) must still record a signal_emit{kind:phase_start} —
+    otherwise the Phase 4 timeline/replay misses the phase transition."""
+    settings = _settings(tmp_path)
+    harness = ScriptedHarness([TextScript(HANDOFF_ITER1),
+                               TextScript(DONE_BLOCK)])
+
+    async def scenario(core: RelayCore) -> str:
+        pid = await core.register_project(tmp_path, "p")
+        run_id = await core.start_run(pid, "Go.")
+        assert (await core.wait_for_run(run_id)).status == "done"
+        return run_id
+
+    run_id = _run(scenario, settings, harness)
+    with _read(settings) as s:
+        events = list(
+            s.scalars(select(Event).where(Event.run_id == run_id)
+                      .order_by(Event.seq))
+        )
+        phase_emits = [
+            e for e in events
+            if e.kind == "signal_emit"
+            and e.payload.get("kind") == "phase_start"
+        ]
+        assert len(phase_emits) == 1
+        assert phase_emits[0].payload["args"]["phase"] == "planning"
+        # Exactly one, not duplicated by the carry-forward path.
+        handoff_emits = [
+            e for e in events
+            if e.kind == "signal_emit"
+            and e.payload.get("kind") == "handoff"
+        ]
+        assert len(handoff_emits) == 1
+
+
+def test_resume_missing_project_raises(tmp_path: Path) -> None:
+    """W8: resuming a run whose project row is gone must raise, not
+    silently fall back to running pi in the process CWD."""
+    settings = _settings(tmp_path)
+    harness = ScriptedHarness([TextScript(PAUSE_BLOCK)])
+
+    async def scenario(core: RelayCore) -> None:
+        pid = await core.register_project(tmp_path, "p")
+        run_id = await core.start_run(pid, "Go.")
+        assert (await core.wait_for_run(run_id)).status == "paused"
+        # Delete the project row out from under the paused run.
+        with _read(settings) as s:
+            s.execute(
+                text("DELETE FROM projects WHERE id = :i"), {"i": pid}
+            )
+            s.commit()
+        with pytest.raises(ValueError, match="project"):
+            await core.resume_run(run_id, "answer")
+
+    _run(scenario, settings, harness)
+
+
+def test_aclose_cancels_in_flight_run(tmp_path: Path) -> None:
+    """aclose() while a run is hung returns without deadlock and the
+    run is finalised (not left 'running')."""
+    settings = _settings(tmp_path)
+    harness = ScriptedHarness([HangScript()])
+
+    async def scenario(core: RelayCore) -> str:
+        pid = await core.register_project(tmp_path, "p")
+        run_id = await core.start_run(pid, "Go.", iter_timeout=30)
+        await asyncio.wait_for(harness.blocked.wait(), timeout=5)
+        return run_id  # _run's finally calls aclose() -> cancels it
+
+    run_id = _run(scenario, settings, harness)
+    with _read(settings) as s:
+        run = s.get(Run, run_id)
+        assert run is not None and run.status == "cancelled"

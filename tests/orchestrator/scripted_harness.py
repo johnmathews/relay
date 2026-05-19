@@ -44,11 +44,16 @@ Script = TextScript | HangScript
 
 
 class ScriptedSession:
-    def __init__(self, script: Script, idx: int) -> None:
+    def __init__(
+        self, script: Script, idx: int, blocked: asyncio.Event | None = None
+    ) -> None:
         self._script = script
         self.session_id = f"scripted-{idx}"
         self._cancelled = asyncio.Event()
         self._final: SessionEnded | None = None
+        # Set right before a HangScript blocks, so a test can await the
+        # exact moment the iter is hung instead of sleeping (no races).
+        self._blocked = blocked
 
     async def events(self) -> AsyncIterator[HarnessEvent]:
         now = time.time()
@@ -69,6 +74,8 @@ class ScriptedSession:
             self._final = ended
             yield ended
         else:  # HangScript — block until cancelled / timed out.
+            if self._blocked is not None:
+                self._blocked.set()
             await self._cancelled.wait()
 
     async def cancel(self) -> None:
@@ -92,6 +99,9 @@ class ScriptedHarness:
     def __init__(self, scripts: list[Script]) -> None:
         self._scripts = scripts
         self._calls = 0
+        # Fired by the first HangScript session when it actually blocks;
+        # lets cancel/aclose tests await that point deterministically.
+        self.blocked = asyncio.Event()
 
     async def spawn(
         self,
@@ -108,4 +118,4 @@ class ScriptedHarness:
             if idx < len(self._scripts)
             else TextScript("(no script)")
         )
-        return ScriptedSession(script, idx)
+        return ScriptedSession(script, idx, blocked=self.blocked)

@@ -112,8 +112,10 @@ implementation:
   orchestrator I/O. Nothing above `relay_v2.db` constructs an engine.
 - Backend: FastAPI + Pydantic v2 + Uvicorn; SQLite via SQLAlchemy.
 - Frontend: Vue 3 + Pinia + Pinia Colada + Vite, in `frontend/`.
-- Console script: `relay` (`relay serve`, `relay start`, `relay status`,
-  `relay cancel`, `relay install-skill`). Default bind `127.0.0.1:7800`.
+- Console script: `relay`. Implemented today: `relay serve`,
+  `relay --version` (Phase 0 subset). `relay start` / `status` /
+  `cancel` / `install-skill` arrive in Phase 3+. Default bind
+  `127.0.0.1:7800`.
 - Pi integration tests are gated behind `PI_INTEGRATION=1`; harness
   unit tests run offline against the captured `scratch/*.jsonl` fixtures.
   Orchestrator tests live under `tests/orchestrator/` and drive the loop

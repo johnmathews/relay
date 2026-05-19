@@ -1,0 +1,82 @@
+"""W7: lifecycle-helper gaps — register_project idempotency, the
+provision_workspace git-success branch (never exercised because every
+loop test uses a non-git tmp dir), and compose_resume_prompt format."""
+
+from __future__ import annotations
+
+import asyncio
+import subprocess
+from pathlib import Path
+
+from relay_v2.config import Settings
+from relay_v2.db import init_db, make_async_engine, make_async_sessionmaker
+from relay_v2.orchestrator.lifecycle import (
+    compose_resume_prompt,
+    provision_workspace,
+    register_project,
+)
+
+
+def _sm(tmp_path: Path):  # type: ignore[no-untyped-def]
+    settings = Settings(data_dir=tmp_path / ".relay")
+    init_db(settings)
+    return make_async_sessionmaker(
+        make_async_engine(settings.async_db_url)
+    )
+
+
+def test_register_project_is_idempotent(tmp_path: Path) -> None:
+    sm = _sm(tmp_path)
+
+    async def scenario() -> tuple[int, int]:
+        a = await register_project(sm, tmp_path, "proj")
+        b = await register_project(sm, tmp_path, "proj-again")
+        return a, b
+
+    a, b = asyncio.run(scenario())
+    assert a == b  # same row, not a duplicate
+
+
+def test_provision_workspace_git_success(tmp_path: Path) -> None:
+    """A real git work tree → a per-run worktree + branch are created
+    (the success branch all loop tests skip via non-git tmp dirs)."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo,
+                    check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo,
+                    check=True)
+    subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "init"],
+                    cwd=repo, check=True)
+
+    data_dir = tmp_path / ".relay"
+
+    async def scenario() -> tuple[Path | None, str | None, Path]:
+        return await provision_workspace(repo, data_dir, "run-xyz")
+
+    wt, branch, run_dir = asyncio.run(scenario())
+    assert wt is not None and wt.exists()
+    assert branch == "relay/run-xyz"
+    assert run_dir == data_dir / "runs" / "run-xyz"
+
+
+def test_provision_workspace_non_git_falls_back(tmp_path: Path) -> None:
+    """Non-git root → no worktree/branch, run_dir still provisioned
+    (the fallback every loop test relies on, now explicitly asserted)."""
+    data_dir = tmp_path / ".relay"
+
+    async def scenario() -> tuple[Path | None, str | None, Path]:
+        return await provision_workspace(tmp_path, data_dir, "run-1")
+
+    wt, branch, run_dir = asyncio.run(scenario())
+    assert wt is None and branch is None
+    assert run_dir.exists()
+
+
+def test_compose_resume_prompt_format() -> None:
+    out = compose_resume_prompt("Implement W3.", "A or B?", "Use A.")
+    assert out.startswith("Implement W3.")
+    assert "---" in out
+    assert 'Answer to the paused question ("A or B?")' in out
+    assert out.rstrip().endswith("Use A.")

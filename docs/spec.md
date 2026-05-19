@@ -442,7 +442,13 @@ in v2 may not require subagents in the initial port.
 
 ### 6.1 Runtime model (ADR-19, ADR-21)
 
-The pseudocode above is the contract; this is how it is hosted.
+The pseudocode above is the *behavioural* contract, illustrative not
+literal: the production loop factors the event stream into `_drive_iter`
+(stream + per-turn detection + timeout/cancel) and `_finish_iter` (close
+the iter row + `iter_ended`), and the bound is
+`max(max_iters, paused_seq+1)` not `max_iters` (ADR-22, §6.2).
+`docs/orchestrator.md` documents the as-built structure (and defers to
+this section on any disagreement).
 `RelayCore` is the single shared service object — the loop, and (later)
 REST routes and MCP tools, mutate state only through it (ADR-07/ADR-15).
 It owns an `asyncio.Queue` of run-start requests and a long-lived
@@ -486,7 +492,11 @@ context per iter still holds — the answer travels in the prompt, never
 via pi session resume (`resume_from` stays `None`). The artifacts dir
 (`RELAY_RUN_DIR`, §3.3) and a best-effort per-run git worktree (ADR-13;
 degrades to the project root when it is not a git work tree, e.g.
-fixture runs) are provisioned at `start_run`.
+fixture runs) are provisioned at `start_run`. The loop bound on resume
+is `max(max_iters, paused_seq + 1)`, not `max_iters` — a resumed run is
+guaranteed at least one post-answer iter even if it paused on its last
+budgeted iter (ADR-22). For a fresh run (`start_seq == 0`) this is
+exactly `max_iters`.
 
 ## 7. REST API surface
 
@@ -756,12 +766,22 @@ Carried from `motivation.md` risks; resolved as design progresses.
   `cacheWrite`/`totalTokens` and a `cost` sub-object (`cost.total` in
   USD). Open part: per-iter aggregation strategy for the OTel/Langfuse
   export (Phase 7) — not consumed in Phase 1.
-- **OQ-4.** Worktree handling — confirm the v1 patterns (per-run
-  branch, `.claude/worktrees/eng-*` naming) port cleanly or need
-  revision.
-- **OQ-5.** Pi version pinning strategy. Pi releases weekly; relay v2
-  needs a known-good version pin in `pyproject.toml` or a
-  `.tool-versions` file.
+- **OQ-4.** *Resolved (2026-05-19, W7).* `provision_workspace`
+  (`orchestrator/lifecycle.py`, ADR-13) creates a best-effort per-run
+  git worktree at `<data_dir>/worktrees/<run_id>` on branch
+  `relay/<run_id>`, degrading to the project root when the root is not
+  a git work tree (e.g. fixture runs). The v1 per-run-branch pattern
+  ports; the path/branch naming is relay-data-dir-relative rather than
+  v1's `.claude/worktrees/eng-*`. Both the success and fallback
+  branches are covered by `tests/orchestrator/test_lifecycle.py`.
+- **OQ-5.** *Resolved (2026-05-19, W4 / ADR pre-phase).* Pi is pinned to
+  **0.74.0** via a committed `.tool-versions` file (the human-facing
+  pin) plus `RELAY_PI_EXPECTED_VERSION` (`Settings.pi_expected_version`,
+  default `0.74.0`). `PiHarness` runs a best-effort `pi --version` probe
+  once on first spawn and logs a non-fatal warning on mismatch
+  (`pi_version_mismatch_warning`). The pin is intentionally below
+  upstream; bumping it is a deliberate maintenance task (re-run the
+  de-risking fixtures, then change `.tool-versions` + the default).
 - **OQ-6.** Pi auth.json refresh — does relay need to monitor
   expiration, or does pi handle silently?
 

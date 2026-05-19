@@ -107,3 +107,15 @@ def test_unknown_event_types_are_ignored_gracefully() -> None:
     assert isinstance(events[0], SessionStarted)
     assert isinstance(events[-1], SessionEnded)
     assert len(events) == 2  # the two unknowns produced nothing
+
+
+def test_session_resume_fixtures_share_session_id() -> None:
+    """W7: the two captured resume invocations exist as ground truth but
+    were never asserted. Both map to a SessionStarted, and pi carries the
+    same session id across the resume (findings.md)."""
+    run1 = map_pi_events(load_jsonl("test_session_resume_run1.jsonl"))
+    run2 = map_pi_events(load_jsonl("test_session_resume_run2.jsonl"))
+    assert isinstance(run1[0], SessionStarted)
+    assert isinstance(run2[0], SessionStarted)
+    assert run1[0].session_id == "019e3f92-d7ee-70de-b1ff-89ad7d681ee7"
+    assert run2[0].session_id == run1[0].session_id
