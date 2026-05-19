@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**Phases 0–3 are complete.** Phase 0 scaffold + Phase 1 harness layer +
+**Phases 0–4 are complete.** Phase 0 scaffold + Phase 1 harness layer +
 Phase 2 orchestrator (`RelayCore`, append-only `EventStore`, chained-iter
 `run_loop`, run lifecycle, `RELAY_*` preamble). Phase 3 adds the **REST
 API + persistence** (`src/relay_v2/api/`, `src/relay_v2/sse.py`): every
@@ -15,16 +15,31 @@ post-commit fan-out + DB-tail `Last-Event-ID` replay/cutover). Every
 route is a thin adapter over the single shared `RelayCore` (ADR-07/15);
 new capability was added as `RelayCore` service methods, not route
 logic. SSE only tails the event store (ADR-10). Auto-generated OpenAPI
-3.1 validated. Verified against a scripted-harness double; `uv run
-pytest` green (138 passed, pi e2e gated behind `PI_INTEGRATION=1`),
-`ruff`/`mypy --strict` clean, coverage 91%. The next coding work is
-**Phase 4 (dashboard MVP)** in `docs/plan.md`. Operational refs:
-`docs/harness.md`, `docs/orchestrator.md`, `docs/api.md`. Design docs
-(`docs/`) and the pi de-risking `scratch/` dir remain the canonical
-context. New ADRs: ADR-19/20/21 (Phase 2 — orchestrator runtime,
-pause/resume, async DB), ADR-22 (resume forward-progress, pre-Phase-3
-hardening), ADR-23 (SSE broadcaster + Last-Event-ID cutover), ADR-24
-(API test toolchain).
+3.1 validated. Phase 4 adds the **Vue 3 dashboard MVP** (`frontend/`):
+the primary control plane per ADR-15/spec §9 — Hub, Project view
+(runs/prompts/files panes), 4-step New-Run wizard with side-effect-free
+preview, Run-detail with a live SSE timeline + iters/artifacts/worktree
+panes, prompts CRUD, project register/unregister. A typed
+`openapi-fetch` client is generated from `/openapi.json`; Pinia Colada
+is the REST cache (SSE pushes coalesce cache invalidations); the file
+render pipeline is markdown-it + lazily-loaded shiki + dynamic-import
+mermaid + diff2html. The Worktree pane is deliberately degraded to
+read-only `worktree_path`/`branch` (live git status/diff is a named
+post-MVP gap — Phase-4 scoping decision). Verified against a
+scripted-harness double + the running backend; `uv run pytest` green
+(142 passed, 3 pi-e2e gated behind `PI_INTEGRATION=1`), `ruff`/`mypy
+--strict` clean, backend coverage 92%; the frontend gate (`npm run
+check` = eslint `--max-warnings 0` + `vue-tsc` + vitest, 136 passed)
+is green, eager bundle ~41 KB gz (heavy renderers lazy). The next
+coding work is **Phase 5 (MCP server)** in `docs/plan.md`. Operational
+refs: `docs/harness.md`, `docs/orchestrator.md`, `docs/api.md`,
+`frontend/README.md`. Design docs (`docs/`) and the pi de-risking
+`scratch/` dir remain the canonical context. New ADRs: ADR-19/20/21
+(Phase 2 — orchestrator runtime, pause/resume, async DB), ADR-22
+(resume forward-progress, pre-Phase-3 hardening), ADR-23 (SSE
+broadcaster + Last-Event-ID cutover), ADR-24 (API test toolchain),
+ADR-25 (run-artifacts second sandboxed root), ADR-26 (Phase-4 frontend
+toolchain mandates).
 
 ## What relay v2 is
 
@@ -129,7 +144,20 @@ implementation:
   engine (deps `aiosqlite`, `sqlalchemy[asyncio]` → `greenlet`) for all
   orchestrator I/O. Nothing above `relay_v2.db` constructs an engine.
 - Backend: FastAPI + Pydantic v2 + Uvicorn; SQLite via SQLAlchemy.
-- Frontend: Vue 3 + Pinia + Pinia Colada + Vite, in `frontend/`.
+- Frontend (`frontend/`, Phase 4): Vue 3 + vue-router **v5** + Pinia +
+  Pinia Colada + Vite, TypeScript strict. Typed API client generated
+  by `openapi-typescript` 7 + `openapi-fetch` off the running backend's
+  `/openapi.json` (`npm run gen:api`; backend must be up). Render
+  pipeline: markdown-it (+footnote/task-list, `html:false`), shiki
+  (`createHighlighterCore` + JS regex engine + lazily-imported
+  grammars — never the convenience bundle), mermaid (dynamic
+  `import()` only), diff2html. Gate: `npm run check` = `eslint
+  --max-warnings 0` + `vue-tsc` + `vitest` (jsdom, v8 coverage —
+  vitest 4 has no `coverage.all` toggle, scope via `coverage.include`).
+  Vite dev-proxies `/api` → `:7800` with a long `proxyTimeout` and
+  no SSE buffering. Rationale + the five toolchain mandates: **ADR-26**;
+  `frontend/README.md` has the operational notes. The full gate is
+  Python (`ruff`/`mypy`/`pytest`) **and** the frontend `npm run check`.
 - Console script: `relay`. Implemented today: `relay serve`,
   `relay --version` (Phase 0 subset). `relay start` / `status` /
   `cancel` / `install-skill` arrive in Phase 3+. Default bind

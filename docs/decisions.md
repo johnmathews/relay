@@ -1040,3 +1040,84 @@ Same guards as the project browser: binary (NUL in first 8 KiB) → 415,
   `worktree_path`/`branch`).
 
 ---
+
+## ADR-26 — Phase-4 frontend toolchain mandates + library currency calls
+
+**Status:** Accepted (2026-05-19). Records the Phase-4 dashboard
+implementation decisions; the plan.md stack was kept (no swaps) but
+five libraries had moved since the plan was written and needed precise
+usage, plus two implementation calls.
+
+**Context.** `docs/plan.md` Phase 4 names a frontend stack (Vue 3,
+Pinia, Pinia Colada, vue-router, markdown-it, shiki, mermaid,
+diff2html, vitest, openapi-typescript). A 2026-05 currency review
+(scoping discussion `260519-phase-4-dashboard-scope.md`) cleared both
+load-bearing risks (Pinia Colada 1.3 ships native key invalidation;
+openapi-typescript 7 has full OpenAPI-3.1 support with openapi-fetch as
+the runtime companion) so the stack was kept whole. But five details
+were under-specified or had drifted and would silently regress if not
+pinned down, and two implementation choices had to be made.
+
+**Decision — the five mandates (implemented, not deferred).**
+
+1. **vue-router is v5**, not the v4 the plan implies. Adopted directly;
+   non-breaking for plain `createRouter`/`createWebHistory`.
+2. **shiki** is built with `createHighlighterCore` (`shiki/core`) + the
+   JavaScript regex engine (`@shikijs/engine-javascript`) + per-language
+   grammars dynamically `import()`ed and cached — **never** the
+   convenience bundle / `getHighlighter` / `bundledLanguages` (it pulls
+   megabytes of TextMate grammars into the main chunk). Type-only
+   `import type` from `shiki/core` is fine (build-erased).
+3. **mermaid** is loaded via dynamic `import('mermaid')` on first
+   diagram render only, cached thereafter — **never** a static
+   top-level import (it is the single heaviest dependency).
+4. **Vite SSE dev-proxy**: the `/api` proxy sets an explicit long
+   `proxyTimeout` and, for `text/event-stream` responses, disables
+   buffering (`X-Accel-Buffering: no`, `flushHeaders()`), or the live
+   SSE tail stalls in dev.
+5. **vitest v4 has no `coverage.all` toggle.** The plan said "set
+   `coverage.all` explicitly"; verified against vitest 4's
+   `CoverageOptions` type the option was **removed** — v4
+   unconditionally counts every file matched by `coverage.include`
+   (the old `all: true` behavior is now the only behavior). The mandate
+   intent is met by explicitly scoping `coverage.include` to
+   `src/**/*.{ts,vue}` with generated/config/test excludes. The literal
+   mandate text predates the v4 type change; recorded here so it is not
+   "fixed" back to a now-invalid option.
+
+**Decision — two implementation calls.**
+
+- **diff2html kept** (not swapped for v-code-diff). spec §9.4 and
+  plan.md both prescribe it; it is an already-pinned dep (`^3.4`); only
+  its stable `html()` formatter is used (the unified patch is generated
+  in-house via a local LCS, no extra `diff` dep). The
+  "maintenance-inactive" concern (scope-doc mandate 5) carries little
+  risk on a single-user localhost MVP and no concrete integration
+  blocker was hit. v-code-diff remains the documented future
+  alternative if the diff surface grows.
+- **Routed views are keyed by `route.fullPath`** (`<RouterView
+  v-slot>` + `:key`). Vue Router reuses a component instance on a
+  param-only navigation (`/runs/run-1` → `/runs/run-2`); the dashboard
+  carries per-run module-scope state (the run-detail "opened" guard, an
+  SSE `EventStream`, per-source UI stores resolved in setup). Remounting
+  on id change is the standard, lowest-risk fix and also closes an
+  independent-review finding that a pause→resume re-`open()` on the same
+  run could orphan an `EventSource` (the events store now also closes
+  any existing stream before re-opening — defense in depth, ADR-23's
+  no-reconnect-storm contract upheld on the client).
+
+**Consequences.**
+- Phase 4 stays a frontend-only phase; no backend contract change
+  beyond ADR-25 (already accepted). The Worktree pane is degraded to
+  read-only `worktree_path`/`branch` per the Phase-4 scoping decision —
+  live git status/diff is a named post-MVP gap.
+- The project gate is now two-sided: Python (`ruff`/`mypy`/`pytest`)
+  **and** the frontend `npm run check` (`eslint --max-warnings 0` +
+  `vue-tsc` + `vitest`). CLAUDE.md's Toolchain section and
+  `frontend/README.md` carry the operational form; spec §9 gains a
+  pointer here.
+- These five points are easy to regress (a future `import` of the
+  shiki bundle or a static mermaid import would silently blow the
+  bundle budget); they live in code comments at each site **and** here.
+
+---

@@ -640,7 +640,11 @@ artifacts, managing prompts, and registering projects.
     did the agent actually do?"
   - **Worktree pane** — git status, changed files, ability to diff
     individual files (uses git CLI under the hood via the
-    orchestrator).
+    orchestrator). **MVP status:** degraded to a read-only
+    `worktree_path` + `branch` view (from the run-detail response); the
+    live git-status / per-file-diff endpoints are a deliberate post-MVP
+    gap (Phase-4 scoping decision; ADR-25/ADR-26). The pane is built
+    ready for the richer data.
   - **Pause action** (when status=paused) — the agent's question is
     shown rendered; the answer textarea supports markdown; submit
     → POST `/api/runs/:id/resume`.
@@ -674,7 +678,15 @@ the dashboard treats live and historical the same.
 - **Diff** (when comparing two files) → `diff2html` side-by-side or
   unified view
 
-The pipeline is client-side. The backend serves raw bytes.
+The pipeline is client-side. The backend serves raw bytes. The same
+`FileTree`/`FileViewer` + pipeline serves both the project Files pane
+and the run Artifacts pane via one `BrowserSource` abstraction (one
+tree/viewer, two data sources — mirrors ADR-25's single-sourced
+backend). **Toolchain mandates** for this pipeline and the wider
+frontend (vue-router v5; shiki core + JS engine + lazy grammars, never
+the bundle; mermaid dynamic-import only; the Vite SSE dev-proxy; the
+vitest-4 coverage reality; the diff2html call) are recorded in
+**ADR-26**; `frontend/README.md` has the operational form.
 
 ## 10. Observability
 
