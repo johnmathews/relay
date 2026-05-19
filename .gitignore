@@ -1,0 +1,57 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+.installed.cfg
+MANIFEST
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# Test / lint / type caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.hypothesis/
+*.cover
+
+# --- Node / Vue (frontend, Phase 4) ---
+node_modules/
+.vite/
+.parcel-cache/
+
+# --- Relay runtime data ---
+# When relay v2 runs against this repo itself (dogfooding), it writes here.
+.relay/
+
+# --- OS junk ---
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# --- Editors ---
+.idea/
+.vscode/
+
+# --- Local env / secrets ---
+.env
+.env.local
+.env.*.local
+
+# --- Logs ---
+*.log
