@@ -584,6 +584,19 @@ Authentication: deferred to MVP+1 (single-user localhost). When multi-
 user arrives, MCP tools authenticate via a bearer token in the
 Streamable HTTP headers — same auth path as REST.
 
+**Toolchain (ADR-27).** Implemented with the **bundled** official MCP
+SDK (`mcp.server.fastmcp.FastMCP` + `mcp.streamable_http_app()`), not
+the standalone `jlowin/fastmcp`. Pinned `mcp>=1.27.1,<2` — the `<2`
+cap is load-bearing (v2 rearchitects the transport). The server is
+mounted in `relay_v2.app`'s lifespan with `async with
+mcp.session_manager.run():` wrapping the existing body (a sub-app
+mount does not auto-run its lifespan). `relay__tail_events` is
+implemented as a bounded snapshot of events after `since_seq` (a
+caller-advanced cursor): an MCP tool returns a single value, so the
+`AsyncIterator[Event]` signature above is realized as pull-paged
+snapshots — same data as the SSE tail (ADR-23), polled rather than
+pushed. See ADR-27 and `docs/mcp.md`.
+
 ## 9. Dashboard (Vue 3 + Pinia)
 
 `frontend/` directory. Vite-built static bundle served by FastAPI in

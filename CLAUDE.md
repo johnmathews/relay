@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**Phases 0–4 are complete.** Phase 0 scaffold + Phase 1 harness layer +
+**Phases 0–5 are complete.** Phase 0 scaffold + Phase 1 harness layer +
 Phase 2 orchestrator (`RelayCore`, append-only `EventStore`, chained-iter
 `run_loop`, run lifecycle, `RELAY_*` preamble). Phase 3 adds the **REST
 API + persistence** (`src/relay_v2/api/`, `src/relay_v2/sse.py`): every
@@ -30,17 +30,29 @@ scripted-harness double + the running backend; `uv run pytest` green
 (142 passed, 3 pi-e2e gated behind `PI_INTEGRATION=1`), `ruff`/`mypy
 --strict` clean, backend coverage 92%; the frontend gate (`npm run
 check` = eslint `--max-warnings 0` + `vue-tsc` + vitest, 136 passed)
-is green, eager bundle ~41 KB gz (heavy renderers lazy). The next
-coding work is **Phase 5 (MCP server)** in `docs/plan.md`. Operational
-refs: `docs/harness.md`, `docs/orchestrator.md`, `docs/api.md`,
-`docs/dashboard.md` (Phase 4; `frontend/README.md` is the dev
-quick-start). Design docs (`docs/`) and the pi de-risking
-`scratch/` dir remain the canonical context. New ADRs: ADR-19/20/21
-(Phase 2 — orchestrator runtime, pause/resume, async DB), ADR-22
-(resume forward-progress, pre-Phase-3 hardening), ADR-23 (SSE
-broadcaster + Last-Event-ID cutover), ADR-24 (API test toolchain),
-ADR-25 (run-artifacts second sandboxed root), ADR-26 (Phase-4 frontend
-toolchain mandates).
+is green, eager bundle ~41 KB gz (heavy renderers lazy). Phase 5 adds
+the **MCP server** (`src/relay_v2/mcp/`): a FastMCP server mounted at
+`/mcp` on the same app, whose seven spec §8 tools
+(`relay__list_runs/get_run/start_run/cancel_run/pause_response/
+tail_events/read_artifact`) are thin adapters over the single shared
+`RelayCore`, reusing the REST `api/schemas.py` Pydantic models
+(ADR-07/15) — no proxying, no new core capability. Mounted in the app
+lifespan with `async with mcp.session_manager.run():` (the #1367
+footgun: a mounted sub-app's lifespan is not auto-run). `uv run
+pytest` green (158 passed, 3 pi-e2e gated), `ruff`/`mypy --strict`
+clean, backend coverage 91%. The next coding work is **Phase 6** in
+`docs/plan.md`. Operational refs: `docs/harness.md`,
+`docs/orchestrator.md`, `docs/api.md`, `docs/dashboard.md`,
+`docs/mcp.md` (Phase 5; `docs/mcp-config.example.json` is the client
+registration snippet; `frontend/README.md` is the dev quick-start).
+Design docs (`docs/`) and the pi de-risking `scratch/` dir remain the
+canonical context. New ADRs: ADR-19/20/21 (Phase 2 — orchestrator
+runtime, pause/resume, async DB), ADR-22 (resume forward-progress,
+pre-Phase-3 hardening), ADR-23 (SSE broadcaster + Last-Event-ID
+cutover), ADR-24 (API test toolchain), ADR-25 (run-artifacts second
+sandboxed root), ADR-26 (Phase-4 frontend toolchain mandates), ADR-27
+(Phase-5 MCP toolchain: bundled SDK, `mcp>=1.27.1,<2` pin, lifespan
+session-manager wiring).
 
 ## What relay v2 is
 
@@ -145,6 +157,16 @@ implementation:
   engine (deps `aiosqlite`, `sqlalchemy[asyncio]` → `greenlet`) for all
   orchestrator I/O. Nothing above `relay_v2.db` constructs an engine.
 - Backend: FastAPI + Pydantic v2 + Uvicorn; SQLite via SQLAlchemy.
+- MCP server (Phase 5, ADR-27): the **bundled** official SDK
+  (`mcp.server.fastmcp`, dep pinned `mcp>=1.27.1,<2` — the `<2` cap is
+  load-bearing, v2 rearchitects the transport), built with
+  `streamable_http_path="/"` and mounted at `/mcp` in the app lifespan,
+  which wraps its body in `async with mcp.session_manager.run():` (a
+  mounted sub-app's ASGI lifespan is not auto-run — the #1367 footgun).
+  Tools are thin `RelayCore` adapters reusing `api/schemas.py`. Tests:
+  `tests/mcp/` (`test_mcp_tools.py` in-process via `FastMCP.call_tool`;
+  `test_mcp_mount.py` end-to-end through the real lifespan). Ops ref:
+  `docs/mcp.md`.
 - Frontend (`frontend/`, Phase 4): Vue 3 + vue-router **v5** + Pinia +
   Pinia Colada + Vite, TypeScript strict. Typed API client generated
   by `openapi-typescript` 7 + `openapi-fetch` off the running backend's

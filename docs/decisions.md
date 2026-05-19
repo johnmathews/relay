@@ -1121,3 +1121,70 @@ pinned down, and two implementation choices had to be made.
   bundle budget); they live in code comments at each site **and** here.
 
 ---
+
+## ADR-27 — Phase-5 MCP toolchain: bundled official SDK, pinned `<2`
+
+**Status:** Accepted (2026-05-19). Records the Phase-5 MCP server
+implementation decisions. Resolves the `docs/plan.md` Phase-5 named
+risk ("Streamable HTTP transport tooling churn. Mitigation: pin the
+`mcp` Python package version").
+
+**Context.** Phase 5 mounts a FastMCP server at `/mcp` so external MCP
+clients (Claude Code, Claude Desktop) can drive relay runs. Two
+packages could provide FastMCP: (a) the **bundled** `mcp.server.fastmcp`
+that ships inside the official `modelcontextprotocol/python-sdk`
+(FastMCP 1.0, donated into the SDK in 2024, maintenance-stable), and
+(b) the **standalone** `jlowin/fastmcp` 2.x (a separately-versioned,
+fast-moving superset). The MCP SDK is fast-moving and the project plan
+flags transport-tooling churn as the one Phase-5 risk.
+
+**Decision.**
+
+- **Use the bundled official SDK** — `mcp.server.fastmcp.FastMCP` +
+  `mcp.streamable_http_app()`. Rejected: standalone `fastmcp` 2.x.
+  Rationale: ADR-07 already specifies the FastAPI-shaped
+  `FastMCP.streamable_http_app()` mount, which *is* the bundled SDK's
+  API; using the bundled SDK keeps one fast-moving dependency instead
+  of two; a smaller surface is itself the churn mitigation the plan
+  asks for. The standalone package's richer FastAPI helpers
+  (`http_app`, `combine_lifespans`) are not needed for a single-user
+  localhost mount.
+- **Pin `mcp>=1.27.1,<2`.** The `<2` upper cap is load-bearing: the
+  official repo split at v1.25.0 — `v1.x` is maintenance-only, `main`
+  is v2 which *rearchitects the transport layer we mount*. Official
+  guidance is to pin `mcp>=1.25,<2`; we floor at `1.27.1` (latest
+  stable, includes the Pydantic-2.13 output-schema-generation fix;
+  note the observable 400→404 unknown-session-id status change landed
+  at 1.26.0). `uv.lock` records the exact resolved version (`1.27.1`);
+  the `<2` cap in `pyproject.toml` is the durable mitigation.
+- **Lifespan session-manager wiring (the #1367 footgun).** A sub-app
+  mounted via `app.mount()` does **not** get its lifespan auto-run by
+  Starlette/FastAPI; `mcp.streamable_http_app()`'s
+  `StreamableHTTPSessionManager` is started in that lifespan. The host
+  `relay_v2.app` lifespan therefore wraps its existing body in
+  `async with mcp.session_manager.run():`. Omitting this makes every
+  `/mcp` request hang — so it gets an explicit integration test (W3).
+- **Streaming-tool shape.** `spec.md §8` types `relay__tail_events` as
+  `-> AsyncIterator[Event]`, but an MCP tool result is a single value;
+  a live async generator cannot be a tool return. The faithful
+  tool-shaped equivalent is a **bounded snapshot** of events after
+  `since_seq` (a cursor the caller advances), which is exactly the
+  data the SSE tail carries, just pull-paged instead of pushed. This
+  spec-vs-impl delta is intentional and documented in `docs/mcp.md`
+  and the tool docstring rather than left implicit. Live push remains
+  available via the existing SSE endpoint (ADR-23); MCP clients poll.
+
+**Consequences.**
+- One new runtime dependency (`mcp`), pinned `<2`; `uv.lock` updated.
+- Phase 5 stays backend-only and additive: a new `src/relay_v2/mcp/`
+  package and one `app.py` lifespan wrap; no REST/SSE/orchestrator
+  contract changes. All seven tools are thin `RelayCore` adapters
+  reusing the `api/schemas.py` Pydantic models (ADR-07/15) — no new
+  `RelayCore` capability.
+- `spec.md §8` gains a toolchain note pointing here; the seven-tool
+  contract is unchanged in intent (the `tail_events` return shape is
+  clarified, not redesigned).
+- Upgrading across the v1.x→v2 boundary is a deliberate, ADR-gated
+  action — not an incidental `uv lock --upgrade`.
+
+---

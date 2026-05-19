@@ -2,10 +2,21 @@
 
 Surface: a ``/health`` route, the Phase 3 REST API (runs, projects,
 prompts, file browser, SSE event stream — all thin adapters over the
-single shared :class:`RelayCore`, ADR-07/ADR-15), and a lifespan that
-materialises the schema and owns the orchestrator runtime (RelayCore
-started/stopped with the app — ADR-07/ADR-19). The MCP server (Phase 5)
-and OTel export (Phase 7) remain out of scope here.
+single shared :class:`RelayCore`, ADR-07/ADR-15), the Phase 5 MCP server
+mounted at ``/mcp`` (same shared ``RelayCore``, ADR-27), and a lifespan
+that materialises the schema and owns the orchestrator runtime
+(RelayCore started/stopped with the app — ADR-07/ADR-19). OTel export
+(Phase 7) remains out of scope here.
+
+MCP wiring note (ADR-27, the #1367 footgun): a sub-app mounted via
+``app.mount()`` does **not** get its ASGI lifespan auto-run by
+Starlette, and ``streamable_http_app()``'s
+``StreamableHTTPSessionManager`` is started in that lifespan. So the
+host lifespan below explicitly enters ``mcp.session_manager.run()``
+around its body — without it every ``/mcp`` request hangs. The MCP
+server is built and mounted inside the lifespan (where the shared
+``core`` exists); ``RelayCore.__init__`` constructs a DB engine eagerly,
+so core must stay lazily created in the lifespan, not at import time.
 """
 
 from __future__ import annotations
@@ -20,6 +31,7 @@ from relay_v2.config import Settings, get_settings
 from relay_v2.core import RelayCore
 from relay_v2.db import init_db
 from relay_v2.harness import Harness
+from relay_v2.mcp import create_mcp_server
 from relay_v2.version import __version__
 
 
@@ -44,8 +56,18 @@ def create_app(
         core = RelayCore(resolved, harness=harness)
         app.state.core = core
         await core.start()
+        # Build + mount the MCP server now that the shared core exists.
+        # Mounting during lifespan startup is fine — Starlette matches
+        # against ``app.router.routes`` per request, so appending the
+        # Mount before ``yield`` makes ``/mcp`` routable for every
+        # subsequent request. The sub-app's own ASGI lifespan is *not*
+        # run by Starlette (ADR-27 #1367 footgun); we run its session
+        # manager explicitly via the ``async with`` below.
+        mcp = create_mcp_server(core, resolved)
+        app.mount("/mcp", mcp.streamable_http_app())
         try:
-            yield
+            async with mcp.session_manager.run():
+                yield
         finally:
             await core.aclose()
             engine.dispose()

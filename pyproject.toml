@@ -13,6 +13,9 @@ dependencies = [
     "pydantic-settings>=2.3",
     "sqlalchemy[asyncio]>=2.0",
     "aiosqlite>=0.22.1",
+    # MCP server (Phase 5). Bundled official SDK; `<2` cap is
+    # load-bearing — v2 rearchitects the transport layer we mount. ADR-27.
+    "mcp>=1.27.1,<2",
 ]
 
 [project.scripts]
