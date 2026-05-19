@@ -45,6 +45,11 @@ sessions.
 
 ## Install & run
 
+> For a single end-to-end walkthrough (install → first run → dashboard
+> → register MCP → optional Langfuse → the eng-team demo acceptance →
+> Docker), see [`docs/getting-started.md`](docs/getting-started.md).
+> The section below is the quickstart.
+
 Requires [`uv`](https://docs.astral.sh/uv/) and Python 3.13.
 
 ```bash
