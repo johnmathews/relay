@@ -4,19 +4,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**Phases 0–2 are complete.** On top of the Phase 0 scaffold and the
-Phase 1 harness layer, Phase 2 adds the orchestrator: `RelayCore` (the
-single shared service + queue/supervisor runtime, wired into the app
-lifespan), the append-only `EventStore`, the chained-iter `run_loop`
-(spec.md §6), run lifecycle (start/cancel/pause/resume), and the
-`RELAY_*` preamble builder. Verified end-to-end against a scripted
-harness double (`tests/orchestrator/`); `uv run pytest` is green
-(pi e2e gated behind `PI_INTEGRATION=1`), `ruff`/`mypy --strict` clean.
-The next coding work is **Phase 3 (REST API + persistence)** in
-`docs/plan.md`. Operational refs: `docs/harness.md`, `docs/orchestrator.md`.
-Design docs (`docs/`) and the pi de-risking `scratch/` directory remain
-the canonical context. New ADRs this phase: ADR-19 (orchestrator
-runtime), ADR-20 (pause/resume persistence), ADR-21 (async DB engine).
+**Phases 0–3 are complete.** Phase 0 scaffold + Phase 1 harness layer +
+Phase 2 orchestrator (`RelayCore`, append-only `EventStore`, chained-iter
+`run_loop`, run lifecycle, `RELAY_*` preamble). Phase 3 adds the **REST
+API + persistence** (`src/relay_v2/api/`, `src/relay_v2/sse.py`): every
+spec §7 endpoint (runs create/list/get/cancel/resume/events/preview; SSE
+live stream; projects CRUD; sandboxed read-only file browser; versioned
+prompts CRUD), Pydantic v2 schemas, and the SSE broadcaster (in-process
+post-commit fan-out + DB-tail `Last-Event-ID` replay/cutover). Every
+route is a thin adapter over the single shared `RelayCore` (ADR-07/15);
+new capability was added as `RelayCore` service methods, not route
+logic. SSE only tails the event store (ADR-10). Auto-generated OpenAPI
+3.1 validated. Verified against a scripted-harness double; `uv run
+pytest` green (138 passed, pi e2e gated behind `PI_INTEGRATION=1`),
+`ruff`/`mypy --strict` clean, coverage 91%. The next coding work is
+**Phase 4 (dashboard MVP)** in `docs/plan.md`. Operational refs:
+`docs/harness.md`, `docs/orchestrator.md`, `docs/api.md`. Design docs
+(`docs/`) and the pi de-risking `scratch/` dir remain the canonical
+context. New ADRs: ADR-19/20/21 (Phase 2 — orchestrator runtime,
+pause/resume, async DB), ADR-22 (resume forward-progress, pre-Phase-3
+hardening), ADR-23 (SSE broadcaster + Last-Event-ID cutover), ADR-24
+(API test toolchain).
 
 ## What relay v2 is
 
@@ -103,6 +111,16 @@ implementation:
   (`uv run ruff check .`; `scratch/` is excluded — it is de-risking
   evidence, not source); types **`mypy`** strict (`uv run mypy`; package
   carries a `py.typed` marker).
+- Test async convention (ADR-24): `pytest-asyncio` runs in
+  `asyncio_mode = "auto"`. `tests/api/` uses bare `async def test_*` +
+  `httpx.AsyncClient` over `ASGITransport`, entering the real lifespan
+  via `app.router.lifespan_context`; `tests/orchestrator/` and
+  `tests/harness/` keep the explicit `asyncio.run()` wrapper pattern
+  (sync `def test_*`) — both coexist under the one `auto` config.
+  `create_app(settings, *, harness=)` is a scripted-harness injection
+  seam (mirrors the `settings` seam) so API tests never spawn pi.
+  `openapi-spec-validator` (dev-dep) asserts `/openapi.json` is valid
+  OpenAPI v3.
 - Schema management is hand-rolled `create_all` for the MVP (ADR-17);
   `src/relay_v2/db/migrations/` is a placeholder for future numbered
   upgrade scripts. Alembic is deferred.

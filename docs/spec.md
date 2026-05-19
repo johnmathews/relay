@@ -542,6 +542,16 @@ Paths are normalized; `..` traversal is rejected with 400. Binary files
 return 415 (frontend offers a download instead). Markdown and code are
 returned verbatim — rendering happens client-side.
 
+The `GET /api/events/:run_id` SSE feed is a passive post-commit tail of
+the event store (ADR-10 — it never writes). Its exact replay/cutover/
+close contract is **ADR-23**: subscribe-before-replay with a
+`seq > max_replayed_seq` cutover filter (gap-free, duplicate-free across
+`Last-Event-ID` reconnects); a finished run streams paginated history
+then EOF and returns `204` only when it has no events at/after
+`Last-Event-ID`; a bounded-queue close-on-full slow-consumer policy; and
+the `X-Accel-Buffering: no` header for nginx. See ADR-23 for the full
+rationale and rejected alternatives.
+
 Versioning: URL-prefixed (`/api/v1/...` if/when breaking changes
 arrive). MVP uses `/api/...` without explicit version.
 

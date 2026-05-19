@@ -52,6 +52,14 @@ Thumbs.db
 .env
 .env.local
 .env.*.local
+*.key
+*.pem
+*.secret
+credentials.json
 
 # --- Logs ---
 *.log
+
+# --- engineering-team / worktrees (run artifacts, not source) ---
+.claude/
+.engineering-team/

@@ -847,3 +847,139 @@ iter.
   ADR-20 (pause/resume persistence) is unaffected.
 
 ---
+
+## ADR-23 — SSE broadcaster + Last-Event-ID replay/cutover + finished-run close
+
+**Status:** Accepted (2026-05-19). Implements the Phase 3 SSE feed
+(`GET /api/events/:run_id`, spec.md §7/§9.3) on top of the existing
+event store without violating ADR-10.
+
+**Context.** The dashboard needs a live SSE tail of a run's events with
+`Last-Event-ID` reconnect, and a replay of a finished run that closes.
+ADR-10 makes the `events` table the single source of truth: SSE must be
+a passive *reader*, never a writer, and must not perturb the
+orchestrator loop, the harness, or per-run `seq` assignment. Two
+correctness hazards: (1) the replay→live cutover can drop or duplicate
+the event(s) committed while history is being read; (2) a slow SSE
+client must not be able to stall the single `EventStore.append`
+chokepoint (which also serialises SQLite's single writer).
+
+**Decision.**
+
+* **Post-commit passive observer.** A single in-process `Broadcaster`
+  (per-`run_id` registry of subscriber `asyncio.Queue`s) is attached to
+  the *one* `EventStore.append` chokepoint. `append` calls
+  `broadcaster.publish(...)` **after** the row is committed and its
+  `seq` is final, never before. A publish failure is caught and logged
+  and never breaks the append. The broadcaster owns no event data,
+  assigns no seq, and writes nothing — ADR-10 is preserved. It lives
+  behind `RelayCore` (ADR-07/15); routes reach it via
+  `app.state.core.broadcaster` and never construct one.
+
+* **Slow-consumer policy: bounded queue, close-on-full.** Each
+  subscriber gets a bounded `asyncio.Queue(maxsize=256)`. `publish` is
+  non-blocking (`put_nowait`); the only `await` in `publish` is the
+  registry lock, so a slow subscriber can never stall `append`. On a
+  full queue the broadcaster evicts the oldest item and enqueues a
+  `CLOSED` sentinel; the route ends that connection cleanly and the
+  browser reconnects with `Last-Event-ID`, whereupon the replay path
+  backfills the gap with zero loss. *Rejected: drop newest/oldest and
+  keep streaming* — that is a silent, unrecoverable gap in a still-open
+  stream, strictly worse than a clean close the client transparently
+  recovers from.
+
+* **Subscribe-before-replay + `seq > max_replayed_seq` cutover.** For a
+  live run the route subscribes to the broadcaster **first**, then
+  replays DB history with `seq > Last-Event-ID` (paginated) tracking
+  `max_replayed_seq`, then drains the live queue forwarding only events
+  with `seq > max_replayed_seq`. Subscribing first guarantees an event
+  committed during replay lands in the queue (no gap); the cutover
+  filter discards the queue copy of any event already emitted during
+  replay (no duplicate). Result: contiguous, gap-free, duplicate-free
+  ordering across reconnects.
+
+* **Finished-run = paginated history then EOF; 204 only when empty.**
+  A run whose status is terminal (`done`/`failed`/`cancelled`) will emit
+  no further events. `paused` is **not** terminal (it can resume) and is
+  treated as live. The plan's "204 on exhaustion" is interpreted
+  precisely: a `StreamingResponse` cannot send a 204 mid-stream, so the
+  route returns a real `204 No Content` **before** starting the stream
+  *only when* a finished run has zero events at/after `Last-Event-ID`;
+  if there ARE such events it streams them paginated then ends the
+  generator (clean EOF — the browser stops reconnecting to a finished
+  run on a clean close). A `?last_event_id=` query parameter is accepted
+  as a fallback for non-browser clients that cannot set the header; the
+  header wins when both are present.
+
+* **`X-Accel-Buffering: no`.** Sent alongside `Cache-Control: no-cache`
+  and `Connection: keep-alive`. Without it an nginx reverse proxy
+  buffers the response and SSE events arrive in bursts or stall instead
+  of live (plan.md Phase 3 risk note).
+
+**Consequences.**
+- ADR-10 holds: SSE adds no write path; the event store stays the single
+  source of truth and the only seq authority.
+- A wedged client costs at most one bounded queue then a forced clean
+  reconnect; it cannot block `append` or other subscribers.
+- One extra `refresh` per append surfaces the server-defaulted `ts` for
+  the SSE payload; no schema change, append's return value and seq logic
+  are unchanged (additive hook).
+- `EventStore` remains usable with no broadcaster (default `None`) for
+  headless orchestrator tests and scripts.
+- spec.md §7 gains a pointer to this ADR for the replay/cutover/close
+  contract (additive note, no rewrite).
+
+---
+
+## ADR-24 — `pytest-asyncio` (`asyncio_mode="auto"`) + `httpx.AsyncClient` for the API test suite
+
+**Status:** Accepted (2026-05-19). Phase 3 toolchain addition; recorded
+because it changes how tests are written and run.
+
+**Context.** Phases 1–2 test async code by wrapping each case in
+`asyncio.run()` and driving `RelayCore` directly — no HTTP. Phase 3 adds
+an ASGI surface (FastAPI). Exercising routes (and the SSE stream) end to
+end needs an async HTTP client driven inside the test's event loop, and
+dozens of `async def` route tests would each need a manual loop wrapper.
+`pytest-asyncio` and `httpx` were already declared dev-deps in Phase 0
+but unused (`asyncio_mode` unset, so bare `async def test_*` was silently
+skipped, not run).
+
+**Alternatives considered.**
+1. Keep the `asyncio.run()` wrapper pattern for API tests too — every
+   route test carries boilerplate; SSE streaming tests become awkward.
+2. FastAPI's sync `TestClient` (Starlette `TestClient`) — spins its own
+   loop in a thread; fights the lifespan-owned `RelayCore` /
+   `aiosqlite` async engine and the SSE generator. Poor fit for an
+   async-native stack.
+3. `pytest-asyncio` with `asyncio_mode="auto"` + `httpx.AsyncClient`
+   over `ASGITransport`, entering `app.router.lifespan_context` so the
+   real lifespan builds the shared `RelayCore`.
+
+**Decision.** Option 3. Add `asyncio_mode = "auto"` to
+`[tool.pytest.ini_options]`; the API suite (`tests/api/`) uses
+`httpx.AsyncClient(transport=ASGITransport(app=app))`. Also add
+`openapi-spec-validator` as a dev-dep to assert the auto-generated
+schema is structurally valid OpenAPI v3 (plan.md Phase 3 verification),
+rather than eyeballing `curl /openapi.json`.
+
+**Rationale.** `auto` mode runs bare `async def test_*` with no
+per-test marker, so API tests stay clean. It is **backward compatible**:
+the Phase 1/2 suites call `asyncio.run()` *inside* sync `def test_*`
+functions — pytest-asyncio does not touch sync tests, so those suites
+are unaffected (verified: full suite green after the switch).
+`httpx.AsyncClient` shares the test's loop with the lifespan-owned
+`RelayCore`, so a scripted-harness run started via `POST /api/runs` and
+the SSE generator both work without thread/loop seams.
+
+**Consequences.**
+- New dev-deps: `pytest-asyncio` and `httpx` graduate from declared-but-
+  unused to load-bearing; `openapi-spec-validator>=0.7` added.
+- New convention: `tests/api/` uses bare `async def` + `AsyncClient`;
+  `tests/orchestrator/` and `tests/harness/` keep the `asyncio.run()`
+  pattern. Both coexist under one `asyncio_mode="auto"` config.
+- CLAUDE.md's toolchain section is updated to record the test-runner
+  convention so it stays accurate (per the project doc policy).
+- No production code or runtime dependency change — test tooling only.
+
+---

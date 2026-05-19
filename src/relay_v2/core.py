@@ -32,7 +32,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from relay_v2.config import Settings, get_settings
 from relay_v2.db import (
@@ -40,7 +40,7 @@ from relay_v2.db import (
     make_async_engine,
     make_async_sessionmaker,
 )
-from relay_v2.db.models import Project, Run
+from relay_v2.db.models import Event, Iter, Project, Prompt, Run
 from relay_v2.events import EventStore
 from relay_v2.harness import Harness
 from relay_v2.harness.pi import PiHarness
@@ -55,6 +55,8 @@ from relay_v2.orchestrator.lifecycle import (
     set_run_status,
 )
 from relay_v2.orchestrator.loop import LoopResult, SessionHandle, run_loop
+from relay_v2.orchestrator.preamble import build_preamble, compose_prompt
+from relay_v2.sse import Broadcaster
 
 __all__ = ["RelayCore"]
 
@@ -77,7 +79,12 @@ class RelayCore:
         self._harness: Harness = harness or PiHarness(self._settings)
         self._engine = make_async_engine(self._settings.async_db_url)
         self._sm = make_async_sessionmaker(self._engine)
-        self._store = EventStore(self._sm)
+        # SSE fan-out (ADR-23): a post-commit passive observer attached
+        # to the single EventStore.append chokepoint. Lives behind
+        # RelayCore (ADR-07/15); routes reach it via
+        # ``app.state.core.broadcaster`` and never construct their own.
+        self.broadcaster = Broadcaster()
+        self._store = EventStore(self._sm, self.broadcaster)
         self._queue: asyncio.Queue[RunContext] = asyncio.Queue()
         self._runs: dict[str, _RunState] = {}
         self._supervisor: asyncio.Task[None] | None = None
@@ -338,6 +345,235 @@ class RelayCore:
 
     async def get_run(self, run_id: str) -> Run | None:
         return await load_run(self._sm, run_id)
+
+    # ── projects (read + unregister; ADR-07/ADR-15) ────────────────────
+
+    async def list_projects(self) -> list[Project]:
+        async with self._sm() as s:
+            return list(
+                await s.scalars(select(Project).order_by(Project.id.asc()))
+            )
+
+    async def get_project(self, project_id: int) -> Project | None:
+        async with self._sm() as s:
+            return await s.get(Project, project_id)
+
+    async def delete_project(self, project_id: int) -> bool:
+        """Unregister a project: delete ONLY the ``projects`` row. Never
+        touches files on disk (spec.md §7 DELETE /api/projects/:id "does
+        not delete files on disk"). False if id unknown, True if deleted."""
+        async with self._sm() as s:
+            row = await s.get(Project, project_id)
+            if row is None:
+                return False
+            await s.delete(row)
+            await s.commit()
+            return True
+
+    # ── prompts (versioned; spec.md §3.1 / §7) ─────────────────────────
+
+    async def create_prompt(
+        self, project_id: int | None, name: str, body: str
+    ) -> Prompt:
+        """Insert version 1 of a new prompt. ``ValueError`` if a prompt
+        with that (project_id, name) already exists (create = v1 only;
+        :meth:`update_prompt` bumps the version) or if ``project_id`` is
+        given but unknown."""
+        async with self._sm() as s:
+            if project_id is not None:
+                project = await s.get(Project, project_id)
+                if project is None:
+                    raise ValueError(f"unknown project_id={project_id}")
+            existing = await s.scalar(
+                select(Prompt).where(
+                    Prompt.project_id == project_id, Prompt.name == name
+                )
+            )
+            if existing is not None:
+                raise ValueError(
+                    f"prompt name={name!r} already exists "
+                    f"for project_id={project_id}"
+                )
+            row = Prompt(
+                project_id=project_id, name=name, version=1, body=body
+            )
+            s.add(row)
+            await s.commit()
+            return row
+
+    async def list_prompts(
+        self, project_id: int | None = None
+    ) -> list[Prompt]:
+        """The latest version of each distinct (project_id, name). When
+        ``project_id`` is given, filter to that project."""
+        async with self._sm() as s:
+            latest = (
+                select(
+                    Prompt.project_id,
+                    Prompt.name,
+                    func.max(Prompt.version).label("v"),
+                )
+                .group_by(Prompt.project_id, Prompt.name)
+                .subquery()
+            )
+            stmt = (
+                select(Prompt)
+                .join(
+                    latest,
+                    (Prompt.name == latest.c.name)
+                    & (Prompt.version == latest.c.v)
+                    & (
+                        Prompt.project_id.is_not_distinct_from(
+                            latest.c.project_id
+                        )
+                    ),
+                )
+                .order_by(Prompt.id.asc())
+            )
+            if project_id is not None:
+                stmt = stmt.where(Prompt.project_id == project_id)
+            return list(await s.scalars(stmt))
+
+    async def get_prompt(self, prompt_id: int) -> Prompt | None:
+        """A specific prompt row (a specific version)."""
+        async with self._sm() as s:
+            return await s.get(Prompt, prompt_id)
+
+    async def update_prompt(self, prompt_id: int, body: str) -> Prompt:
+        """Snapshot update: leave the existing row intact and INSERT a new
+        row with the same project_id+name and ``version = max(version
+        for that project_id+name) + 1`` (spec.md §7). ``ValueError`` if
+        ``prompt_id`` is unknown."""
+        async with self._sm() as s:
+            current = await s.get(Prompt, prompt_id)
+            if current is None:
+                raise ValueError(f"unknown prompt_id={prompt_id}")
+            max_version = await s.scalar(
+                select(func.max(Prompt.version)).where(
+                    Prompt.project_id.is_not_distinct_from(
+                        current.project_id
+                    ),
+                    Prompt.name == current.name,
+                )
+            )
+            row = Prompt(
+                project_id=current.project_id,
+                name=current.name,
+                version=int(max_version or 0) + 1,
+                body=body,
+            )
+            s.add(row)
+            await s.commit()
+            return row
+
+    async def delete_prompt(self, prompt_id: int) -> bool:
+        """Delete ALL versions of the (project_id, name) the given id
+        belongs to (spec.md §7 "delete a prompt (and all versions)").
+        False if ``prompt_id`` is unknown."""
+        async with self._sm() as s:
+            current = await s.get(Prompt, prompt_id)
+            if current is None:
+                return False
+            rows = list(
+                await s.scalars(
+                    select(Prompt).where(
+                        Prompt.project_id.is_not_distinct_from(
+                            current.project_id
+                        ),
+                        Prompt.name == current.name,
+                    )
+                )
+            )
+            for row in rows:
+                await s.delete(row)
+            await s.commit()
+            return True
+
+    async def list_prompt_versions(self, prompt_id: int) -> list[Prompt]:
+        """All versions for the (project_id, name) of ``prompt_id``,
+        ordered by version asc. Empty list if ``prompt_id`` is unknown."""
+        async with self._sm() as s:
+            current = await s.get(Prompt, prompt_id)
+            if current is None:
+                return []
+            return list(
+                await s.scalars(
+                    select(Prompt)
+                    .where(
+                        Prompt.project_id.is_not_distinct_from(
+                            current.project_id
+                        ),
+                        Prompt.name == current.name,
+                    )
+                    .order_by(Prompt.version.asc())
+                )
+            )
+
+    # ── events / iters reads (replay + run detail; ADR-10) ─────────────
+
+    async def list_events(
+        self,
+        run_id: str,
+        *,
+        after_seq: int = 0,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[Event]:
+        """Delegates to :meth:`EventStore.list_events` so the EventStore
+        stays the sole owner of the event log (ADR-10, read-only)."""
+        return await self._store.list_events(
+            run_id, after_seq=after_seq, limit=limit, offset=offset
+        )
+
+    async def list_iters(self, run_id: str) -> list[Iter]:
+        async with self._sm() as s:
+            return list(
+                await s.scalars(
+                    select(Iter)
+                    .where(Iter.run_id == run_id)
+                    .order_by(Iter.seq.asc())
+                )
+            )
+
+    # ── preview (PURE — no side effects: no row/dir/event/DB write) ─────
+
+    async def preview_run(
+        self,
+        project_id: int,
+        *,
+        prompt_body: str | None = None,
+        prompt_id: int | None = None,
+        phase: str | None = None,
+    ) -> dict[str, str]:
+        """Render the prompt that ``start_run`` *would* send, with zero
+        side effects: no ``runs`` row, no ``runs/<id>`` dir, no event, no
+        DB write. Exactly one of ``prompt_body`` / ``prompt_id`` must be
+        given. The run_dir is a literal ``"<preview>"`` placeholder built
+        the same way ``start_run`` derives ``RELAY_RUN_DIR``
+        (``settings.data_dir / "runs" / <run_id>``) but never created."""
+        if (prompt_body is None) == (prompt_id is None):
+            raise ValueError(
+                "exactly one of prompt_body / prompt_id must be provided"
+            )
+        async with self._sm() as s:
+            project = await s.get(Project, project_id)
+            if project is None:
+                raise ValueError(f"unknown project_id={project_id}")
+        if prompt_id is not None:
+            prompt = await self.get_prompt(prompt_id)
+            if prompt is None:
+                raise ValueError(f"unknown prompt_id={prompt_id}")
+            body = prompt.body
+        else:
+            assert prompt_body is not None
+            body = prompt_body
+        run_dir = self._settings.data_dir / "runs" / "<preview>"
+        return {
+            "preamble": build_preamble(run_dir, phase),
+            "body": body,
+            "prompt": compose_prompt(run_dir, phase, body),
+            "run_dir": str(run_dir),
+        }
 
     # ── test/automation helper ─────────────────────────────────────────
 

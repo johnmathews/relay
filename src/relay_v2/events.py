@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+import logging
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -37,7 +38,12 @@ from relay_v2.harness import (
     ToolUseUpdate,
 )
 
+if TYPE_CHECKING:
+    from relay_v2.sse import Broadcaster
+
 __all__ = ["EventStore", "TOOL_RESULT_CAP"]
+
+_log = logging.getLogger(__name__)
 
 # Max characters of a JSON-serialised tool result kept verbatim. Beyond
 # this the payload is replaced with a bounded preview + size marker so a
@@ -59,10 +65,19 @@ def _truncate_result(result: dict[str, Any]) -> dict[str, Any]:
 class EventStore:
     """Append-only writer over the ``events`` table."""
 
-    def __init__(self, sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        sessionmaker: async_sessionmaker[AsyncSession],
+        broadcaster: Broadcaster | None = None,
+    ) -> None:
         self._sessionmaker = sessionmaker
         self._lock = asyncio.Lock()
         self._seq: dict[str, int] = {}
+        # Optional post-commit observer (ADR-23). Default None keeps
+        # EventStore usable headless (orchestrator tests, scripts). SSE
+        # is a passive reader hung off this hook — it never writes
+        # (ADR-10). Settable so RelayCore can attach one after construct.
+        self.broadcaster = broadcaster
 
     @property
     def sessionmaker(self) -> async_sessionmaker[AsyncSession]:
@@ -96,17 +111,65 @@ class EventStore:
         async with self._lock:
             seq = await self._next_seq(run_id)
             async with self._sessionmaker() as s:
-                s.add(
-                    Event(
-                        run_id=run_id,
-                        iter_id=iter_id,
-                        seq=seq,
-                        kind=kind,
-                        payload=payload,
-                    )
+                row = Event(
+                    run_id=run_id,
+                    iter_id=iter_id,
+                    seq=seq,
+                    kind=kind,
+                    payload=payload,
                 )
+                s.add(row)
                 await s.commit()
-            return seq
+                # ts is a server default — refresh to surface the
+                # committed timestamp for the SSE payload (read-only).
+                await s.refresh(row)
+                ts = row.ts
+        # Post-commit fan-out (ADR-23): AFTER the row is durable and seq
+        # is final, never before. A publish failure must not break the
+        # append — guard and log only. Outside the seq lock so a slow
+        # registry op can't serialise the next append.
+        if self.broadcaster is not None:
+            try:
+                await self.broadcaster.publish(
+                    run_id,
+                    {
+                        "seq": seq,
+                        "kind": kind,
+                        "payload": payload,
+                        "ts": ts.isoformat(),
+                        "run_id": run_id,
+                        "iter_id": iter_id,
+                    },
+                )
+            except Exception:  # noqa: BLE001 - observer must not fail append
+                _log.exception(
+                    "SSE broadcast failed for run %s seq %s", run_id, seq
+                )
+        return seq
+
+    async def list_events(
+        self,
+        run_id: str,
+        *,
+        after_seq: int = 0,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[Event]:
+        """Read events for ``run_id`` with ``seq > after_seq``, ordered by
+        ``seq`` asc, then ``offset``/``limit`` applied. A read method on
+        the events authority (ADR-10): no new write path, replay/run-detail
+        readers go through here so EventStore stays the single owner of the
+        event log. RelayCore delegates to this."""
+        async with self._sessionmaker() as s:
+            stmt = (
+                select(Event)
+                .where(Event.run_id == run_id, Event.seq > after_seq)
+                .order_by(Event.seq.asc())
+                .offset(offset)
+            )
+            if limit is not None:
+                stmt = stmt.limit(limit)
+            return list(await s.scalars(stmt))
 
     async def store_harness_event(
         self, run_id: str, iter_id: int, ev: HarnessEvent
