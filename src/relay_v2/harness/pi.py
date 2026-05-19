@@ -1,0 +1,310 @@
+"""PiHarness — the only module that knows pi's JSONL schema (ADR-04).
+
+Mapping is grounded in the de-risking fixtures (spec.md §4.2,
+``scratch/pi_derisk_workdir/findings.md``), not speculation:
+
+- ``session`` -> ``SessionStarted``
+- ``message_update`` / ``text_delta`` -> accumulate -> ``AssistantText``
+- ``message_update`` / ``thinking_delta`` -> accumulate ->
+  ``AssistantText(kind="thinking")`` (ADR-18)
+- ``tool_execution_start`` -> ``ToolUseStart``
+- ``tool_execution_update`` -> ``ToolUseUpdate``
+- ``tool_execution_end`` -> ``ToolUseEnd``
+- ``agent_end`` -> ``SessionEnded(stop_reason="clean")``
+- ``agent_start`` / ``turn_start`` / ``message_*`` / ``turn_end`` and any
+  unrecognised type -> consumed internally
+
+OQ-2: ``text_delta`` deltas are accumulated per turn and flushed as one
+``AssistantText`` at ``turn_end`` -- concatenated deltas equal
+``text_end.content`` in every captured stream. OQ-1: ``agent_end``'s
+``messages`` list is passed through verbatim; the harness never
+interprets it.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import time
+from collections.abc import AsyncIterator, Iterable, Iterator
+from pathlib import Path
+
+from relay_v2.config import Settings, get_settings
+from relay_v2.harness.protocol import (
+    AssistantText,
+    HarnessEvent,
+    SessionEnded,
+    SessionStarted,
+    ToolUseEnd,
+    ToolUseStart,
+    ToolUseUpdate,
+)
+
+__all__ = ["PiHarness", "PiSession", "map_pi_events"]
+
+
+class _PiEventMapper:
+    """Stateful pi-event -> HarnessEvent translator.
+
+    One instance per session. Accumulates streamed deltas per turn and
+    flushes them at the turn boundary so the signaling layer always sees
+    whole, turn-complete text (spec.md §5.1).
+    """
+
+    def __init__(self) -> None:
+        self._seq = 0
+        self._turn_seq = 0
+        self._text: list[str] = []
+        self._thinking: list[str] = []
+        self._tool_started: dict[str, float] = {}
+        self.saw_agent_end = False
+
+    def _next(self) -> tuple[int, float]:
+        self._seq += 1
+        return self._seq, time.time()
+
+    def _flush_turn(self) -> Iterator[HarnessEvent]:
+        if self._thinking:
+            seq, ts = self._next()
+            yield AssistantText(
+                seq=seq,
+                ts=ts,
+                text="".join(self._thinking),
+                turn_seq=self._turn_seq,
+                kind="thinking",
+            )
+            self._thinking.clear()
+        if self._text:
+            seq, ts = self._next()
+            yield AssistantText(
+                seq=seq,
+                ts=ts,
+                text="".join(self._text),
+                turn_seq=self._turn_seq,
+                kind="text",
+            )
+            self._text.clear()
+
+    def feed(self, ev: dict[str, object]) -> Iterator[HarnessEvent]:
+        kind = ev.get("type")
+
+        if kind == "session":
+            seq, ts = self._next()
+            yield SessionStarted(
+                seq=seq,
+                ts=ts,
+                session_id=str(ev.get("id", "")),
+                cwd=str(ev.get("cwd", "")),
+            )
+
+        elif kind == "turn_start":
+            self._turn_seq += 1
+            self._text.clear()
+            self._thinking.clear()
+
+        elif kind == "message_update":
+            ame = ev.get("assistantMessageEvent")
+            if isinstance(ame, dict):
+                sub = ame.get("type")
+                if sub == "text_delta":
+                    self._text.append(str(ame.get("delta", "")))
+                elif sub == "thinking_delta":
+                    self._thinking.append(str(ame.get("delta", "")))
+                # text/thinking/toolcall start+end framing and any unknown
+                # sub-type are consumed internally (ADR-18).
+
+        elif kind == "turn_end":
+            yield from self._flush_turn()
+
+        elif kind == "tool_execution_start":
+            tool_id = str(ev.get("toolCallId", ""))
+            seq, ts = self._next()
+            self._tool_started[tool_id] = ts
+            args = ev.get("args")
+            yield ToolUseStart(
+                seq=seq,
+                ts=ts,
+                tool_id=tool_id,
+                name=str(ev.get("toolName", "")),
+                args=args if isinstance(args, dict) else {},
+            )
+
+        elif kind == "tool_execution_update":
+            partial = ev.get("partialResult")
+            seq, ts = self._next()
+            yield ToolUseUpdate(
+                seq=seq,
+                ts=ts,
+                tool_id=str(ev.get("toolCallId", "")),
+                partial_result=partial if isinstance(partial, dict) else {},
+            )
+
+        elif kind == "tool_execution_end":
+            tool_id = str(ev.get("toolCallId", ""))
+            seq, ts = self._next()
+            started = self._tool_started.pop(tool_id, ts)
+            result = ev.get("result")
+            yield ToolUseEnd(
+                seq=seq,
+                ts=ts,
+                tool_id=tool_id,
+                result=result if isinstance(result, dict) else {},
+                is_error=bool(ev.get("isError", False)),
+                duration_ms=max(0, int((ts - started) * 1000)),
+            )
+
+        elif kind == "agent_end":
+            yield from self._flush_turn()
+            self.saw_agent_end = True
+            seq, ts = self._next()
+            msgs = ev.get("messages")
+            yield SessionEnded(
+                seq=seq,
+                ts=ts,
+                messages=list(msgs) if isinstance(msgs, list) else [],
+                stop_reason="clean",
+            )
+
+        # agent_start, message_start, message_end and any unrecognised
+        # top-level type: consumed internally, nothing surfaced.
+
+    def synthesize_end(
+        self, stop_reason: str, messages: list[object] | None = None
+    ) -> SessionEnded:
+        """Terminal event when pi exited without an ``agent_end`` (crash,
+        timeout, cancellation). Buffered partial-turn text is discarded:
+        an interrupted turn has no complete text to surface."""
+        seq, ts = self._next()
+        return SessionEnded(
+            seq=seq,
+            ts=ts,
+            messages=messages or [],
+            stop_reason=stop_reason,  # type: ignore[arg-type]
+        )
+
+
+def map_pi_events(events: Iterable[dict[str, object]]) -> list[HarnessEvent]:
+    """Offline mapping helper -- the harness unit-test entry point.
+
+    Pure: no subprocess, no clock dependence beyond ``ts`` stamping.
+    Mirrors exactly what :meth:`PiSession.events` does per line.
+    """
+    mapper = _PiEventMapper()
+    out: list[HarnessEvent] = []
+    for ev in events:
+        out.extend(mapper.feed(ev))
+    return out
+
+
+class PiSession:
+    """One pi ``--mode json`` subprocess (spec.md §4.2, ADR-16)."""
+
+    def __init__(
+        self, proc: asyncio.subprocess.Process, session_hint: str = ""
+    ) -> None:
+        self._proc = proc
+        self._mapper = _PiEventMapper()
+        self._cancelled = False
+        self._final: SessionEnded | None = None
+        self.session_id = session_hint
+
+    async def events(self) -> AsyncIterator[HarnessEvent]:
+        assert self._proc.stdout is not None
+        async for raw in self._proc.stdout:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # findings.md: non_json_lines=0; defensive only
+            if not isinstance(ev, dict):
+                continue
+            for out in self._mapper.feed(ev):
+                if isinstance(out, SessionStarted) and not self.session_id:
+                    self.session_id = out.session_id
+                if isinstance(out, SessionEnded):
+                    self._final = out
+                yield out
+
+    async def cancel(self) -> None:
+        self._cancelled = True
+        if self._proc.returncode is not None:
+            return
+        self._proc.terminate()
+        try:
+            await asyncio.wait_for(self._proc.wait(), timeout=5)
+        except TimeoutError:
+            self._proc.kill()
+            await self._proc.wait()
+
+    async def wait(self) -> SessionEnded:
+        await self._proc.wait()
+        if self._final is not None:
+            return self._final
+        # No agent_end was seen. Distinguish cancellation from an
+        # unexpected exit; timeout vs crash is the orchestrator's call
+        # (Phase 2) -- the harness reports the lower-level fact.
+        reason = "cancelled" if self._cancelled else "crash"
+        self._final = self._mapper.synthesize_end(reason)
+        return self._final
+
+
+class PiHarness:
+    """Spawns pi subprocesses and yields :class:`PiSession`s.
+
+    Invocation form per ADR-16 (amends ADR-03): ``--mode json``,
+    one subprocess per iter. ``PI_AGENT_SDK=1`` is always injected
+    (ADR-09 / findings.md auth path).
+    """
+
+    name = "pi"
+
+    def __init__(self, settings: Settings | None = None) -> None:
+        self._settings = settings or get_settings()
+
+    def _build_argv(
+        self, prompt: str, model: str, provider: str, resume_from: str | None
+    ) -> list[str]:
+        argv = [
+            self._settings.pi_bin,
+            "-p",
+            prompt,
+            "--mode",
+            "json",
+            "--provider",
+            provider,
+            "--model",
+            model,
+        ]
+        if resume_from:
+            # Crash recovery only -- never used for inter-iter chaining
+            # (CLAUDE.md: fresh context per iter is the value prop).
+            argv += ["--session", resume_from]
+        return argv
+
+    async def spawn(
+        self,
+        prompt: str,
+        cwd: Path,
+        env: dict[str, str],
+        signal_config: object,  # SignalConfig — used by the orchestrator (Phase 2)
+        resume_from: str | None = None,
+    ) -> PiSession:
+        argv = self._build_argv(
+            prompt,
+            self._settings.pi_model,
+            self._settings.pi_provider,
+            resume_from,
+        )
+        full_env = {**os.environ, **env, "PI_AGENT_SDK": "1"}
+        # exec form: argv list, no shell — not subject to shell injection.
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            cwd=str(cwd),
+            env=full_env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        return PiSession(proc, session_hint=resume_from or "")

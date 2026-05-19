@@ -630,3 +630,66 @@ change spec.md — §3.1's DDL stays canonical; the models mirror it.
   orchestrator (Phase 2) and stays encapsulated in `relay_v2.db`.
 
 ---
+
+## ADR-18 — `message_update` sub-type handling; `AssistantText.kind`
+
+**Status:** Accepted (2026-05-19). Amends the spec.md §4.2 mapping table
+and the §4.1 `AssistantText` dataclass.
+
+**Context.** spec.md §4.2's pi→`HarnessEvent` table only mapped
+`message_update` events whose `assistantMessageEvent.type == "text_delta"`.
+Inspecting `scratch/pi_derisk_workdir/test_event_shapes.jsonl` (the OQ-1
+fixture) showed pi actually emits a per-content-block stream with three
+families of sub-types, each framed `*_start` → `*_delta` → `*_end`:
+
+- `text_*` — the user-visible assistant response.
+- `thinking_*` — model chain-of-thought (extended-thinking deltas).
+- `toolcall_*` — the streamed tool-call being assembled.
+
+Concatenated `text_delta`s equal the block's `text_end.content` in every
+captured stream (resolves OQ-2). `thinking_delta` carries reasoning text;
+`toolcall_*` duplicates information already delivered authoritatively by
+the separate `tool_execution_start/update/end` events (the events spec.md
+§4.2 already maps). The Phase 1 risk note in plan.md anticipated this and
+proposed "pass unknown sub-types through as `AssistantText` with a `kind`
+tag" — but a naïve pass-through would feed model reasoning into the
+sentinel parser, where a sentinel *mentioned while thinking* would fire a
+false signal.
+
+**Alternatives considered.**
+1. Surface only `text_delta`; silently drop `thinking`/`toolcall`. Loses
+   reasoning observability the dashboard (spec.md §9) will want.
+2. Pass every sub-type through as `AssistantText` undifferentiated (the
+   literal plan.md mitigation). Causes false sentinel matches from
+   chain-of-thought — a correctness bug in the load-bearing signal path.
+3. Surface `text` and `thinking` as `AssistantText` but tag each with a
+   `kind`; consume `toolcall_*` and all `*_start`/`*_end` framing
+   internally; restrict signal detection to `kind == "text"`.
+
+**Decision.** Option 3.
+
+- `AssistantText` gains `kind: Literal["text", "thinking"]` defaulting to
+  `"text"` (keeps spec.md §4.1's two-field constructor working).
+- `text_delta` → accumulate per turn → `AssistantText(kind="text")` at
+  `turn_end`. `thinking_delta` → accumulate → `AssistantText(kind="thinking")`.
+- `toolcall_*` and every `*_start`/`*_end` framing event, plus any
+  *unrecognised* sub-type or top-level pi event, are consumed internally
+  and surface nothing (graceful forward-compat with pi's weekly releases).
+- The `text_sentinels` strategy (spec.md §5.1) inspects **only**
+  `AssistantText` with `kind == "text"`. This is the v2 form of v1's
+  anti-mention discipline: v1's `jq` filter stripped tool inputs before
+  parsing; v2 additionally never lets `thinking` text reach the parser.
+
+**Consequences.**
+- spec.md §4.1 `AssistantText` carries `kind`; §4.2 gains the
+  `thinking_delta` row and an explicit "framing + unknown sub-types
+  consumed internally" note; §5.1 states the `kind == "text"`
+  restriction. spec.md §13 OQ-1 and OQ-2 are marked resolved.
+- pi *does* surface token + cost (`messages[].usage`, including
+  `cost.total`) in `agent_end` — a partial answer to OQ-3, recorded here
+  but not consumed until observability (Phase 7).
+- The harness-isolation invariant (ADR-04) is unchanged: all of this
+  lives in `harness/pi.py`; the orchestrator still sees only normalized
+  events.
+
+---

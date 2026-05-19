@@ -247,6 +247,7 @@ class SessionStarted(HarnessEvent):
 class AssistantText(HarnessEvent):
     text: str
     turn_seq: int   # which turn within the session
+    kind: Literal["text", "thinking"] = "text"  # ADR-18; signaling sees "text" only
 
 @dataclass
 class ToolUseStart(HarnessEvent):
@@ -307,12 +308,13 @@ class Harness(Protocol):
 | pi event | relay `HarnessEvent` |
 |---|---|
 | `session` | `SessionStarted(session_id=id, cwd)` |
-| `message_update` w/ `assistantMessageEvent.type == "text_delta"` | `AssistantText(text=delta.text, turn_seq)` (accumulated per turn) |
+| `message_update` w/ `assistantMessageEvent.type == "text_delta"` | `AssistantText(text, turn_seq, kind="text")` (accumulated per turn, flushed at `turn_end`) |
+| `message_update` w/ `assistantMessageEvent.type == "thinking_delta"` | `AssistantText(text, turn_seq, kind="thinking")` (accumulated per turn; ADR-18) |
 | `tool_execution_start` | `ToolUseStart(tool_id=toolCallId, name=toolName, args)` |
 | `tool_execution_update` | `ToolUseUpdate(tool_id, partial_result)` |
 | `tool_execution_end` | `ToolUseEnd(tool_id, result, is_error=isError, duration_ms)` |
 | `agent_end` | `SessionEnded(messages, stop_reason="clean")` |
-| `agent_start`, `turn_start`, `message_start`, `message_end`, `turn_end` | consumed internally for accounting; not surfaced |
+| `agent_start`, `turn_start`, `message_start`, `message_end`, `turn_end`; all `assistantMessageEvent` `*_start`/`*_end` framing; `toolcall_*` sub-types; any unrecognised sub-type or top-level event | consumed internally for accounting; not surfaced (ADR-18) |
 
 Invocation form (per ADR-16, which amends ADR-03's original choice of `--mode rpc`):
 
@@ -343,9 +345,13 @@ Per ADR-05. Two strategies. The orchestrator emits normalized
 ### 5.1 `text_sentinels` (MVP strategy on pi)
 
 Inherits v1's sentinel grammar with optional schema cleanup. The parser
-watches `AssistantText` events (accumulated per turn at `turn_end`),
-matches line-anchored patterns against the cleaned text, and emits
-`SignalEmitted`. The full grammar lives in `signaling/sentinels.md`
+watches `AssistantText` events **with `kind == "text"` only** (accumulated
+per turn at `turn_end`), matches line-anchored patterns against the text,
+and emits `SignalEmitted`. Restricting to `kind == "text"` is the v2 form
+of v1's anti-mention discipline (ADR-18): v1's `jq` filter stripped tool
+inputs before parsing; v2 additionally never feeds `kind == "thinking"`
+(chain-of-thought) text to the parser, so a sentinel mentioned while the
+model is reasoning cannot fire a false signal. The full grammar lives in `signaling/sentinels.md`
 inside the v2 repo (TBD — port from v1 with optional revisions).
 
 Signal kinds: `phase_start`, `unit_start`, `unit_done`, `unit_abandoned`,
@@ -681,15 +687,27 @@ Per ADR-14. The skill lives at `skills/engineering-team/` inside
 
 Carried from `motivation.md` risks; resolved as design progresses.
 
-- **OQ-1.** Confirm `agent_end`'s `messages` payload shape carries what
-  the orchestrator needs for the final per-run summary. Inspect
-  `test_event_shapes.jsonl` from the de-risking run.
-- **OQ-2.** Pi's accumulation model for streamed text: confirm whether
-  the parser should treat `message_update`'s deltas as authoritative
-  or wait for `message_end`'s full message. Affects sentinel-matching
-  latency.
-- **OQ-3.** Token / cost reporting in pi events: investigate whether
-  pi surfaces usage stats; if not, where would they come from?
+- **OQ-1.** *Resolved (2026-05-19, ADR-18).* `agent_end` payload is
+  `{type, messages}`; `messages` is the full compiled conversation —
+  a flat list of message dicts, roles `user`/`assistant`/`toolResult`,
+  assistant messages carrying `content` blocks plus `usage`
+  (`input`/`output`/`cacheRead`/`cacheWrite`/`totalTokens`/`cost`),
+  `stopReason`, `model`, `responseId`. Sufficient for the final per-run
+  summary. The harness passes `messages` through verbatim in
+  `SessionEnded.messages` and never interprets it.
+- **OQ-2.** *Resolved (2026-05-19, ADR-18).* Streamed text arrives as
+  `message_update.assistantMessageEvent` with per-block framing
+  (`*_start`/`*_delta`/`*_end`). Concatenated `text_delta`s equal the
+  block's `text_end.content` in every captured fixture, so the deltas
+  are authoritative. The harness accumulates `text_delta` per turn and
+  flushes one `AssistantText` at `turn_end`; sentinel detection runs at
+  that turn boundary — no need to wait for `message_end`.
+- **OQ-3.** *Partially answered (2026-05-19, ADR-18).* pi **does**
+  surface usage: each assistant message in `agent_end.messages` (and in
+  `message_end`) carries `usage` with `input`/`output`/`cacheRead`/
+  `cacheWrite`/`totalTokens` and a `cost` sub-object (`cost.total` in
+  USD). Open part: per-iter aggregation strategy for the OTel/Langfuse
+  export (Phase 7) — not consumed in Phase 1.
 - **OQ-4.** Worktree handling — confirm the v1 patterns (per-run
   branch, `.claude/worktrees/eng-*` naming) port cleanly or need
   revision.
