@@ -2,8 +2,9 @@
 
 Chain agent sessions for unattended multi-phase engineering work.
 
-> **Status:** Pre-implementation. The design corpus is complete and committed.
-> Coding starts at **Phase 0** of [`docs/plan.md`](docs/plan.md).
+> **Status:** Phase 0 (scaffold) complete — a pip-installable package with a
+> FastAPI app, env-driven config, and the SQLite schema (spec.md §3.1).
+> Next: **Phase 1** (harness layer) of [`docs/plan.md`](docs/plan.md).
 
 ## What relay is for
 
@@ -25,12 +26,29 @@ The four docs under `docs/` are the canonical source. Read in this order:
 | Doc | Purpose |
 |---|---|
 | [`docs/motivation.md`](docs/motivation.md) | Why v2 exists. Goals, non-goals, hard constraints, parked risks. |
-| [`docs/decisions.md`](docs/decisions.md) | 16 ADRs with context, alternatives, rationale, consequences. **Append-only.** |
+| [`docs/decisions.md`](docs/decisions.md) | 17 ADRs with context, alternatives, rationale, consequences. **Append-only.** |
 | [`docs/spec.md`](docs/spec.md) | Canonical design — architecture, data model, harness protocol, signaling, REST + MCP surface, Vue dashboard, observability. |
 | [`docs/plan.md`](docs/plan.md) | 9 MVP phases (28 dev-days) + 7 post-MVP phases, with per-phase verification criteria. |
 
 `CLAUDE.md` summarises the design hierarchy and load-bearing invariants for
-Claude Code sessions.
+Claude Code sessions. The ADR log now has 17 entries (ADR-17 records the
+Phase 0 schema-management decision).
+
+## Development quickstart
+
+Requires [`uv`](https://docs.astral.sh/uv/) and Python 3.13.
+
+```bash
+uv sync                              # create the venv, install deps
+uv run pytest                        # run the test suite
+uv run relay serve                   # daemon on http://127.0.0.1:7800
+curl http://127.0.0.1:7800/health    # -> {"status": "ok"}
+```
+
+`relay serve` creates `<cwd>/.relay/relay.db` (the SQLite event store) on
+first run. Configuration is env-driven via `RELAY_*` variables (see
+[`docs/spec.md`](docs/spec.md) §11); e.g. `RELAY_PORT=8080 uv run relay serve`.
+Lint and types: `uv run ruff check .` and `uv run mypy`.
 
 ## De-risking evidence
 

@@ -4,11 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-This repo is **pre-implementation**. There is no source code and no git
-commits yet — only design docs (`docs/`) and a pi de-risking scratch
-directory (`scratch/`). The first coding work is Phase 0 in
-`docs/plan.md`. Do not assume a build/test toolchain exists until you
-have created it per that phase.
+**Phase 0 (scaffold) is complete.** The repo has an installable
+`relay-v2` package under `src/relay_v2/` (FastAPI factory + `/health`,
+env-driven `config.py`, the spec.md §3.1 SQLite schema in `db/models.py`,
+a `relay` CLI with `serve` / `--version`), a passing `pytest` suite under
+`tests/`, and a green `ruff`/`mypy` gate. The next coding work is Phase 1
+(harness layer) in `docs/plan.md`. Design docs (`docs/`) and the pi
+de-risking `scratch/` directory remain the canonical context.
 
 ## What relay v2 is
 
@@ -87,12 +89,17 @@ implementation:
   (ADR-12). Many capabilities are deliberate non-goals — check
   `motivation.md` before adding scope.
 
-## Planned toolchain (per `docs/plan.md` Phase 0 / `spec.md` §11)
-
-Not yet created — establish in Phase 0, then keep this section accurate:
+## Toolchain (established in Phase 0; keep this section accurate)
 
 - Python 3.13, dependency management via **`uv`** (not pip/poetry).
-- Tests: **`pytest`**; lint **`ruff`**; types **`mypy`**.
+  `uv sync` to install, `uv run <cmd>` to execute. `uv.lock` is committed.
+- Tests: **`pytest`** (`uv run pytest`); lint **`ruff`**
+  (`uv run ruff check .`; `scratch/` is excluded — it is de-risking
+  evidence, not source); types **`mypy`** strict (`uv run mypy`; package
+  carries a `py.typed` marker).
+- Schema management is hand-rolled `create_all` for the MVP (ADR-17);
+  `src/relay_v2/db/migrations/` is a placeholder for future numbered
+  upgrade scripts. Alembic is deferred.
 - Backend: FastAPI + Pydantic v2 + Uvicorn; SQLite via SQLAlchemy.
 - Frontend: Vue 3 + Pinia + Pinia Colada + Vite, in `frontend/`.
 - Console script: `relay` (`relay serve`, `relay start`, `relay status`,

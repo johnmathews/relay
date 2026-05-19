@@ -587,3 +587,46 @@ cancellation, dynamic mid-session reconfiguration).
   a new ADR will reopen the choice.
 
 ---
+
+## ADR-17 — Hand-rolled `create_all` schema management for the MVP
+
+**Status:** Accepted (2026-05-19)
+
+**Context.** `plan.md` Phase 0 lists `db/migrations/` with the note
+"alembic or hand-rolled" — a decision explicitly delegated to
+implementation. Phase 0's only schema-related verification criterion is
+"first serve creates `<cwd>/.relay/relay.db` with schema migrated". The
+schema is greenfield: there is no production data, no deployed instance,
+and (per ADR-12) a single user on localhost SQLite.
+
+**Alternatives considered.**
+1. Adopt Alembic from Phase 0 — versioned migration scripts, autogenerate,
+   an `alembic/` env and `alembic.ini`.
+2. Hand-rolled `Base.metadata.create_all()` at startup, with a
+   `db/migrations/` package reserved for future numbered upgrade scripts.
+
+**Decision.** Option 2. `relay_v2.db.init_db()` calls
+`Base.metadata.create_all()` on first serve. `db/migrations/` is a
+documented placeholder for numbered `upgrade()/downgrade()` scripts; the
+SQLAlchemy models in `db/models.py` are the schema source of truth,
+faithfully porting spec.md §3.1 (which remains canonical).
+
+**Rationale.** Until the schema changes under data that must be
+preserved, a migration framework is pure overhead. `create_all` is
+idempotent, satisfies the Phase 0 criterion exactly, and keeps the
+scaffold minimal. The schema lives in typed SQLAlchemy models either
+way, so adopting Alembic later is additive (autogenerate can diff
+against the existing models) rather than a rewrite. This does **not**
+change spec.md — §3.1's DDL stays canonical; the models mirror it.
+
+**Consequences.**
+- No migration history exists yet; the first schema change under live
+  data triggers the migration story.
+- `db/migrations/__init__.py` documents the convention for the first
+  numbered script.
+- A later switch to Alembic, if made, will be recorded as its own ADR
+  (this entry is not edited).
+- The Phase 0 engine is synchronous; the async engine arrives with the
+  orchestrator (Phase 2) and stays encapsulated in `relay_v2.db`.
+
+---
