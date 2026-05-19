@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**Phases 0–7 are complete.** Phase 0 scaffold + Phase 1 harness layer +
+**Phases 0–8 are complete — the MVP is done.** Phase 0 scaffold + Phase 1 harness layer +
 Phase 2 orchestrator (`RelayCore`, append-only `EventStore`, chained-iter
 `run_loop`, run lifecycle, `RELAY_*` preamble). Phase 3 adds the **REST
 API + persistence** (`src/relay_v2/api/`, `src/relay_v2/sse.py`): every
@@ -56,10 +56,31 @@ attributes come from pi's verbatim `SessionEnded.messages[].usage`
 (ADR-18); recovering them on the terminal-sentinel close path needed a
 one-event `AssistantText` lookahead in `PiSession.events()` —
 **Option D**, harness-only (ADR-04), order-preserving, deterministic,
-no loop/event-store contract change (ADR-29). `uv run pytest` green
-(**192 passed**, 3 pi-e2e gated), `ruff`/`mypy --strict` clean (37
-source files), backend coverage 93%. The next coding work is
-**Phase 8** in `docs/plan.md`. Operational refs: `docs/harness.md`,
+no loop/event-store contract change (ADR-29). Phase 8 adds the
+**verification & polish** layer (ADR-30): a rewritten `README.md`
+(Phases 0–8; install/run/dashboard/MCP/observability/Docker); an
+**additive, conditional** production frontend mount
+(`src/relay_v2/api/static.py` — `mount_frontend` appends a vue-router
+history-mode `StaticFiles` catch-all at `/` in the lifespan *after*
+`/mcp`, a literal no-op when `frontend/dist/` is absent so dev/test is
+byte-for-byte unchanged; spec §11.2); a multi-stage `Dockerfile` +
+`.dockerignore` + `docker-compose.example.yml`; and
+`.github/workflows/ci.yml` (full Python **and** frontend gate + GHCR
+publish to `ghcr.io/johnmathews/relay-v2` on push to `main`,
+`workflow_dispatch`). The Phase-8 verification split is ADR-30
+(automated CI for the deterministic half — ruff/mypy/pytest + `npm run
+check` + `docker build`; manual journal-attested for the real-pi e2e
+demo, "image pulls and runs", "MCP from Claude Code", live-Langfuse
+tree — gated like `PI_INTEGRATION=1`, mirroring ADR-24/28 §3/29).
+`uv run pytest` green (**194 passed**, 3 pi-e2e gated),
+`ruff`/`mypy --strict` clean (**38** source files), backend coverage
+93%; `docker build` + container-boot smoke verified locally. **Two
+follow-ups remain open, deliberately not closed by Phase 8** (closing
+either is a contract change): the live-Langfuse-UI acceptance was
+never run (manual, journal-attested when done); and the latent ADR-10
+gap that `agent_end`/`SessionEnded` is never persisted as an `events`
+row on the sentinel-close path (its own ADR + spec §6 change —
+ADR-29/30). Operational refs: `docs/harness.md`,
 `docs/orchestrator.md`, `docs/api.md`, `docs/dashboard.md`,
 `docs/mcp.md`, `docs/skills.md`, `docs/observability.md` (Phase 7;
 the OTel mirror + Langfuse wiring + the manual trace-tree acceptance
@@ -239,5 +260,16 @@ implementation:
   against a scripted `Harness` double (no pi). Tests stay under
   `tests/` (`testpaths=["tests"]`), not the per-package `tests/` dirs
   plan.md sketches.
-- A `Dockerfile`/compose plus a GitHub Actions workflow publishing to
-  `ghcr.io/johnmathews/relay-v2` are required (Phase 8 + global policy).
+- Packaging (Phase 8, ADR-30): a multi-stage `Dockerfile` (Node stage
+  builds `frontend/dist/`; `python:3.13-slim` runtime runs the
+  `uv`-synced backend from `/app/.venv/bin/relay` — not `uv run`, no
+  runtime cache write; healthcheck uses `urllib`, not curl) +
+  `.dockerignore` + `docker-compose.example.yml` (un-vendored Langfuse
+  — points at `docs/langfuse-compose.example.yml`).
+  `.github/workflows/ci.yml` runs the **full** gate (Python
+  `ruff`/`mypy`/`pytest` **and** `frontend/ npm run check`) and
+  publishes to `ghcr.io/johnmathews/relay-v2` on push to `main` via
+  `${{ github.token }}` (`workflow_dispatch` present). The prod
+  frontend is served by FastAPI via the additive conditional
+  `relay_v2.api.static.mount_frontend` (no-op without a build) — spec
+  §11.2.

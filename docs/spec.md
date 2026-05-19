@@ -774,6 +774,23 @@ Pi-side env vars (passed through to subprocess):
 - Container image: published to `ghcr.io/johnmathews/relay-v2` via
   GitHub Actions, per the user's global Docker/CI policy.
 
+> **Phase-8 implementation note (ADR-30).** The static-serving and
+> packaging above are implemented. `relay_v2.api.static.mount_frontend`
+> conditionally mounts the built SPA at `/` (a `StaticFiles` subclass
+> with vue-router history-mode fallback), appended **after** the REST
+> routers and `/mcp` in the app lifespan so it never shadows an API
+> path, and a **no-op when `frontend/dist/` is absent** (dev/test) so
+> the addition is provably additive. The multi-stage `Dockerfile`
+> builds the SPA (Node stage) and runs the `uv`-synced backend from
+> `/app/.venv/bin/relay` (Python stage); `docker-compose.example.yml`
+> wires the `RELAY_*` surface and points at
+> `docs/langfuse-compose.example.yml` for the (un-vendored) Langfuse
+> stack. `.github/workflows/ci.yml` runs the full Python + frontend
+> gate and publishes the image on push to `main`. The qualitative
+> verification (real-pi e2e demo, "image pulls and runs", "MCP from
+> Claude Code", live-Langfuse trace tree) is manual + journal-attested,
+> gated like the `PI_INTEGRATION=1` e2e tests — see ADR-30.
+
 ### 11.3 Operational commands
 
 ```
@@ -783,6 +800,17 @@ relay status                       # show active runs
 relay cancel <run_id>              # cancel
 relay install-skill                # install engineering-team skill into ~/.claude/skills
 ```
+
+> **Accuracy note (Phase-8 review, ADR-30).** This is the *target*
+> command surface. As of the MVP, only `relay serve`,
+> `relay --version`, and `relay install-skill` are implemented in
+> `relay_v2.__main__`. `relay start` / `status` / `cancel` are a
+> post-MVP CLI convenience — in the MVP, run create/list/cancel is
+> done through the dashboard, the REST API (§7), or the MCP server
+> (§8), which is the documented and tested path. The `docs/plan.md`
+> "what done with MVP looks like" `relay start prompt.md` bullet
+> should be read as "a run can be started against a real project"
+> (true via REST/dashboard/MCP), not as a shipped CLI subcommand.
 
 ## 12. Engineering-team skill port
 

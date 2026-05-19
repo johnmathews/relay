@@ -1,0 +1,85 @@
+# relay-v2 CI (Phase 8, ADR-30).
+#
+# The gate is the deterministic, offline half of plan.md Phase-8
+# verification: the full Python gate (ruff + mypy + pytest) AND the
+# frontend gate (npm run check), plus a Docker image build. The
+# qualitative half — the real-pi e2e demo, "image pulls and runs",
+# "MCP callable from Claude Code", the live-Langfuse trace tree — is
+# manual + journal-attested (ADR-30, mirroring ADR-28 §3 / ADR-29);
+# pytest's 3 pi-e2e tests stay gated (PI_INTEGRATION is NOT set here).
+#
+# On push to main the image is published to ghcr.io/johnmathews/
+# relay-v2 with GITHUB_TOKEN, per the global Docker/CI policy. Only
+# trusted contexts (github.token/actor/sha/ref) are interpolated — no
+# untrusted event input reaches any run: step.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync (Python 3.13)
+        run: uv sync --frozen
+
+      - name: Ruff
+        run: uv run ruff check .
+
+      - name: Mypy (strict)
+        run: uv run mypy
+
+      - name: Pytest (pi-e2e stays gated — PI_INTEGRATION unset)
+        run: uv run pytest -q
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Frontend gate (lint + typecheck + vitest)
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run check
+
+  docker:
+    needs: gate
+    runs-on: ubuntu-latest
+    # Publish only the canonical branch; PRs run the gate but do not push.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/johnmathews/relay-v2:latest
+            ghcr.io/johnmathews/relay-v2:${{ github.sha }}

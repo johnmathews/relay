@@ -5,8 +5,15 @@ prompts, file browser, SSE event stream — all thin adapters over the
 single shared :class:`RelayCore`, ADR-07/ADR-15), the Phase 5 MCP server
 mounted at ``/mcp`` (same shared ``RelayCore``, ADR-27), and a lifespan
 that materialises the schema and owns the orchestrator runtime
-(RelayCore started/stopped with the app — ADR-07/ADR-19). OTel export
-(Phase 7) remains out of scope here.
+(RelayCore started/stopped with the app — ADR-07/ADR-19), and (Phase 8,
+spec §11.2) the built Vue SPA served from ``frontend/dist/`` when
+present. OTel export (Phase 7) remains out of scope here.
+
+Static-mount ordering (Phase 8): the SPA catch-all is mounted at ``/``
+**after** ``/mcp`` inside the lifespan, so it is the last route in
+registration order and never shadows ``/health``, the REST routers, or
+``/mcp``. It is a no-op when the frontend has not been built (the whole
+test tree), so the app surface is unchanged in dev/test.
 
 MCP wiring note (ADR-27, the #1367 footgun): a sub-app mounted via
 ``app.mount()`` does **not** get its ASGI lifespan auto-run by
@@ -27,6 +34,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from relay_v2.api import include_api_routers
+from relay_v2.api.static import mount_frontend
 from relay_v2.config import Settings, get_settings
 from relay_v2.core import RelayCore
 from relay_v2.db import init_db
@@ -65,6 +73,13 @@ def create_app(
         # manager explicitly via the ``async with`` below.
         mcp = create_mcp_server(core, resolved)
         app.mount("/mcp", mcp.streamable_http_app())
+        # Phase 8 (spec §11.2): serve the built SPA at "/" in
+        # production. Appended last — after /health, the REST routers
+        # and /mcp — so the catch-all never shadows an API path
+        # (Starlette matches in registration order). No-op when the
+        # frontend has not been built (dev/test), so the app surface is
+        # unchanged there. Additive; touches no contract.
+        mount_frontend(app)
         try:
             async with mcp.session_manager.run():
                 yield

@@ -1489,3 +1489,113 @@ plan.md Phase-7 verification has two halves:
   (BatchSpanProcessor swallows export errors), never a failed run.
 
 ---
+
+## ADR-30 — Phase-8 verification: automated CI vs. journal-attested manual; additive prod static-serving
+
+**Status:** Accepted (2026-05-19). Implements `docs/plan.md` Phase 8
+and `spec.md` §11.2. Mirrors the established
+automated-vs-manual split of ADR-24, ADR-28 §3, and ADR-29.
+
+**Context.** Phase 8 is verification & polish: README rewrite,
+`Dockerfile` + compose, the mandatory GHCR CI workflow, a docs
+accuracy pass, and the one functional gap that blocked the packaging
+story — spec §11.2 mandates the built Vue SPA be served by FastAPI in
+production, but no `StaticFiles` mount existed. plan.md's Phase-8
+verification has the same two-natured shape ADR-28 §3 / ADR-29 already
+resolved: a deterministic, offline half (fresh `uv sync`; ruff + mypy
++ pytest; the frontend `npm run check`; the Docker image builds) and a
+qualitative half needing real pi (Max subscription, network,
+multi-minute, non-deterministic) or live external systems (the
+end-to-end `relay start eng-team-demo.md` demo, "Docker image pulls
+and runs" against a published image, "MCP callable from Claude Code",
+the live-Langfuse trace tree carried from Phase 7). The constraint:
+Phase 8 must be **additive/polish only** — no orchestrator / REST /
+SSE / MCP / observability contract change.
+
+**Alternatives considered.**
+
+1. *Drive the e2e demo + live-Langfuse acceptance in CI behind
+   `PI_INTEGRATION=1`.* Rejected for the same reason ADR-28 §3 and
+   ADR-29 rejected it: non-deterministic LLM output makes assertions
+   vacuous or flaky, CI cannot assert "dashboard renders cleanly" or
+   "the tree nests correctly in the Langfuse UI", and it would couple
+   CI to a Max subscription + a live Langfuse. Inconsistent with how
+   pi-e2e is treated project-wide.
+2. *Implement prod static-serving as an always-on mount / a hard
+   dependency on a build step.* Rejected: the entire test tree and any
+   un-built source checkout have no `frontend/dist/`; an
+   unconditional mount would change the app surface in dev/test
+   (a `/` route, altered 404s) and risk shadowing API paths — i.e. a
+   contract change, violating the additive-only constraint.
+3. *A conditional, last-mounted SPA catch-all + the
+   automated/manual split applied verbatim from ADR-29.* The mount is
+   a no-op (returns `False`, mounts nothing) when `frontend/dist/` is
+   absent; when present it is appended **after** `/health`, the REST
+   routers and `/mcp` so Starlette (which matches in registration
+   order) never lets it shadow an API path; SPA history-mode fallback
+   serves `index.html` only for extension-less misses so a broken
+   asset reference still 404s.
+
+**Decision.** Option 3.
+
+- **Verification — automated (CI, `.github/workflows/ci.yml`).** The
+  `gate` job runs `uv sync --frozen` then `uv run ruff check .`,
+  `uv run mypy`, `uv run pytest -q` (the 3 pi-e2e tests stay gated —
+  `PI_INTEGRATION` is **not** set), then the frontend gate (`npm ci`
+  + `npm run check` in `frontend/`). The full gate is Python **and**
+  frontend, by policy. The `docker` job (push to `main` only, `needs:
+  gate`) logs in to GHCR with `${{ github.token }}` and pushes
+  `ghcr.io/johnmathews/relay-v2:latest` + `:${{ github.sha }}`
+  (`permissions: packages: write`); `workflow_dispatch` is present
+  per policy. Only trusted contexts are interpolated — no untrusted
+  event input reaches a `run:` step. The Docker image **building** is
+  deterministic and is therefore a CI gate (it also exercises the
+  fresh `uv sync` and the in-image frontend build).
+- **Verification — manual, journal-attested (gated like
+  `PI_INTEGRATION=1`).** The end-to-end `relay start eng-team-demo.md`
+  demo (real pi, dashboard renders the full run, MCP callable from
+  Claude Code) and the live-Langfuse-UI trace-tree acceptance carried
+  from ADR-29 §verification-2. These are documented step-by-step
+  procedures (`docs/skills.md` for the eng-team demo;
+  `docs/observability.md` for the Langfuse tree) and attested in the
+  journal, not run by CI — exactly the ADR-28 §3 / ADR-29 profile.
+  The Phase-8 journal entry attests the deterministic half (suite,
+  ruff/mypy, the local `docker build` + container boot smoke) and
+  records the manual half as the outstanding owner-run procedures.
+- **Prod static-serving is additive.** New
+  `src/relay_v2/api/static.py` (`frontend_dist_dir()` resolver +
+  `_SpaStaticFiles` 404→`index.html` fallback + `mount_frontend()`);
+  `app.py` calls `mount_frontend(app)` in the lifespan immediately
+  after the `/mcp` mount. With no build present the function mounts
+  nothing and returns `False`, so the suite's 192 pre-Phase-8 tests
+  are byte-for-byte unaffected; two new tests
+  (`tests/api/test_static_frontend.py`) prove both the no-op and the
+  built-frontend behaviours, and the real Docker image was booted
+  locally to confirm `/`, a deep SPA route, `/health` and
+  `/openapi.json` all behave correctly together. No event-store /
+  REST / SSE / MCP / observability contract changed.
+
+**Consequences.**
+- New: `src/relay_v2/api/static.py`,
+  `tests/api/test_static_frontend.py`, `Dockerfile`, `.dockerignore`,
+  `docker-compose.example.yml`, `.github/workflows/ci.yml`. Changed:
+  `README.md` (rewritten — Phases 0–8, install/run/dashboard/MCP/
+  observability/Docker), `app.py` (one additive lifespan call + a
+  docstring note), `CLAUDE.md` "Current state" + toolchain,
+  `spec.md` §11.2 (Phase-8 implementation note), `docs/plan.md`
+  Phase 8 (delivered). Suite 192→**194 passed**, 3 pi-e2e still
+  gated; ruff + `mypy --strict` clean across **38** source files;
+  backend coverage 93%.
+- Two Phase-7 follow-ups remain open and are recorded, **not** closed
+  by Phase 8 (closing either would be a contract change): (a) the
+  live-Langfuse-UI acceptance has still not been run (manual,
+  journal-attested when performed — ADR-29 §verification-2); (b) the
+  latent ADR-10 gap that `agent_end`/`SessionEnded` is never persisted
+  as an `events` row on the sentinel-close path — ADR-29 explicitly
+  fences this as "C's territory, its own ADR + `spec.md` §6 change".
+  Phase 8 neither widens nor closes them.
+- The MVP is complete: every `docs/plan.md` "what done with MVP looks
+  like" bullet is satisfied except the two owner-run manual
+  acceptances above, which are documented procedures, not code work.
+
+---

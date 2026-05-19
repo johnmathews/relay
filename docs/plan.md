@@ -500,10 +500,26 @@ src/relay_v2/observability/
 
 ---
 
-## Phase 8 — verification & polish (2 days)
+## Phase 8 — verification & polish (2 days) — **COMPLETE (2026-05-19, ADR-30)**
 
 **Goal.** MVP-quality polish. CI passes. Docker image builds. README
 covers install + run.
+
+> **Delivered.** README rewritten (Phases 0–8; install/run/dashboard/
+> MCP/observability/Docker); additive conditional `StaticFiles` SPA
+> mount (`src/relay_v2/api/static.py`, spec §11.2) + 2 tests; multi-
+> stage `Dockerfile` + `.dockerignore` + `docker-compose.example.yml`;
+> `.github/workflows/ci.yml` (full Python + frontend gate, GHCR
+> publish on push to `main`, `workflow_dispatch`); ADR-30 + spec §11.2
+> note + CLAUDE.md update. Suite 192→**194 passed**, 3 pi-e2e gated;
+> ruff + `mypy --strict` clean (38 source files); coverage 93%.
+> `docker build` + container-boot smoke verified locally (`/health`,
+> `/`, deep SPA route, `/openapi.json`). The automated/manual split is
+> ADR-30. **Outstanding (manual, owner-run, journal-attested):** the
+> end-to-end `relay start eng-team-demo.md` demo and the live-Langfuse
+> trace-tree acceptance (carried from Phase 7); and the latent ADR-10
+> `agent_end`-not-persisted gap, which is deliberately deferred to its
+> own ADR + spec §6 change (ADR-29/ADR-30).
 
 **Deliverables:**
 

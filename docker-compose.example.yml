@@ -1,0 +1,40 @@
+# relay-v2 — example compose (Phase 8).
+#
+# Runs the relay backend (which also serves the built dashboard at
+# http://localhost:7800/). Copy to docker-compose.yml and adjust.
+#
+# Observability is OPT-IN. Langfuse is intentionally NOT vendored here:
+# its v3 self-host is a multi-service stack (web + worker + Postgres +
+# ClickHouse + Redis + S3) that would silently rot against upstream
+# releases. Run Langfuse from its officially-maintained compose, then
+# point relay at it with the three RELAY_LANGFUSE_* vars below. See
+# docs/langfuse-compose.example.yml and docs/observability.md.
+
+services:
+  relay:
+    build: .
+    # Or pull the published image instead of building:
+    # image: ghcr.io/johnmathews/relay-v2:latest
+    ports:
+      - "7800:7800"
+    environment:
+      RELAY_HOST: 0.0.0.0
+      RELAY_PORT: "7800"
+      # ── optional: mirror the event store to self-hosted Langfuse ──
+      # Uncomment and fill in after starting upstream Langfuse's compose
+      # (langfuse-web at http://localhost:3000) and creating a project.
+      # RELAY_OTEL_EXPORT: langfuse
+      # RELAY_LANGFUSE_HOST: http://host.docker.internal:3000
+      # RELAY_LANGFUSE_PUBLIC_KEY: pk-lf-...
+      # RELAY_LANGFUSE_SECRET_KEY: sk-lf-...
+    volumes:
+      # Persist the SQLite event store across container restarts.
+      # relay writes <cwd>/.relay; the image's WORKDIR is /app.
+      - relay-data:/app/.relay
+    restart: unless-stopped
+    # pi (the inference harness) is NOT bundled in the image — relay
+    # spawns it as a subprocess. A real run additionally requires pi
+    # 0.74.0 on PATH and PI_AGENT_SDK=1; see README "pi version".
+
+volumes:
+  relay-data:

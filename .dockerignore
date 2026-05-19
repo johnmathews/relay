@@ -1,0 +1,27 @@
+# Build context hygiene — keep the image small and the build
+# deterministic. The frontend build happens inside the image (stage 1),
+# so a host-built dist/ and node_modules must never leak in.
+.git
+.github
+.claude
+.venv
+**/__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+.coverage.*
+htmlcov
+.relay
+.engineering-team
+node_modules
+frontend/node_modules
+frontend/dist
+tests
+scratch
+journal
+docs
+*.md
+!README.md
+.tool-versions.local
