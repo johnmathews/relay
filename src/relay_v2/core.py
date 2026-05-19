@@ -92,8 +92,14 @@ class RelayCore:
 
     async def start(self) -> None:
         """Ensure the schema exists and start the supervisor. Idempotent
-        ``create_all`` (ADR-17) — safe even if the app already ran it."""
-        init_db(self._settings)
+        ``create_all`` (ADR-17) — safe even if the app already ran it.
+
+        RelayCore needs only schema *existence*; it owns its own async
+        engine (``self._engine``). The sync engine ``init_db`` returns is
+        bootstrap-only and must not outlive this method — dispose it
+        immediately so its connection pool does not leak (ADR-21)."""
+        bootstrap_engine = init_db(self._settings)
+        bootstrap_engine.dispose()
         self._supervisor = asyncio.create_task(self._supervise())
 
     async def aclose(self) -> None:
@@ -263,6 +269,16 @@ class RelayCore:
             paused = await latest_paused_iter(self._sm, run_id)
             if paused is None or paused.signal_args is None:
                 raise ValueError(f"run {run_id} has no saved pause prompt")
+            # Resolve the project before any side effect: a deleted
+            # project must fail loudly, not silently run pi in the
+            # process CWD (which corrupts an unrelated directory).
+            async with self._sm() as s:
+                project = await s.get(Project, run.project_id)
+            if project is None:
+                raise ValueError(
+                    f"run {run_id} project {run.project_id} no longer exists"
+                )
+            project_root = Path(project.root_path)
             args: dict[str, Any] = dict(paused.signal_args)
             body = compose_resume_prompt(
                 str(args.get("next_prompt", "")),
@@ -276,10 +292,6 @@ class RelayCore:
             await self._store.append(
                 run_id, "pause_resolved", {"answer": answer}
             )
-
-            async with self._sm() as s:
-                project = await s.get(Project, run.project_id)
-            project_root = Path(project.root_path) if project else Path()
 
             run_dir = self._settings.data_dir / "runs" / run_id
             phase_file = run_dir / "phase"

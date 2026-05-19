@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     pi_bin: str = "pi"
     pi_model: str = "claude-sonnet-4-6"
     pi_provider: str = "anthropic"
+    # Known-good pi pin (OQ-5). Mirrors `.tool-versions`; a mismatch is
+    # logged (non-fatal) at first spawn, never enforced.
+    pi_expected_version: str = "0.74.0"
 
     max_iters: int = 12
     iter_timeout: int = 1800  # seconds

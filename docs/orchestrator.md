@@ -64,7 +64,11 @@ the spec elides live in `_drive_iter` so the loop stays readable:
 - **Phase carry-forward.** The *last* `phase-start` of the iter (via
   `extract_phase_start`) sets the next iter's `RELAY_PHASE` and is
   written to `$RELAY_RUN_DIR/phase` — independent of which signal
-  closed the iter.
+  closed the iter. When a terminal signal shared the turn with the
+  `phase-start` (so `detect_in_text` returned the terminal and never
+  emitted the phase_start), the carry-forward path appends the
+  `signal_emit{kind:phase_start}` itself, exactly once — the Phase 4
+  timeline/replay always sees the transition.
 - **No usable signal.** Clean `agent_end` with no column-0 closing
   sentinel (a fenced/indented one never matches) *and* a `MarkerError`
   both → `exit_reason="agent_end_no_signal"`, run fails; this stays

@@ -809,3 +809,41 @@ bootstrap (ADR-17). Every orchestrator-driven read/write uses the
   foresaw this); this ADR records the dependency addition.
 
 ---
+
+## ADR-22 — Resume guarantees forward progress past `max_iters`
+
+**Status:** Accepted (2026-05-19). Fixes a Phase 2 boundary defect found
+in the pre-Phase-3 evaluation (`evaluation-report.md`).
+
+**Context.** `run_loop` bounds iters with `while seq < max_iters` and
+`resume_run` re-enqueues a paused run at `start_seq = paused.seq`. When a
+run pauses on its last budgeted iter (`paused.seq == max_iters`), the
+resumed loop's condition `max_iters < max_iters` is immediately false:
+the loop body never runs and the run ends `failed/max_iters` the instant
+it is resumed — discarding the human's answer with no explanation. A
+pause is an explicit human "continue" instruction; ending it as a
+budget-exhaustion failure is wrong.
+
+**Decision.** A resumed run is guaranteed *at least one* post-answer
+iter. `run_loop` computes an effective cap
+`effective_max = max(ctx.max_iters, ctx.start_seq + 1)` and bounds the
+loop with that. For a fresh run (`start_seq == 0`) this is exactly
+`max_iters` — behavior is unchanged. For a resume it is at least
+`paused.seq + 1`, so the answer is always processed in at least one
+iter.
+
+**Rejected alternatives.**
+- *Pause never counts against the cap* (decrement the budget on resume):
+  a larger behavior change that makes the iter budget hard to reason
+  about across multiple pauses; rejected as scope creep for the MVP.
+- *Succeed-and-stop when resumed at the cap*: silently drops the user's
+  answer; defeats the purpose of resume.
+
+**Consequences.**
+- A run that pauses at the cap and is resumed can run one iter beyond
+  `max_iters`. This is intentional and bounded (one extra iter per
+  resume) — a human chose to continue.
+- No schema change. spec.md §6.2 documents the effective-cap contract;
+  ADR-20 (pause/resume persistence) is unaffected.
+
+---
