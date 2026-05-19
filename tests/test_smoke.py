@@ -38,7 +38,11 @@ def test_first_serve_creates_db_with_schema(settings: Settings) -> None:
         client.get("/health")
     assert settings.db_path.exists()
 
-    tables = set(inspect(make_engine(settings.db_url)).get_table_names())
+    engine = make_engine(settings.db_url)
+    try:
+        tables = set(inspect(engine).get_table_names())
+    finally:
+        engine.dispose()  # else the sqlite connection leaks (ResourceWarning)
     assert SPEC_TABLES <= tables
 
 

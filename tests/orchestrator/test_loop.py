@@ -10,7 +10,8 @@ the event log is the source of truth (ADR-10).
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -78,9 +79,17 @@ def _settings(tmp_path: Path) -> Settings:
     return Settings(data_dir=tmp_path / ".relay")
 
 
-def _read(settings: Settings) -> Session:
+@contextmanager
+def _read(settings: Settings) -> Iterator[Session]:
+    """Throwaway sync engine for read-back assertions. Context-managed so
+    the engine is disposed (not just the Session closed) — otherwise the
+    pooled sqlite connection leaks as a ResourceWarning."""
     engine = create_engine(settings.db_url)
-    return Session(engine)
+    try:
+        with Session(engine) as s:
+            yield s
+    finally:
+        engine.dispose()
 
 
 def test_handoff_iterates_then_done(tmp_path: Path) -> None:

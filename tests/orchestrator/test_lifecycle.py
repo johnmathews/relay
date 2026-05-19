@@ -6,7 +6,11 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
+
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from relay_v2.config import Settings
 from relay_v2.db import init_db, make_async_engine, make_async_sessionmaker
@@ -17,21 +21,28 @@ from relay_v2.orchestrator.lifecycle import (
 )
 
 
-def _sm(tmp_path: Path):  # type: ignore[no-untyped-def]
+@asynccontextmanager
+async def _sm(
+    tmp_path: Path,
+) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    """Yield an async sessionmaker and dispose both engines. The sync
+    `init_db` bootstrap engine is disposed immediately; the async engine
+    in `finally` (in-loop) so the aiosqlite connection doesn't leak."""
     settings = Settings(data_dir=tmp_path / ".relay")
-    init_db(settings)
-    return make_async_sessionmaker(
-        make_async_engine(settings.async_db_url)
-    )
+    init_db(settings).dispose()  # sync bootstrap engine — done after DDL
+    engine = make_async_engine(settings.async_db_url)
+    try:
+        yield make_async_sessionmaker(engine)
+    finally:
+        await engine.dispose()
 
 
 def test_register_project_is_idempotent(tmp_path: Path) -> None:
-    sm = _sm(tmp_path)
-
     async def scenario() -> tuple[int, int]:
-        a = await register_project(sm, tmp_path, "proj")
-        b = await register_project(sm, tmp_path, "proj-again")
-        return a, b
+        async with _sm(tmp_path) as sm:
+            a = await register_project(sm, tmp_path, "proj")
+            b = await register_project(sm, tmp_path, "proj-again")
+            return a, b
 
     a, b = asyncio.run(scenario())
     assert a == b  # same row, not a duplicate

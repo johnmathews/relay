@@ -11,6 +11,8 @@ enforce FKs (no ``PRAGMA foreign_keys=ON`` anywhere), so a bare string
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from sqlalchemy import select
@@ -28,11 +30,23 @@ from relay_v2.harness.protocol import (
 )
 
 
-def _store(tmp_path: Path) -> tuple[Settings, EventStore]:
+@asynccontextmanager
+async def _store(
+    tmp_path: Path,
+) -> AsyncIterator[tuple[Settings, EventStore]]:
+    """Yield an EventStore over a fresh DB and dispose its engines.
+
+    The sync `init_db` bootstrap engine is disposed immediately (it only
+    runs `create_all`); the async engine is disposed in `finally` inside
+    the caller's event loop — otherwise the aiosqlite connection is GC'd
+    unclosed and warns."""
     settings = Settings(data_dir=tmp_path / ".relay")
-    init_db(settings)  # sync schema bootstrap (same SQLite file)
-    sm = make_async_sessionmaker(make_async_engine(settings.async_db_url))
-    return settings, EventStore(sm)
+    init_db(settings).dispose()  # sync bootstrap engine — done after DDL
+    engine = make_async_engine(settings.async_db_url)
+    try:
+        yield settings, EventStore(make_async_sessionmaker(engine))
+    finally:
+        await engine.dispose()
 
 
 def test_truncate_result_over_cap_pure() -> None:
@@ -49,20 +63,22 @@ def test_event_store_seq_reseed_on_restart(tmp_path: Path) -> None:
     """A second EventStore over the same DB (cold seq cache, i.e. a
     process restart) continues the per-run seq from the DB max, not 1 —
     otherwise a resumed run violates UNIQUE(run_id, seq)."""
-    settings, store1 = _store(tmp_path)
-
     async def scenario() -> tuple[list[int], int]:
-        first = [
-            await store1.append("r1", "iter_started", {"n": i})
-            for i in range(3)
-        ]
-        # New EventStore == cold cache == simulated process restart.
-        sm = make_async_sessionmaker(
-            make_async_engine(settings.async_db_url)
-        )
-        store2 = EventStore(sm)
-        after_restart = await store2.append("r1", "iter_started", {"n": 3})
-        return first, after_restart
+        async with _store(tmp_path) as (settings, store1):
+            first = [
+                await store1.append("r1", "iter_started", {"n": i})
+                for i in range(3)
+            ]
+            # New EventStore == cold cache == simulated process restart.
+            engine2 = make_async_engine(settings.async_db_url)
+            try:
+                store2 = EventStore(make_async_sessionmaker(engine2))
+                after_restart = await store2.append(
+                    "r1", "iter_started", {"n": 3}
+                )
+            finally:
+                await engine2.dispose()
+            return first, after_restart
 
     first, after_restart = asyncio.run(scenario())
     assert first == [1, 2, 3]
@@ -72,32 +88,31 @@ def test_event_store_seq_reseed_on_restart(tmp_path: Path) -> None:
 def test_store_harness_event_tool_branches(tmp_path: Path) -> None:
     """ToolUseStart/End persist; ToolUseUpdate/SessionStarted/
     SessionEnded are intentionally dropped (no event kind for them)."""
-    _settings, store = _store(tmp_path)
-
     async def scenario() -> list[str]:
-        await store.store_harness_event(
-            "r1", 1, ToolUseStart(1, 0.0, "t1", "Bash", {"cmd": "ls"})
-        )
-        await store.store_harness_event(
-            "r1", 1, ToolUseEnd(2, 0.0, "t1", {"out": "ok"}, False, 5)
-        )
-        await store.store_harness_event(
-            "r1", 1, ToolUseUpdate(3, 0.0, "t1", {"partial": 1})
-        )
-        await store.store_harness_event(
-            "r1", 1, SessionStarted(4, 0.0, "sid", "/cwd")
-        )
-        await store.store_harness_event(
-            "r1", 1, SessionEnded(5, 0.0, [], "clean")
-        )
-        async with store.sessionmaker() as s:
-            rows = list(
-                await s.scalars(
-                    select(Event).where(Event.run_id == "r1")
-                    .order_by(Event.seq)
-                )
+        async with _store(tmp_path) as (_settings, store):
+            await store.store_harness_event(
+                "r1", 1, ToolUseStart(1, 0.0, "t1", "Bash", {"cmd": "ls"})
             )
-        return [r.kind for r in rows]
+            await store.store_harness_event(
+                "r1", 1, ToolUseEnd(2, 0.0, "t1", {"out": "ok"}, False, 5)
+            )
+            await store.store_harness_event(
+                "r1", 1, ToolUseUpdate(3, 0.0, "t1", {"partial": 1})
+            )
+            await store.store_harness_event(
+                "r1", 1, SessionStarted(4, 0.0, "sid", "/cwd")
+            )
+            await store.store_harness_event(
+                "r1", 1, SessionEnded(5, 0.0, [], "clean")
+            )
+            async with store.sessionmaker() as s:
+                rows = list(
+                    await s.scalars(
+                        select(Event).where(Event.run_id == "r1")
+                        .order_by(Event.seq)
+                    )
+                )
+            return [r.kind for r in rows]
 
     kinds = asyncio.run(scenario())
     assert kinds == ["tool_use_start", "tool_use_end"]
@@ -106,20 +121,19 @@ def test_store_harness_event_tool_branches(tmp_path: Path) -> None:
 def test_store_harness_event_truncates_large_tool_result(
     tmp_path: Path,
 ) -> None:
-    _settings, store = _store(tmp_path)
-
     async def scenario() -> dict[str, object]:
-        big = {"blob": "y" * (TOOL_RESULT_CAP + 9000)}
-        await store.store_harness_event(
-            "r1", 1, ToolUseEnd(1, 0.0, "t1", big, False, 9)
-        )
-        async with store.sessionmaker() as s:
-            row = (
-                await s.scalars(
-                    select(Event).where(Event.kind == "tool_use_end")
-                )
-            ).one()
-        return row.payload["result"]
+        async with _store(tmp_path) as (_settings, store):
+            big = {"blob": "y" * (TOOL_RESULT_CAP + 9000)}
+            await store.store_harness_event(
+                "r1", 1, ToolUseEnd(1, 0.0, "t1", big, False, 9)
+            )
+            async with store.sessionmaker() as s:
+                row = (
+                    await s.scalars(
+                        select(Event).where(Event.kind == "tool_use_end")
+                    )
+                ).one()
+            return row.payload["result"]
 
     result = asyncio.run(scenario())
     assert result["_truncated"] is True
