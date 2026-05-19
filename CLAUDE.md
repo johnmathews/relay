@@ -38,13 +38,23 @@ tail_events/read_artifact`) are thin adapters over the single shared
 `RelayCore`, reusing the REST `api/schemas.py` Pydantic models
 (ADR-07/15) — no proxying, no new core capability. Mounted in the app
 lifespan with `async with mcp.session_manager.run():` (the #1367
-footgun: a mounted sub-app's lifespan is not auto-run). `uv run
-pytest` green (158 passed, 3 pi-e2e gated), `ruff`/`mypy --strict`
-clean, backend coverage 91%. The next coding work is **Phase 6** in
-`docs/plan.md`. Operational refs: `docs/harness.md`,
+footgun: a mounted sub-app's lifespan is not auto-run). Phase 6 adds
+the **engineering-team skill port** (`skills/engineering-team/`, 11
+docs) + `relay install-skill` (`src/relay_v2/cli/install_skill.py`):
+the v1 skill ported faithfully with six deliberate adaptations
+(single-session/no-subagent-dispatch, `.relay/runs` paths,
+relay-provisioned worktree, inlined Phase-4 gate replacing
+`/done`+`/merge-push`, repointed sentinel pointers, `uv run`
+examples) — sentinel grammar verbatim (ADR-28). Skill+CLI only; no
+orchestrator/REST/SSE/MCP contract changed. `uv run pytest` green
+(**183 passed**, 3 pi-e2e gated), `ruff`/`mypy --strict` clean (35
+source files), backend coverage 91%. The next coding work is
+**Phase 7** in `docs/plan.md`. Operational refs: `docs/harness.md`,
 `docs/orchestrator.md`, `docs/api.md`, `docs/dashboard.md`,
-`docs/mcp.md` (Phase 5; `docs/mcp-config.example.json` is the client
-registration snippet; `frontend/README.md` is the dev quick-start).
+`docs/mcp.md`, `docs/skills.md` (Phase 6; the engineering-team
+skill + `relay install-skill` + the manual pi acceptance procedure;
+`docs/mcp-config.example.json` is the MCP client registration
+snippet; `frontend/README.md` is the dev quick-start).
 Design docs (`docs/`) and the pi de-risking `scratch/` dir remain the
 canonical context. New ADRs: ADR-19/20/21 (Phase 2 — orchestrator
 runtime, pause/resume, async DB), ADR-22 (resume forward-progress,
@@ -52,7 +62,8 @@ pre-Phase-3 hardening), ADR-23 (SSE broadcaster + Last-Event-ID
 cutover), ADR-24 (API test toolchain), ADR-25 (run-artifacts second
 sandboxed root), ADR-26 (Phase-4 frontend toolchain mandates), ADR-27
 (Phase-5 MCP toolchain: bundled SDK, `mcp>=1.27.1,<2` pin, lifespan
-session-manager wiring).
+session-manager wiring), ADR-28 (Phase-6 skill port: single-session,
+repo-root + wheel force-include, manual behavioral verification).
 
 ## What relay v2 is
 
@@ -182,9 +193,10 @@ implementation:
   `frontend/README.md` has the operational notes. The full gate is
   Python (`ruff`/`mypy`/`pytest`) **and** the frontend `npm run check`.
 - Console script: `relay`. Implemented today: `relay serve`,
-  `relay --version` (Phase 0 subset). `relay start` / `status` /
-  `cancel` / `install-skill` arrive in Phase 3+. Default bind
-  `127.0.0.1:7800`.
+  `relay --version` (Phase 0), `relay install-skill`
+  (Phase 6 — `[--project PATH] [--force]`; ADR-28, `docs/skills.md`).
+  `relay start` / `status` / `cancel` arrive in later phases. Default
+  bind `127.0.0.1:7800`.
 - Pi integration tests are gated behind `PI_INTEGRATION=1`; harness
   unit tests run offline against the captured `scratch/*.jsonl` fixtures.
   Orchestrator tests live under `tests/orchestrator/` and drive the loop

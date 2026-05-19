@@ -1188,3 +1188,97 @@ flags transport-tooling churn as the one Phase-5 risk.
   action — not an incidental `uv lock --upgrade`.
 
 ---
+
+## ADR-28 — Phase-6 engineering-team skill port: single-session, repo-root + force-include, manual behavioral verification
+
+**Status:** Accepted (2026-05-19). Implements ADR-14 / spec.md §12.
+Records the Phase-6 skill-port decisions and resolves the
+`docs/plan.md` Phase-6 named risk ("Skill prose quality … the v2 port
+should not regress its quality").
+
+**Context.** v1's `engineering-team` skill (11 files, ~1900 lines:
+`SKILL.md`, four `phases/`, six `references/`) is mature and
+prose-dense. Phase 6 ports it into relay-v2 and adds `relay
+install-skill`. The skill must run under the **pi** harness (not
+Claude Code) and inside relay-v2's already-built run model
+(orchestrator-provisioned worktree, `.relay/runs/<run_id>/` artifacts,
+no subagent dispatch). The risk is regressing the v1 prose by
+rewriting for its own sake.
+
+**Decision.**
+
+1. **Port faithfully; adapt only deliberately.** v1 prose and the
+   sentinel **grammar** are kept verbatim (spec.md §12 mandate). Six
+   adaptations were made on purpose and no others:
+   1. **Single-session, no subagent dispatch.** v1's Task-tool
+      "Engineer N / Product Owner" subagents become *analysis lenses
+      the one session works in sequence*. relay-v2's orchestrator has
+      no `subagent_dispatch` signal handler (post-MVP, spec.md §12);
+      writing the skill for parallel dispatch today would be fiction.
+   2. **`$RELAY_RUN_DIR` = `.relay/runs/<run_id>/`** everywhere — the
+      v1 `.engineering-team/runs/<utc>/` path is fully removed
+      (spec.md §3.3; sibling of the worktree).
+   3. **Worktree is relay-provisioned (ADR-13).** Phase 3 no longer
+      runs `git worktree add`; it *verifies* the orchestrator's
+      worktree. The v1 `current.txt` mirror is deleted (driver-side
+      now, per ADR-13's stated consequence).
+   4. **Phase 4 inlines the gate.** No `/done` or `/merge-push` exist
+      under pi (Claude Code slash-skills). Phase 4 performs their
+      steps inline — sanity → CI-config → docs → full tests →
+      security review → lint+types → journal → FF-merge → ask before
+      push — preserving v1's intent (lint/types/security are *not*
+      run by the unit loop) without the missing tooling.
+   5. Sentinel source-doc pointers repoint to `docs/spec.md`.
+   6. Worked-example commands use relay-v2's `uv run` gate.
+   These are locked by `tests/skills/test_skill_structure.py` so a
+   later careless edit fails the gate instead of silently regressing.
+
+2. **Repo-root canonical source + wheel force-include.** The skill
+   lives at `skills/engineering-team/` (spec.md §12), outside the
+   `src/relay_v2` wheel package. `[tool.hatch.build.targets.wheel.
+   force-include]` maps it into built wheels as `relay_v2/skills/`.
+   `install_skill.skill_source_dir()` prefers the packaged location
+   and falls back to the repo-root tree, so both the editable/source
+   install (the only mode used today) and a future wheel resolve a
+   bundled copy. Rejected: vendoring the skill inside
+   `src/relay_v2/` (contradicts spec.md §12's stated path);
+   `importlib.resources`-only (breaks the editable layout where
+   `relay_v2` resolves to `src/relay_v2`, which has no sibling
+   `skills/`).
+
+3. **Behavioral verification is a documented manual step, not an
+   automated test.** plan.md Phase-6 verification ("run relay-v2
+   against the v1 demo fixture; confirm evaluate→plan→develop fixes
+   the bug across iters; dashboard renders cleanly") spawns real pi
+   (Max subscription, network, multi-minute, non-deterministic) and
+   its acceptance criteria are qualitative. That is exactly the
+   profile of the three existing `PI_INTEGRATION=1`-gated e2e tests.
+   Making it a CI unit test would be flaky and slow and could not
+   assert "renders cleanly". Decision: keep the deterministic
+   automated coverage (the `install_skill` CLI suite and the
+   structural-invariant suite) and document the full pi run as a
+   manual procedure in `docs/skills.md`, gated like the other pi
+   e2e checks. Rejected: a `PI_INTEGRATION=1` automated test —
+   non-deterministic LLM output makes the assertions either vacuous
+   or flaky; the manual step with the v1 `inspect-eng-team-demo.sh`
+   probe is the honest verification.
+
+**Consequences.**
+- New: `skills/engineering-team/` (11 files), `src/relay_v2/cli/`
+  (`__init__.py`, `install_skill.py`), `relay install-skill`
+  subcommand wired in `__main__.py`, hatch `force-include`,
+  `tests/cli/` + `tests/skills/` (+25 tests; suite 158→183 passed,
+  3 pi-e2e still gated; ruff/mypy clean, 35 source files, coverage
+  91%). `docs/skills.md` is the new operational ref; `spec.md §12`
+  gains a Phase-6 implementation note.
+- The skill is single-session by design until relay grows
+  `subagent_dispatch`; at that point the lenses become parallel
+  dispatches again with **no change to phase structure or
+  sentinels** — the port preserved that seam intentionally.
+- `relay install-skill` is additive and offline; no orchestrator,
+  REST, SSE, or MCP contract changed. Phase 6 is skill + CLI only.
+- Behavioral acceptance is attested in the journal + `docs/skills.md`
+  procedure, not by CI — consistent with how pi e2e is treated
+  project-wide (ADR-24, CLAUDE.md).
+
+---

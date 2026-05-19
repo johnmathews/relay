@@ -785,6 +785,32 @@ Per ADR-14. The skill lives at `skills/engineering-team/` inside
   engineering-team skill may operate without subagents and use a single
   long-running session per iter. Subagent support is a follow-up.
 
+**Phase-6 implementation note (ADR-28).** The skill is built at
+`skills/engineering-team/` (repo root, outside the `src/relay_v2`
+wheel; a hatch `force-include` maps it into built wheels as
+`relay_v2/skills/`). It is deployed by `relay install-skill`
+(`src/relay_v2/cli/install_skill.py`): copies to
+`~/.claude/skills/engineering-team/` by default, `--project PATH`
+overrides, `--force` overwrites after backing the old copy up. Six
+deliberate port adaptations were applied (and are locked by
+`tests/skills/test_skill_structure.py`): (1) the v1 Task-tool subagent
+roles became single-session *analysis lenses* (no subagent dispatch in
+MVP — the orchestrator has no `subagent_dispatch` handler yet);
+(2) every artifact path moved to `$RELAY_RUN_DIR` =
+`.relay/runs/<run_id>/`; (3) Phase 3 no longer creates a worktree —
+relay's `provision_workspace` does (ADR-13: "no Phase-3-skill
+responsibility"); the `current.txt` mirror is gone; (4) Phase 4
+inlines the quality gate (lint + types + tests + security review +
+journal) and the FF-merge because the pi harness has no `/done` or
+`/merge-push` Claude Code slash-skill; (5) sentinel source-doc
+pointers repoint to this spec; (6) worked-example commands use
+relay-v2's `uv run` gate. The sentinel **grammar** is unchanged from
+v1 (this section's mandate). Behavioral acceptance (a multi-iter pi
+run against the v1 `eng-team-demo` fixture) is a documented manual
+step, gated like the other `PI_INTEGRATION=1` e2e checks — see
+`docs/skills.md` and ADR-28; automated coverage is the CLI +
+structural-invariant suites.
+
 ## 13. Open questions
 
 Carried from `motivation.md` risks; resolved as design progresses.
