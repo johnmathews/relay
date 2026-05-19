@@ -1,0 +1,702 @@
+# relay v2 — design spec
+
+> Canonical design document. Architecture, data model, harness
+> abstraction, signaling, REST + MCP surface, dashboard, observability.
+>
+> Companion docs: `motivation.md` (why), `decisions.md` (ADRs with
+> rationale), `plan.md` (phased implementation sequence).
+>
+> This doc is updated as design evolves. ADRs in `decisions.md` are
+> append-only; this doc reflects the current consensus.
+
+## 1. Overview
+
+relay v2 is a Python service that orchestrates chained agent sessions
+against a swappable headless harness, with a structured event store as
+the source of truth and a Vue dashboard for live + replay observability.
+
+**One paragraph:** A FastAPI service hosts the orchestrator, a REST API,
+an MCP server, an SSE event feed, and a single-file SQLite event store.
+The orchestrator drives a pluggable harness (`PiHarness` for MVP)
+spawning one subprocess per iter. Each iter's events flow into the
+store; the dashboard tails them over SSE and reads history from the
+same store. A small wire protocol (text sentinels in MVP, MCP tools
+optional later) signals state transitions between the agent and the
+orchestrator. Single-user, localhost-only.
+
+## 2. Architecture
+
+```
+┌─ FastAPI Python process (relay-v2 daemon) ──────────────────────────┐
+│                                                                     │
+│   ┌─ HTTP/REST routes ─┐                                            │
+│   │  /api/runs         │                                            │
+│   │  /api/runs/:id     ├──→ RelayCore service layer ────────────┐   │
+│   │  /api/events       │      (single shared in-process object) │   │
+│   │  /api/projects     │                                        │   │
+│   └────────────────────┘                                        │   │
+│                                                                 │   │
+│   ┌─ MCP server (/mcp) ──────┐                                  │   │
+│   │  relay__start_run        ├──→ same RelayCore ───────────────┤   │
+│   │  relay__pause_response   │                                  │   │
+│   │  relay__cancel_run       │                                  │   │
+│   │  relay__tail_events      │                                  │   │
+│   └──────────────────────────┘                                  │   │
+│                                                                 ↓   │
+│   ┌─ SSE /api/events/:run_id ──→ EventStore (sqlite) ←─┐      ┌────┐│
+│   │  Last-Event-ID resume       (single writer)        │      │    ││
+│   └────────────────────────────────────────────────────┘      │ O  ││
+│                                                  ↑            │ r  ││
+│   ┌─ Orchestrator (asyncio TaskGroup, lifespan-managed) ──────┤ c  ││
+│   │  one task per active Run                                  │ h  ││
+│   │    • spawn harness session                                │ e  ││
+│   │    • stream HarnessEvents into store                      │ s  ││
+│   │    • detect signals (text_sentinels|mcp_tools)            │ t  ││
+│   │    • iterate / pause / done                               │ r  ││
+│   │    • spawn subagents (new harness sessions)               │ a  ││
+│   └───────────────────────────────────────────────────────────┴────┘│
+│                              ↑                                       │
+│                      Harness adapter ──→ subprocess(pi --mode json)  │
+│                      (PiHarness)                                     │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+                              ↓ (optional bolt-on)
+                  OpenTelemetry export → Langfuse (self-hosted)
+                              ↓
+                  Vue 3 + Pinia dashboard (separate dev server in dev,
+                  static bundle served by FastAPI in prod)
+```
+
+**Process model.** Single FastAPI process. The orchestrator runs as an
+`asyncio.TaskGroup` task started in FastAPI's `lifespan` context
+manager. REST routes, MCP tools, and the orchestrator all share one
+`RelayCore` instance — no IPC, no broker. Per ADR-07.
+
+**All writes flow through `RelayCore`.** REST routes, MCP tools, and
+the orchestrator all mutate state via `RelayCore` methods. Routes never
+touch the database directly; the orchestrator is the sole writer of
+event rows, but `RelayCore` is the sole authority for starting runs,
+registering projects, creating/updating prompts, cancelling, resuming.
+This replaces v1's "dashboard never writes" invariant with the stronger
+"one service layer, one set of mutation paths" — the safety property
+v1 was protecting is preserved without artificially restricting the
+dashboard's role. The dashboard is a first-class control surface
+(ADR-15), not a read-only spectator.
+
+## 3. Data model
+
+SQLite via SQLAlchemy in MVP. Schema designed to migrate cleanly to
+Postgres later. JSON columns use SQLAlchemy's portable `JSON` type.
+
+### 3.1 Tables
+
+```sql
+-- Projects (1 row per relay-managed project root).
+CREATE TABLE projects (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  root_path     TEXT NOT NULL UNIQUE,    -- absolute project root on disk
+  name          TEXT NOT NULL,           -- display name
+  created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  user_id       INTEGER NOT NULL DEFAULT 1   -- FK reserved for multi-user
+);
+
+-- Users (single sentinel row in MVP; multi-user is additive).
+CREATE TABLE users (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  external_id   TEXT UNIQUE,             -- GitHub login etc. (nullable)
+  display_name  TEXT NOT NULL DEFAULT 'me'
+);
+
+-- Prompts (reusable; referenced by runs, not copied).
+CREATE TABLE prompts (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id    INTEGER REFERENCES projects(id),
+  name          TEXT NOT NULL,           -- slug, unique per project
+  version       INTEGER NOT NULL DEFAULT 1,
+  body          TEXT NOT NULL,
+  created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  user_id       INTEGER NOT NULL DEFAULT 1,
+  UNIQUE(project_id, name, version)
+);
+
+-- Runs (one row per `relay start` invocation).
+CREATE TABLE runs (
+  id            TEXT PRIMARY KEY,        -- "20260519-113054" or "...-abcd"
+  project_id    INTEGER NOT NULL REFERENCES projects(id),
+  prompt_id     INTEGER REFERENCES prompts(id),  -- nullable: ad-hoc prompts allowed
+  prompt_body   TEXT NOT NULL,                   -- snapshot at run start
+  user_id       INTEGER NOT NULL DEFAULT 1,
+  status        TEXT NOT NULL,           -- 'running'|'done'|'failed'|'paused'|'cancelled'
+  started_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  ended_at      TIMESTAMP,
+  max_iters     INTEGER NOT NULL DEFAULT 12,
+  iter_timeout  INTEGER NOT NULL DEFAULT 1800,   -- seconds
+  worktree_path TEXT,                            -- absolute, nullable
+  branch        TEXT,                            -- per-run branch name
+  parent_run_id TEXT REFERENCES runs(id)         -- for subagent runs
+);
+
+-- Iters (one row per iter within a run).
+CREATE TABLE iters (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id        TEXT NOT NULL REFERENCES runs(id),
+  seq           INTEGER NOT NULL,        -- 1-indexed within run
+  phase         TEXT,                    -- 'evaluation'|'planning'|'development'|'wrap-up'|NULL
+  pi_session_id TEXT,                    -- pi's session UUID for this iter
+  prompt        TEXT NOT NULL,           -- the prompt sent to pi
+  preamble      TEXT NOT NULL,           -- the RELAY_* preamble (snapshot)
+  signal_kind   TEXT,                    -- terminal signal that closed this iter: 'handoff'|'done'|'pause'|NULL
+                                         -- (mid-iter signals like 'phase_start' / 'unit_done' are recorded only in the events table)
+  signal_args   JSON,                    -- {next_prompt, summary, question, ...}
+  started_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  ended_at      TIMESTAMP,
+  exit_reason   TEXT,                    -- 'signal'|'agent_end_no_signal'|'crash'|'timeout'|'cancelled'
+  UNIQUE(run_id, seq)
+);
+
+-- Events (append-only; the source of truth for observability).
+CREATE TABLE events (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id        TEXT NOT NULL REFERENCES runs(id),
+  iter_id       INTEGER REFERENCES iters(id),    -- nullable: run-level events
+  seq           INTEGER NOT NULL,        -- monotonic per run
+  ts            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  kind          TEXT NOT NULL,           -- see event taxonomy below
+  payload       JSON NOT NULL,
+  UNIQUE(run_id, seq)
+);
+
+CREATE INDEX idx_events_run_seq ON events(run_id, seq);
+CREATE INDEX idx_iters_run     ON iters(run_id);
+CREATE INDEX idx_runs_project  ON runs(project_id);
+```
+
+### 3.2 Event taxonomy
+
+The `events.kind` column is a discriminator. Payloads are JSON.
+
+| kind | when emitted | payload shape |
+|---|---|---|
+| `run_started` | `relay start` | `{project_id, prompt_body, max_iters}` |
+| `iter_started` | iter N begins | `{seq, prompt, preamble, phase}` |
+| `assistant_text` | accumulated text from a turn | `{text, turn_seq}` |
+| `tool_use_start` | agent invokes a tool | `{tool_id, name, args}` |
+| `tool_use_end` | tool returns | `{tool_id, result, is_error, duration_ms}` |
+| `signal_emit` | parser detects handoff/done/pause/phase_start/etc. | `{kind, args}` |
+| `subagent_dispatch` | orchestrator spawns a subagent run | `{child_run_id, role, prompt}` |
+| `subagent_return` | subagent run finishes | `{child_run_id, status, result}` |
+| `iter_ended` | iter N closes | `{seq, signal_kind, exit_reason}` |
+| `pause_requested` | pause signal handled | `{question}` |
+| `pause_resolved` | answer received | `{answer}` |
+| `run_ended` | run terminates | `{status, summary}` |
+
+This is a deliberately small set. New event kinds are added as needed.
+
+### 3.3 On-disk layout
+
+Per-project, under `<project_root>/.relay/`:
+
+```
+<project_root>/.relay/
+├── relay.db                       SQLite event store (single writer: orchestrator)
+├── worktrees/<run_id>/            per-run git worktree (code workspace — agent does its
+│                                  file work here; branch named per-run, never on main)
+└── runs/<run_id>/                 per-run artifacts directory — improvement-plan.md,
+                                   evaluation-report.md, discussions/, automation logs.
+                                   This is where `RELAY_RUN_DIR` resolves (§12), and what
+                                   the dashboard's Artifacts pane (§9.1) browses.
+```
+
+The artifacts directory (`runs/<run_id>/`) is deliberately a sibling of
+`worktrees/`, **not nested inside the worktree**. Artifacts are
+cross-phase (e.g. the evaluation report from Phase 1 is referenced by
+Phase 3); decoupling them from any individual worktree's branch
+lifecycle keeps the dashboard's view of artifacts stable across phases
+and across worktree teardowns.
+
+Pi sessions persist under `~/.pi/agent/sessions/...` (pi's own
+location); relay tracks `pi_session_id` in the `iters` table so the
+session file can be located if needed for crash recovery.
+
+## 4. Harness layer
+
+Per ADR-04. The harness is the only component that knows about pi
+specifically.
+
+### 4.1 Protocols and event types
+
+```python
+# relay_v2/harness/protocol.py
+
+from typing import Protocol, AsyncIterator, Literal
+from dataclasses import dataclass
+from pathlib import Path
+
+@dataclass
+class HarnessEvent:
+    """Base class — see subclasses below."""
+    seq: int      # monotonic within the session
+    ts: float     # unix epoch seconds
+
+@dataclass
+class SessionStarted(HarnessEvent):
+    session_id: str
+    cwd: str
+
+@dataclass
+class AssistantText(HarnessEvent):
+    text: str
+    turn_seq: int   # which turn within the session
+
+@dataclass
+class ToolUseStart(HarnessEvent):
+    tool_id: str
+    name: str
+    args: dict
+
+@dataclass
+class ToolUseUpdate(HarnessEvent):
+    tool_id: str
+    partial_result: dict
+
+@dataclass
+class ToolUseEnd(HarnessEvent):
+    tool_id: str
+    result: dict
+    is_error: bool
+    duration_ms: int
+
+@dataclass
+class SessionEnded(HarnessEvent):
+    messages: list   # final compiled message list
+    stop_reason: str  # 'clean'|'crash'|'timeout'|'cancelled'
+
+# Strategy config for signaling
+@dataclass
+class SignalConfig:
+    strategy: Literal["text_sentinels", "mcp_tools"]
+    # text_sentinels: patterns to match in AssistantText events
+    # mcp_tools: tool-name prefix to watch (e.g. "relay__")
+    mcp_tool_prefix: str = "relay__"
+
+class HarnessSession(Protocol):
+    session_id: str
+
+    async def events(self) -> AsyncIterator[HarnessEvent]: ...
+    async def cancel(self) -> None: ...
+    async def wait(self) -> SessionEnded: ...
+
+class Harness(Protocol):
+    name: str
+
+    async def spawn(
+        self,
+        prompt: str,
+        cwd: Path,
+        env: dict[str, str],
+        signal_config: SignalConfig,
+        resume_from: str | None = None,
+    ) -> HarnessSession: ...
+```
+
+### 4.2 PiHarness — concrete implementation
+
+`PiHarness` translates between pi's JSONL schema and relay's
+`HarnessEvent` types. Mapping (confirmed by de-risking runs):
+
+| pi event | relay `HarnessEvent` |
+|---|---|
+| `session` | `SessionStarted(session_id=id, cwd)` |
+| `message_update` w/ `assistantMessageEvent.type == "text_delta"` | `AssistantText(text=delta.text, turn_seq)` (accumulated per turn) |
+| `tool_execution_start` | `ToolUseStart(tool_id=toolCallId, name=toolName, args)` |
+| `tool_execution_update` | `ToolUseUpdate(tool_id, partial_result)` |
+| `tool_execution_end` | `ToolUseEnd(tool_id, result, is_error=isError, duration_ms)` |
+| `agent_end` | `SessionEnded(messages, stop_reason="clean")` |
+| `agent_start`, `turn_start`, `message_start`, `message_end`, `turn_end` | consumed internally for accounting; not surfaced |
+
+Invocation form (per ADR-16, which amends ADR-03's original choice of `--mode rpc`):
+
+```
+PI_AGENT_SDK=1 pi -p "<prompt>" \
+  --mode json \
+  --provider anthropic \
+  --model <model> \
+  [--continue | --session <path> | --fork <path>]
+  [extra flags...]
+```
+
+Use `--mode json` (one-shot, JSONL stdout) rather than `--mode rpc` for
+MVP — simpler subprocess lifecycle, matches relay's "one iter, one
+subprocess" model. `--mode rpc` is held in reserve for future bidirectional
+control needs.
+
+Cancellation: `proc.terminate()` followed by `proc.wait(timeout=5)` then
+`proc.kill()` if needed. Pi has explicit RPC `abort` commands but those
+require `--mode rpc`; for `--mode json`, signal-based cancellation is the
+documented approach.
+
+## 5. Signaling
+
+Per ADR-05. Two strategies. The orchestrator emits normalized
+`SignalEmitted(kind, args)` regardless of strategy.
+
+### 5.1 `text_sentinels` (MVP strategy on pi)
+
+Inherits v1's sentinel grammar with optional schema cleanup. The parser
+watches `AssistantText` events (accumulated per turn at `turn_end`),
+matches line-anchored patterns against the cleaned text, and emits
+`SignalEmitted`. The full grammar lives in `signaling/sentinels.md`
+inside the v2 repo (TBD — port from v1 with optional revisions).
+
+Signal kinds: `phase_start`, `unit_start`, `unit_done`, `unit_abandoned`,
+`handoff`, `done`, `pause` (matching v1 except naming convention may
+shift to snake_case in the args).
+
+The prompt-marker pair (`[[engteam:prompt-start]]` … `[[engteam:prompt-end]]`)
+remains the mechanism for carrying the next-iter prompt before `handoff`
+and `pause`. See `references/signaling.md` (TBD).
+
+### 5.2 `mcp_tools` (alternative; not built in MVP)
+
+A small in-process MCP server registers tools `relay__handoff`,
+`relay__done`, `relay__pause`, `relay__phase_start`, `relay__unit_done`,
+etc. When the agent invokes one of these (via `ToolUseStart` events
+with `name.startswith("relay__")`), the orchestrator emits the
+corresponding `SignalEmitted`.
+
+On pi, this requires the `pi-mcp-adapter` community extension. Not built
+in MVP per ADR-05's MVP recommendation, but the strategy hook is there.
+
+### 5.3 Hybrid (future)
+
+Nothing precludes using both: agent can use sentinels for the canonical
+contract and MCP tools as a richer event channel (e.g., dashboard
+annotations, audit logs). Out of scope for MVP.
+
+## 6. Orchestrator
+
+One async task per active Run, managed by an `asyncio.TaskGroup` in
+FastAPI's lifespan. The task implements the chained-iter loop:
+
+```python
+async def run_loop(run: Run, core: RelayCore) -> None:
+    seq = 0
+    last_session_id: str | None = None
+    while seq < run.max_iters:
+        seq += 1
+        iter_row = await core.start_iter(run, seq=seq)
+        prompt = await core.build_prompt(run, iter_row)  # preamble + body
+        session = await harness.spawn(
+            prompt=prompt,
+            cwd=run.worktree_path or run.project.root_path,
+            env={},  # PI_AGENT_SDK is set inside PiHarness
+            signal_config=SignalConfig(strategy="text_sentinels"),
+            resume_from=last_session_id,  # None for fresh iters; chained sessions intentionally use fresh contexts
+        )
+        signal: SignalEmitted | None = None
+        async for ev in session.events():
+            await core.store_event(run, iter_row, ev)
+            if isinstance(ev, AssistantText):
+                signal = signaling.detect_in_text(ev.text, signal_config)
+            elif isinstance(ev, ToolUseStart):
+                signal = signaling.detect_in_tool(ev, signal_config)
+            if signal:
+                break
+        await session.cancel() if signal else None
+        result = await session.wait()
+        await core.end_iter(iter_row, signal, result)
+        if signal is None:
+            # No closing sentinel — ambiguous exit (v1's exit-1 case).
+            await core.fail_run(run, reason="agent_end_no_signal")
+            return
+        if signal.kind == "done":
+            await core.end_run(run, status="done", summary=signal.args.get("summary"))
+            return
+        if signal.kind == "pause":
+            await core.pause_run(run, question=signal.args["question"],
+                                  next_prompt=signal.args["next_prompt"])
+            return   # caller resumes via API
+        # signal.kind == "handoff"
+        run.next_prompt = signal.args["next_prompt"]  # for the next iter
+        last_session_id = None  # intentionally fresh context per iter — see motivation.md
+    await core.fail_run(run, reason="max_iters")
+```
+
+**Crucially:** `last_session_id` is intentionally `None` between iters.
+Pi's resume preserves context; relay's value proposition is *fresh*
+contexts per iter, with the lead engineer's compressed handoff carrying
+state forward. Pi's session resume is reserved for crash recovery, not
+inter-iter chaining.
+
+**Subagent dispatch.** If `signal.kind == "subagent_dispatch"` (a new
+strategy when needed), the orchestrator spawns a child run with a fresh
+session, ties it to the parent via `parent_run_id`, and feeds its result
+back to the parent. Out of scope for MVP — the engineering-team skill
+in v2 may not require subagents in the initial port.
+
+## 7. REST API surface
+
+OpenAPI auto-generated. Routes:
+
+```
+# Runs ─────────────────────────────────────────────────────────────────
+POST   /api/runs                  start a run        body: {project_id, prompt_body|prompt_id, max_iters?, iter_timeout?}
+GET    /api/runs?project_id=N     list runs          query: status, limit, offset
+GET    /api/runs/:id              get run detail     includes iters[], current status
+POST   /api/runs/:id/cancel       cancel a run
+POST   /api/runs/:id/resume       resume a paused run  body: {answer}
+GET    /api/runs/:id/events       paginated events for replay
+GET    /api/runs/:id/preview      preview the rendered prompt + preamble that WOULD be sent
+                                  (no side effects — used by the dashboard's "New Run" wizard)
+
+# Live event stream ───────────────────────────────────────────────────
+GET    /api/events/:run_id        SSE live stream    headers: Last-Event-ID for resume
+
+# Projects ────────────────────────────────────────────────────────────
+GET    /api/projects              list projects
+POST   /api/projects              register a project body: {root_path, name}
+GET    /api/projects/:id          get project detail
+DELETE /api/projects/:id          unregister (does not delete files on disk)
+
+# File browser (read-only, sandboxed) ─────────────────────────────────
+GET    /api/projects/:id/files    list files         query: path=<relative> (default: project root)
+                                                     returns: {entries: [{name, is_dir, size, modified}], path}
+GET    /api/projects/:id/files/* get a file's content  text only; 415 for binary
+                                                     path is the URL-encoded relative path
+
+# Prompts ─────────────────────────────────────────────────────────────
+GET    /api/prompts?project_id=N  list prompts (latest version of each)
+GET    /api/prompts/:id           get a prompt (specific version)
+POST   /api/prompts               create a prompt    body: {project_id, name, body}
+PUT    /api/prompts/:id           update (bumps version, snapshots old version)
+DELETE /api/prompts/:id           delete a prompt (and all versions)
+GET    /api/prompts/:id/versions  list all versions of a prompt
+```
+
+The file browser is **read-only and sandboxed** to the project root.
+Paths are normalized; `..` traversal is rejected with 400. Binary files
+return 415 (frontend offers a download instead). Markdown and code are
+returned verbatim — rendering happens client-side.
+
+Versioning: URL-prefixed (`/api/v1/...` if/when breaking changes
+arrive). MVP uses `/api/...` without explicit version.
+
+## 8. MCP server surface
+
+FastMCP server mounted at `/mcp`. Tools (all callable by external MCP
+clients — Claude Desktop, Claude Code, etc.):
+
+```
+relay__list_runs(project_root?: str) -> list[Run]
+relay__get_run(run_id: str) -> Run
+relay__start_run(project_root: str, prompt: str, max_iters?: int) -> Run
+relay__cancel_run(run_id: str) -> Run
+relay__pause_response(run_id: str, answer: str) -> Run
+relay__tail_events(run_id: str, since_seq?: int) -> AsyncIterator[Event]
+relay__read_artifact(run_id: str, path: str) -> str
+```
+
+Implementation: each tool calls a `RelayCore` method directly. Same
+service layer that backs the REST routes. No proxying.
+
+Authentication: deferred to MVP+1 (single-user localhost). When multi-
+user arrives, MCP tools authenticate via a bearer token in the
+Streamable HTTP headers — same auth path as REST.
+
+## 9. Dashboard (Vue 3 + Pinia)
+
+`frontend/` directory. Vite-built static bundle served by FastAPI in
+prod; dev server proxies to FastAPI for hot reload.
+
+The dashboard is the **primary user-facing control plane** (per
+ADR-15) — not a read-only spectator. It is the default surface for
+starting, inspecting, pausing, and cancelling runs, as well as browsing
+artifacts, managing prompts, and registering projects.
+
+### 9.1 MVP views
+
+- **Hub view** (`/`): list of registered projects with active run
+  indicators. Each project card shows the most recent run's status.
+  Top-level actions: "Register project" (form), "New run on …" (jumps
+  into the New Run wizard scoped to that project).
+- **Project view** (`/projects/:id`):
+  - **Runs pane** — list of runs (active + recent) with status badges
+    (running / done / failed / paused). Click a run to enter its
+    detail view.
+  - **Prompts pane** — list of saved prompts for this project. CRUD
+    actions: create, edit (bumps version), delete, view version
+    history. Click a prompt to render it.
+  - **Files pane** — file browser scoped to the project root. Tree on
+    the left, rendered content on the right. Markdown rendered via
+    `markdown-it`, mermaid via `mermaid.js`, code highlighted via
+    `shiki`. Diffs rendered via `diff2html` when comparing two files.
+  - **"New Run" button** — launches the New Run wizard.
+- **New Run wizard** (`/projects/:id/new-run`):
+  1. **Prompt selection** — pick an existing prompt from the project
+     library, or write one inline (textarea with markdown preview).
+  2. **Options** — `max_iters`, `iter_timeout`, model override (defaults
+     from server config).
+  3. **Preview** — `GET /api/runs/:id/preview` returns the rendered
+     prompt with the preamble that *would be* prepended. The user reads
+     it; nothing has happened yet. This is the "not scary" step.
+  4. **Start** — `POST /api/runs`; the wizard redirects to the run
+     detail view.
+- **Run detail view** (`/runs/:id`):
+  - Header: status, prompt name + version, started_at, iter count,
+    current phase, action buttons (pause-response / cancel).
+  - **Timeline pane** — chronological event feed. Each event row is
+    collapsible. Tool calls show args + result inline (highlighted).
+    `signal_emit` events stand out (banner color, anchor link). Live
+    updates via SSE.
+  - **Iters pane** — list of iters with seq, phase, signal_kind. Click
+    to filter the timeline.
+  - **Artifacts pane** — the run's `.relay/runs/<id>/` directory
+    browsed inline. The `improvement-plan.md`, `evaluation-report.md`,
+    and any other markdown artifacts render with proper formatting.
+    Diffs of edited files render via `diff2html`. This is where the
+    user reviews "what did the agent actually do?"
+  - **Worktree pane** — git status, changed files, ability to diff
+    individual files (uses git CLI under the hood via the
+    orchestrator).
+  - **Pause action** (when status=paused) — the agent's question is
+    shown rendered; the answer textarea supports markdown; submit
+    → POST `/api/runs/:id/resume`.
+  - **Cancel action** — always available while status=running.
+
+### 9.2 State management
+
+- `Pinia` stores per concern: `projects`, `runs`, `currentRun`,
+  `events`, `prompts`, `files`, `worktree`.
+- `Pinia Colada` for REST cache + automatic revalidation on SSE
+  invalidation pushes.
+- One `EventSource` subscription per open run detail view, with
+  `Last-Event-ID` resume on reconnect.
+
+### 9.3 Replay mode
+
+When a run is no longer `running`, the SSE endpoint returns the
+historical event list (paginated) and closes. The frontend renders the
+same UI from the static event list. No special "replay mode" toggle —
+the dashboard treats live and historical the same.
+
+### 9.4 File browser rendering pipeline
+
+- **Markdown** → `markdown-it` + plugins for tables, task lists, footnotes
+- **Code blocks** → `shiki` for VS Code-quality syntax highlighting
+  (TextMate grammars; lazily loaded per language)
+- **Mermaid diagrams** in markdown code fences (`mermaid` lang) →
+  `mermaid.js` renders to inline SVG
+- **Plain text / unknown** → monospace preformatted block
+- **Binary files** → "binary content (N bytes) — download" link
+- **Diff** (when comparing two files) → `diff2html` side-by-side or
+  unified view
+
+The pipeline is client-side. The backend serves raw bytes.
+
+## 10. Observability
+
+Per ADR-10.
+
+- **Event store** is the source of truth. Every observable action is an
+  `events` row. Sub-second latency for live updates is a function of
+  SQLite WAL fsync cadence (default ~1ms) — well below the
+  human-perceptible threshold.
+- **SSE feed** is a straight tail of the events table for a given
+  `run_id`, polling every ~100ms (or driven by an in-process broadcast
+  channel — implementation detail).
+- **OpenTelemetry mirror.** The orchestrator emits OTel spans wrapping
+  each iter and each tool call (configurable via `RELAY_OTEL_EXPORT=langfuse|none`).
+  Spans carry `run_id`, `iter_seq`, GenAI semantic conventions where
+  applicable (model, token counts on `tool_use_end` if pi surfaces them
+  — TBD).
+- **Langfuse** is the default export target when OTel is enabled. Self-
+  hosted; relay ships a docker-compose example for the user's home
+  server. Langfuse's prompt-management feature is unused in MVP but
+  available for the future prompt-library feature.
+
+## 11. Configuration & deployment
+
+### 11.1 Environment variables
+
+| var | default | meaning |
+|---|---|---|
+| `RELAY_DATA_DIR` | `<project_root>/.relay` | per-project data directory |
+| `RELAY_PI_BIN` | `pi` | pi binary path (override for testing) |
+| `RELAY_PI_MODEL` | `claude-sonnet-4-6` | default model |
+| `RELAY_PI_PROVIDER` | `anthropic` | default provider |
+| `RELAY_MAX_ITERS` | `12` | default per-run iter cap |
+| `RELAY_ITER_TIMEOUT` | `1800` | per-iter wall-clock cap (seconds) |
+| `RELAY_OTEL_EXPORT` | `none` | `langfuse` or `none` |
+| `RELAY_LANGFUSE_HOST` | unset | required when OTel export is langfuse |
+| `RELAY_LANGFUSE_PUBLIC_KEY` | unset | " |
+| `RELAY_LANGFUSE_SECRET_KEY` | unset | " |
+| `RELAY_HOST` | `127.0.0.1` | server bind address |
+| `RELAY_PORT` | `7800` | server port |
+
+Pi-side env vars (passed through to subprocess):
+- `PI_AGENT_SDK=1` — always set by `PiHarness` per ADR-09.
+
+### 11.2 Packaging
+
+- Backend: `pyproject.toml` with `uv`. Installed via `uv tool install`
+  or `pipx`. Console script: `relay`.
+- Frontend: `frontend/package.json`. Build to `frontend/dist/` and
+  serve as static via FastAPI's `StaticFiles`.
+- Container image: published to `ghcr.io/johnmathews/relay-v2` via
+  GitHub Actions, per the user's global Docker/CI policy.
+
+### 11.3 Operational commands
+
+```
+relay serve                        # start the daemon
+relay start <prompt-file|->        # start a run in the current project
+relay status                       # show active runs
+relay cancel <run_id>              # cancel
+relay install-skill                # install engineering-team skill into ~/.claude/skills
+```
+
+## 12. Engineering-team skill port
+
+Per ADR-14. The skill lives at `skills/engineering-team/` inside
+`relay-v2`. Differences from v1:
+
+- **Preamble format** keeps `RELAY_PHASE` and `RELAY_RUN_DIR` lines.
+  `RELAY_RUN_DIR` resolves to `<project_root>/.relay/runs/<run_id>/`
+  per §3.3 — the canonical artifacts directory, **sibling of the
+  worktree, never nested inside it**. This is the only correct
+  location for `improvement-plan.md`, `evaluation-report.md`, and any
+  other phase artifacts; the worktree contains the code workspace,
+  not the artifacts.
+- **Signaling** initially keeps the v1 sentinel grammar verbatim
+  (`text_sentinels` strategy). Schema revisions deferred — easier to
+  port unchanged then evolve.
+- **Phase docs** structure preserved.
+- **Subagent dispatch** — in v1 the lead engineer invokes the Task
+  tool. In v2 (with pi), subagents are emitted as a signal that the
+  orchestrator catches and spawns a child run for. For MVP, the
+  engineering-team skill may operate without subagents and use a single
+  long-running session per iter. Subagent support is a follow-up.
+
+## 13. Open questions
+
+Carried from `motivation.md` risks; resolved as design progresses.
+
+- **OQ-1.** Confirm `agent_end`'s `messages` payload shape carries what
+  the orchestrator needs for the final per-run summary. Inspect
+  `test_event_shapes.jsonl` from the de-risking run.
+- **OQ-2.** Pi's accumulation model for streamed text: confirm whether
+  the parser should treat `message_update`'s deltas as authoritative
+  or wait for `message_end`'s full message. Affects sentinel-matching
+  latency.
+- **OQ-3.** Token / cost reporting in pi events: investigate whether
+  pi surfaces usage stats; if not, where would they come from?
+- **OQ-4.** Worktree handling — confirm the v1 patterns (per-run
+  branch, `.claude/worktrees/eng-*` naming) port cleanly or need
+  revision.
+- **OQ-5.** Pi version pinning strategy. Pi releases weekly; relay v2
+  needs a known-good version pin in `pyproject.toml` or a
+  `.tool-versions` file.
+- **OQ-6.** Pi auth.json refresh — does relay need to monitor
+  expiration, or does pi handle silently?
+
+---
