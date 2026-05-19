@@ -494,3 +494,38 @@ def test_detect_done_with_markers_propagates_marker_error() -> None:
 
 def test_detect_mcp_strategy_is_inert_here() -> None:
     assert detect_in_text(C1, SignalConfig(strategy="mcp_tools")) is None
+
+
+# --- W7: detect_in_text gaps (unit_start / unit_abandoned / dual close) ---
+
+
+def test_detect_unit_start_only() -> None:
+    s = detect_in_text(
+        '[[engteam:unit-start id="W3" title="Wire coverage"]]', SENTINELS
+    )
+    assert s is not None and s.kind == "unit_start"
+    assert s.args["id"] == "W3" and s.args["title"] == "Wire coverage"
+
+
+def test_detect_unit_abandoned_only() -> None:
+    s = detect_in_text(
+        '[[engteam:unit-abandoned id="W4" reason="blocked on pin"]]',
+        SENTINELS,
+    )
+    assert s is not None and s.kind == "unit_abandoned"
+    assert s.args["id"] == "W4" and s.args["reason"] == "blocked on pin"
+
+
+def test_detect_dual_closing_done_wins() -> None:
+    """handoff + done at column 0, no markers: done is checked first, so
+    a marker-free dual close resolves to done (handoff never evaluated)."""
+    dual = "Wrapping up.\n\n[[engteam:handoff]]\n[[engteam:done]]"
+    s = detect_in_text(dual, SENTINELS)
+    assert s is not None and s.kind == "done"
+
+
+def test_detect_done_with_markers_is_violation() -> None:
+    """C6 carries a prompt-marker pair *and* done — done-with-markers is
+    a contract violation, surfaced as MarkerError, not a silent done."""
+    with pytest.raises(MarkerError):
+        detect_in_text(C6, SENTINELS)
