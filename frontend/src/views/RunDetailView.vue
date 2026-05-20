@@ -81,6 +81,66 @@ const pauseQuestion = computed(() => {
   return ''
 })
 
+/**
+ * The user-facing failure summary for a terminal failed/cancelled run.
+ * Pulled from the last iter (the one that actually closed the run):
+ *
+ *   - `exit_reason`              — the orchestrator's reason code
+ *     (`agent_end_no_signal`, `timeout`, `cancelled`, `crash`,
+ *     `max_iters` — spec §3.1).
+ *   - `signal_args.marker_error` — the marker-headline string set
+ *     when the agent emitted a sentinel that violated the prompt
+ *     marker contract (loop.py records it here).
+ *
+ * Returns `null` for terminal-but-not-failed states (`done`, paused
+ * statuses are not terminal) so the banner stays hidden on success.
+ *
+ * The "agent_end_no_signal" hint is the load-bearing UX fix from
+ * the field report: a fresh "Hello, this is a test" prompt against
+ * a project without the engineering-team skill ALWAYS lands in this
+ * exit reason — pi can't know about relay's sentinel grammar from
+ * a bare prompt. The hint points the user at the skill install
+ * (CLAUDE.md "Toolchain"; ADR-28).
+ */
+const FAILURE_STATUSES = new Set(['failed', 'cancelled'])
+const failureInfo = computed<{
+  reason: string
+  marker_error: string | null
+  hint: string | null
+} | null>(() => {
+  if (!FAILURE_STATUSES.has(status.value)) return null
+  const last = iters.value[iters.value.length - 1] ?? null
+  const reason = last?.exit_reason ?? status.value
+  const args = last?.signal_args ?? null
+  const markerError =
+    args != null && typeof args.marker_error === 'string'
+      ? args.marker_error
+      : null
+  let hint: string | null = null
+  if (reason === 'agent_end_no_signal' && markerError == null) {
+    hint =
+      'The agent finished its turn without emitting a closing sentinel ' +
+      '([[engteam:done]], [[engteam:handoff]], or [[engteam:pause-for-input]]). ' +
+      'If you meant to drive a structured run, install the engineering-team ' +
+      'skill into the target project (`relay install-skill --project ' +
+      '<root>`) and start the prompt with `/engineering-team …`.'
+  } else if (reason === 'timeout') {
+    hint =
+      'The iter exceeded its wall-clock budget (iter_timeout). The next ' +
+      'iter would have started fresh; raise iter_timeout if the work ' +
+      'legitimately needs longer.'
+  } else if (reason === 'max_iters') {
+    hint =
+      'The run hit its max_iters cap before emitting a `done` sentinel. ' +
+      'Raise max_iters or break the work into smaller handoffs.'
+  } else if (reason === 'internal_error') {
+    hint =
+      'The orchestrator caught an unexpected exception while driving the ' +
+      'loop. Check the server log for the stack trace.'
+  }
+  return { reason, marker_error: markerError, hint }
+})
+
 let opened = false
 
 /**
@@ -202,6 +262,30 @@ onBeforeUnmount(() => {
           </div>
         </header>
 
+        <aside
+          v-if="failureInfo"
+          data-testid="run-failure-banner"
+          class="run-detail__failure"
+          :data-reason="failureInfo.reason"
+        >
+          <strong class="run-detail__failure-title">
+            Run {{ status }} — {{ failureInfo.reason }}
+          </strong>
+          <p
+            v-if="failureInfo.marker_error"
+            class="run-detail__failure-marker"
+          >
+            <span class="run-detail__failure-label">Marker error:</span>
+            <code>{{ failureInfo.marker_error }}</code>
+          </p>
+          <p
+            v-if="failureInfo.hint"
+            class="run-detail__failure-hint"
+          >
+            {{ failureInfo.hint }}
+          </p>
+        </aside>
+
         <PauseAnswerForm
           v-if="isPaused"
           :run-id="detail.id"
@@ -300,5 +384,41 @@ onBeforeUnmount(() => {
 
 .run-detail__placeholder p {
   margin: 0.4rem 0 0;
+}
+
+.run-detail__failure {
+  border: 1px solid #d04a4a;
+  border-left: 4px solid #d04a4a;
+  background: rgba(208, 74, 74, 0.08);
+  border-radius: 6px;
+  padding: 0.75rem 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.run-detail__failure-title {
+  font-family: var(--font-mono);
+  color: #b03a3a;
+}
+
+.run-detail__failure-marker,
+.run-detail__failure-hint {
+  margin: 0;
+  font-size: 0.9em;
+  line-height: 1.4;
+}
+
+.run-detail__failure-label {
+  font-size: 0.7em;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-dim);
+  margin-right: 0.4rem;
+}
+
+.run-detail__failure-marker code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
 }
 </style>

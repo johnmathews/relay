@@ -31,13 +31,23 @@ export interface RelaySseEvent {
   data: string
 }
 
-/** Minimal structural type for the parts of EventSource we use. */
+/** Minimal structural type for the parts of EventSource we use.
+ *
+ * `readyState` mirrors the WHATWG EventSource numeric constants:
+ *   0 = CONNECTING, 1 = OPEN, 2 = CLOSED.
+ * The browser sets `readyState=CLOSED` BEFORE firing 'error' on
+ * terminal conditions like a 204 No Content response — the SSE "stop
+ * reconnecting" signal. The wrapper reads this in its error handler
+ * to avoid racing the browser's terminal decision with its own
+ * reconnect loop (would otherwise produce a reconnect storm on a
+ * finished run; see ADR-23). */
 export interface EventSourceLike {
   addEventListener(
     type: string,
     listener: (ev: MessageEvent) => void,
   ): void
   close(): void
+  readonly readyState: number
 }
 
 /** Factory so tests can inject a fake EventSource. */
@@ -185,12 +195,18 @@ export class RunEventStream {
     es.addEventListener('error', ((ev: MessageEvent): void => {
       if (this.closed) return
       for (const cb of this.errorCbs) cb(ev)
-      // A native EventSource fires 'error' both on a transient transport
-      // hiccup AND on a clean server EOF (finished-run replay close). We
-      // cannot distinguish them structurally here, so we attempt a
-      // bounded reconnect; if the run is finished the server returns
-      // 204 / immediate EOF and the stream naturally stops once the
-      // terminal event has been seen (handled above) or remains idle.
+      // Per WHATWG, a 204 No Content response (and other terminal
+      // conditions) sets `readyState=CLOSED` BEFORE 'error' fires —
+      // the browser's "do not reconnect" signal. Respect it: a
+      // reconnect here races the browser's terminal decision and
+      // turns a finished run into an endless `GET /api/events/<id>`
+      // loop (the reconnect storm the field bug surfaced). A
+      // CLOSED readyState ⇒ finish; only retry on a transient
+      // transport hiccup (still CONNECTING / OPEN).
+      if (es.readyState === 2) {
+        this.finish()
+        return
+      }
       this.scheduleReconnect()
     }) as (e: MessageEvent) => void)
   }

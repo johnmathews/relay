@@ -4,11 +4,17 @@ import {
   type EventSourceLike,
 } from '../src/api/sse'
 
-/** A controllable fake EventSource for tests. */
+/** A controllable fake EventSource for tests.
+ *
+ * `readyState` mirrors the native `EventSource` numeric constants:
+ *   0 = CONNECTING, 1 = OPEN, 2 = CLOSED. Tests flip it to `2` before
+ *   calling `emitError()` to simulate the browser's terminal-decision
+ *   on a 204 No Content response (the SSE "stop reconnecting" signal). */
 class FakeEventSource implements EventSourceLike {
   static instances: FakeEventSource[] = []
   url: string
   closed = false
+  readyState: number = 1
   private listeners = new Map<string, Array<(ev: MessageEvent) => void>>()
 
   constructor(url: string) {
@@ -24,6 +30,7 @@ class FakeEventSource implements EventSourceLike {
 
   close(): void {
     this.closed = true
+    this.readyState = 2
   }
 
   /** Test helper: emit a named SSE event. */
@@ -32,10 +39,18 @@ class FakeEventSource implements EventSourceLike {
     for (const cb of this.listeners.get(type) ?? []) cb(ev)
   }
 
-  /** Test helper: emit a transport error. */
+  /** Test helper: emit a transport error (transient — readyState stays OPEN). */
   emitError(): void {
     const ev = { type: 'error' } as unknown as MessageEvent
     for (const cb of this.listeners.get('error') ?? []) cb(ev)
+  }
+
+  /** Test helper: simulate the browser's terminal-error path. The
+   * native EventSource sets `readyState=CLOSED` on a 204 No Content
+   * response BEFORE firing 'error', signalling "do not reconnect". */
+  emitTerminalError(): void {
+    this.readyState = 2
+    this.emitError()
   }
 }
 
@@ -121,6 +136,36 @@ describe('RunEventStream', () => {
     expect(es0.closed).toBe(true)
 
     es0.emitError()
+    vi.advanceTimersByTime(1000)
+    expect(FakeEventSource.instances.length).toBe(1)
+    vi.useRealTimers()
+  })
+
+  it('stops reconnecting when the browser marks the EventSource CLOSED', () => {
+    // Models the field-reported reconnect storm: the dashboard opened a
+    // stream against a finished run, the server returned 204 No Content
+    // on a reconnect (Last-Event-ID >= max seq, ADR-23), the browser set
+    // readyState=CLOSED. The wrapper used to schedule another reconnect
+    // anyway, producing endless `GET /api/events/<id>` requests in the
+    // server log. With the fix, a CLOSED readyState in the error handler
+    // is treated as terminal — finish() fires, no further sockets open.
+    vi.useFakeTimers()
+    const stream = new RunEventStream('run-204', {
+      eventSourceFactory: freshFactory(),
+      reconnectDelayMs: 10,
+    })
+    let ended = false
+    stream.onEnd(() => {
+      ended = true
+    })
+    stream.start()
+
+    const es0 = FakeEventSource.instances[0]!
+    es0.emitTerminalError()
+
+    expect(ended).toBe(true)
+    expect(es0.closed).toBe(true)
+    // Advance well past the reconnect delay — no second EventSource.
     vi.advanceTimersByTime(1000)
     expect(FakeEventSource.instances.length).toBe(1)
     vi.useRealTimers()

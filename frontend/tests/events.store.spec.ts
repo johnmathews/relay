@@ -15,6 +15,7 @@ class FakeEventSource implements EventSourceLike {
   static instances: FakeEventSource[] = []
   url: string
   closed = false
+  readyState: number = 1
   private listeners = new Map<string, Array<(ev: MessageEvent) => void>>()
 
   constructor(url: string) {
@@ -30,6 +31,7 @@ class FakeEventSource implements EventSourceLike {
 
   close(): void {
     this.closed = true
+    this.readyState = 2
   }
 
   emit(type: string, data: string, lastEventId: string): void {

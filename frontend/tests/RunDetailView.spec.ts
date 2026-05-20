@@ -144,6 +144,101 @@ describe('RunDetailView', () => {
     expect(w.find('[data-testid="worktree-pane"]').exists()).toBe(true)
   })
 
+  it('shows a failure banner with a friendly explanation for agent_end_no_signal', async () => {
+    // Field bug: a fresh "Hello, this is a test" prompt → pi replies
+    // without emitting any [[engteam:...]] closing sentinel. The loop
+    // correctly fails the run with exit_reason="agent_end_no_signal",
+    // but the dashboard rendered no diagnostic — the user saw only a
+    // failed status badge and a JSON-dumped run_ended boundary row.
+    // The banner surfaces the reason inline with a "did you install
+    // the engineering-team skill?" hint so the user knows why.
+    GET.mockImplementation((path: string) => {
+      if (path === '/api/runs/{run_id}')
+        return Promise.resolve(
+          ok(
+            detail({
+              status: 'failed',
+              ended_at: '2026-05-21T00:19:28Z',
+              iters: [
+                {
+                  id: 1,
+                  run_id: 'run-1',
+                  seq: 1,
+                  phase: null,
+                  prompt: 'Hello, this is a test',
+                  preamble: '',
+                  pi_session_id: 'abc',
+                  signal_kind: null,
+                  signal_args: null,
+                  exit_reason: 'agent_end_no_signal',
+                  started_at: '2026-05-21T00:19:23Z',
+                  ended_at: '2026-05-21T00:19:28Z',
+                },
+              ],
+            }),
+          ),
+        )
+      return Promise.resolve(ok({ events: [], after_seq: 0, limit: 500, offset: 0 }))
+    })
+    const w = mountView()
+    await flushPromises()
+    const banner = w.find('[data-testid="run-failure-banner"]')
+    expect(banner.exists()).toBe(true)
+    expect(banner.text()).toContain('agent_end_no_signal')
+    // The friendly hint distinguishes "agent didn't emit a sentinel"
+    // from a true crash — point the user at the skill workflow.
+    expect(banner.text()).toMatch(/closing sentinel|engineering-team skill/i)
+  })
+
+  it('shows a failure banner with the marker error for a marker violation', async () => {
+    GET.mockImplementation((path: string) => {
+      if (path === '/api/runs/{run_id}')
+        return Promise.resolve(
+          ok(
+            detail({
+              status: 'failed',
+              ended_at: '2026-05-21T00:25:00Z',
+              iters: [
+                {
+                  id: 1,
+                  run_id: 'run-1',
+                  seq: 1,
+                  phase: null,
+                  prompt: 'do it',
+                  preamble: '',
+                  pi_session_id: 'abc',
+                  signal_kind: null,
+                  signal_args: {
+                    marker_error: 'missing prompt-start before handoff',
+                  },
+                  exit_reason: 'agent_end_no_signal',
+                  started_at: '2026-05-21T00:24:00Z',
+                  ended_at: '2026-05-21T00:25:00Z',
+                },
+              ],
+            }),
+          ),
+        )
+      return Promise.resolve(ok({ events: [], after_seq: 0, limit: 500, offset: 0 }))
+    })
+    const w = mountView()
+    await flushPromises()
+    const banner = w.find('[data-testid="run-failure-banner"]')
+    expect(banner.exists()).toBe(true)
+    expect(banner.text()).toContain('missing prompt-start before handoff')
+  })
+
+  it('no failure banner on a successful run', async () => {
+    GET.mockImplementation((path: string) => {
+      if (path === '/api/runs/{run_id}')
+        return Promise.resolve(ok(detail({ status: 'done' })))
+      return Promise.resolve(ok({ events: [], after_seq: 0, limit: 500, offset: 0 }))
+    })
+    const w = mountView()
+    await flushPromises()
+    expect(w.find('[data-testid="run-failure-banner"]').exists()).toBe(false)
+  })
+
   it('Worktree pane shows path + branch when present (read-only)', async () => {
     GET.mockImplementation((path: string) => {
       if (path === '/api/runs/{run_id}')
