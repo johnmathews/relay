@@ -1703,3 +1703,94 @@ that raises `ValueError`; the `POST /api/projects` route maps that to
   with its own ADR.
 
 ---
+
+## ADR-32 — Orphan recovery on `RelayCore.start()` + `cancel_run` safety net
+
+**Status:** Accepted (2026-05-21). Extends ADR-31's "a failing run never
+stays `running`" guarantee to a related failure mode: process death.
+
+**Context.** ADR-31 closed the in-loop-exception path. A separate
+scenario surfaced in the same field session: a run that became stuck
+*before* ADR-31 shipped sat in `running` status; the user restarted the
+server; clicking Cancel did nothing. The orchestrator's `cancel_run`
+flips `state.cancel_event` and `await session.cancel()` on the
+in-memory `_RunState`, but after a process restart `self._runs[run_id]`
+is empty (it's a process-local dict). With `state is None` the function
+returned silently — 200 OK, no DB write, the run stayed `running`
+forever and the dashboard polling/cancel cycle continued.
+
+Same root invariant as ADR-31: a run that the orchestrator can no
+longer drive must reach a terminal status. Two distinct entry points:
+the startup boundary (orphans from a prior process) and the cancel
+boundary (defence in depth — the sweep races a Cancel click, or a
+race we haven't thought of). Single-user, single-process MVP
+(ADR-12) makes the orphan-detection rule trivial: at startup, every
+`running` row is by definition owned by a process that is now gone.
+
+**Alternatives considered.**
+
+1. *Document "operator restarts the server; manually clean DB with SQL".*
+   Rejected for the same reason ADR-31's status-quo branch was
+   rejected — manual cleanup is the v1 anti-pattern v2 exists to
+   replace. A button that returns 200 OK but does nothing is a worse
+   UX than no button at all.
+2. *Multi-process / multi-worker awareness (require a heartbeat /
+   lease before sweeping).* Rejected as out of scope — single-user
+   MVP (ADR-12), one `relay serve` per user, no horizontal
+   replication. A heartbeat layer adds load-bearing complexity for a
+   problem we don't have. Revisit if multi-process becomes a
+   requirement.
+3. *Sweep `paused` too.* Rejected: `paused` is a *recoverable*
+   non-terminal status — `resume_run` rebuilds the loop from
+   persisted `signal_args` and re-enqueues, no in-memory state needed.
+   Sweeping paused would silently destroy a user's pending decision.
+   Only `running` is process-owned.
+
+**Decision.** Two surgical edits to `RelayCore`:
+
+- **Startup sweep** (`_recover_orphans`, called from `start()` before
+  the supervisor is spawned): `SELECT * FROM runs WHERE status =
+  'running'`, then for each row `set_run_status('cancelled',
+  ended=True)` + append `run_ended {"status": "cancelled", "summary":
+  "orphaned: server restart"}`. The summary string is the load-bearing
+  diagnostic — without it the operator can't tell a "real cancel" from
+  a "we lost the process owning this run" entry in the timeline.
+- **Cancel safety net** (`cancel_run`): when `state is None` AND the
+  DB row exists AND is in a non-terminal status, perform the same
+  finalisation with summary `"orphaned: process state lost"`. The
+  distinct summary lets the operator tell the boundary apart from the
+  startup-sweep case. The route still returns 200 — it always did —
+  but now the 200 is accompanied by a real DB transition.
+
+The orphan-sweep order is deliberate: schema bootstrap → `_recover_orphans`
+→ supervisor `create_task`. Sweeping before the supervisor exists
+guarantees no race with a fresh run that arrives between sweep and
+supervisor start (no `start_run` can be served until the FastAPI
+lifespan's `core.start()` returns).
+
+**Consequences.**
+- Changed: `src/relay_v2/core.py` (`start()` gains `_recover_orphans`
+  call; new private method; `cancel_run` gains the orphan branch),
+  `CLAUDE.md` "Current state" (ADR-32 note appended to the ADR-31
+  paragraph), `docs/decisions.md` (this ADR).
+- New tests: `tests/orchestrator/test_loop.py::
+  test_start_finalises_orphaned_running_rows` (two-"process" pattern:
+  insert a `running` row via direct SQL, `aclose` the first core,
+  open a fresh core, verify the sweep ran) and
+  `::test_cancel_orphaned_run_finalises_db` (bypass the sweep by
+  popping `_runs` after registration; verify `cancel_run` still
+  finalises). Suite **197 → 199 passed**; 3 pi-e2e remain gated.
+- The dashboard sees no new event kinds — same `run_ended` shape as
+  cancel/done/internal-error; the `summary` field's vocabulary grows
+  by two strings. The frontend's `failureInfo` banner (ADR-31
+  follow-up) renders the cancelled state with its existing copy
+  (`"orphaned: …"` is shown verbatim under "Run cancelled —
+  cancelled" — readable enough for the MVP; a dedicated `orphaned`
+  case is a refinement, not a contract change).
+- 'paused' rows are intentionally NOT swept. `resume_run` continues
+  to work across restarts.
+- Multi-process / multi-worker is out of scope (ADR-12) and remains
+  so: this sweep assumes a single owner per database. If that
+  assumption ever changes, this ADR must be revisited.
+
+---

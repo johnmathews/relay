@@ -104,7 +104,12 @@ ADR-31 (post-MVP bugfix: a non-Cancelled exception out of the loop
 or `_apply_result` is finalised as `failed` + `run_ended`
 `internal_error: …` instead of leaving the run permanently
 `running` — paired with an `expanduser` + existence check in
-`register_project` so `~/...` no longer lurks as a literal path).
+`register_project` so `~/...` no longer lurks as a literal path;
+extended in the same iter with a startup-time orphan sweep in
+`RelayCore.start()` and a `cancel_run` safety net that finalise any
+'running' row whose owning process is gone — single-user/-process
+MVP per ADR-12, so a 'running' row at startup must come from a
+prior process and can never resume).
 
 ## What relay v2 is
 

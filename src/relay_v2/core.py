@@ -121,7 +121,37 @@ class RelayCore:
         immediately so its connection pool does not leak (ADR-21)."""
         bootstrap_engine = init_db(self._settings)
         bootstrap_engine.dispose()
+        await self._recover_orphans()
         self._supervisor = asyncio.create_task(self._supervise())
+
+    async def _recover_orphans(self) -> None:
+        """Finalise any 'running' row from a prior process (ADR-31).
+
+        Single-user, single-process MVP (ADR-12): if a row is 'running'
+        at startup it cannot be owned by any in-process task — the
+        previous process owned it and is gone. Such a run can never
+        emit another event, so leaving it stuck means the dashboard
+        SSE-tails an event stream that will never produce another
+        event and the Cancel button is a no-op (no in-memory state
+        for ``cancel_run`` to flip). Mark each as 'cancelled' with
+        a clear summary and the closing ``run_ended`` so consumers
+        see a terminal state. 'paused' rows are NOT swept — they can
+        legitimately be resumed across a restart (``resume_run``
+        rebuilds the loop from DB state)."""
+        async with self._sm() as s:
+            rows = list(
+                await s.scalars(select(Run).where(Run.status == "running"))
+            )
+        for run in rows:
+            await set_run_status(
+                self._sm, run.id, "cancelled", ended=True
+            )
+            await self._store.append(
+                run.id,
+                "run_ended",
+                {"status": "cancelled",
+                 "summary": "orphaned: server restart"},
+            )
 
     async def aclose(self) -> None:
         if self._supervisor is not None:
@@ -307,6 +337,24 @@ class RelayCore:
     async def cancel_run(self, run_id: str) -> None:
         state = self._runs.get(run_id)
         if state is None:
+            # No in-memory state: either an unknown run id (route's
+            # 404 precedes us) or an orphaned row the startup sweep
+            # missed (process raced a Cancel click). Finalise the DB
+            # so the button always does *something* visible — never a
+            # silent 200 on a stuck row (ADR-31 safety net).
+            run = await load_run(self._sm, run_id)
+            if run is not None and run.status not in (
+                "done", "failed", "cancelled"
+            ):
+                await set_run_status(
+                    self._sm, run_id, "cancelled", ended=True
+                )
+                await self._store.append(
+                    run_id,
+                    "run_ended",
+                    {"status": "cancelled",
+                     "summary": "orphaned: process state lost"},
+                )
             return
         state.cancel_event.set()
         session = state.session_handle.session

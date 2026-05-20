@@ -535,6 +535,114 @@ def test_resume_missing_project_raises(tmp_path: Path) -> None:
     _run(scenario, settings, harness)
 
 
+def test_start_finalises_orphaned_running_rows(tmp_path: Path) -> None:
+    """ADR-31 follow-up: a 'running' row whose owning process is gone
+    (server restart, crash) cannot be resumed and must not be left
+    stuck. ``RelayCore.start()`` sweeps any pre-existing 'running' row
+    not in ``self._runs`` and finalises it as 'cancelled' with summary
+    'orphaned: server restart' + a closing run_ended event.
+
+    Reproduces the user-reported scenario: a run got stuck before
+    ADR-31 shipped; the user restarted the server; cancel from the UI
+    did nothing because ``self._runs[run_id]`` no longer existed.
+    """
+    settings = _settings(tmp_path)
+
+    async def scenario() -> str:
+        # First "process": create a stuck 'running' row directly via
+        # the DB, simulating a previous process that crashed mid-run.
+        core1 = RelayCore(
+            settings, harness=ScriptedHarness([TextScript(DONE_BLOCK)])
+        )
+        await core1.start()
+        pid = await core1.register_project(tmp_path, "p")
+        # Insert the row directly (the orchestrator never knows about it).
+        with _read(settings) as s:
+            s.execute(
+                text(
+                    "INSERT INTO runs (id, project_id, prompt_body, "
+                    "user_id, status, max_iters, iter_timeout) VALUES "
+                    "(:id, :pid, :body, 1, 'running', 5, 600)"
+                ),
+                {"id": "orphan-1", "pid": pid, "body": "stuck"},
+            )
+            s.commit()
+        await core1.aclose()
+
+        # Second "process": fresh RelayCore opens against the same DB.
+        # The startup sweep should finalise the orphaned run.
+        core2 = RelayCore(
+            settings, harness=ScriptedHarness([TextScript(DONE_BLOCK)])
+        )
+        await core2.start()
+        await core2.aclose()
+        return "orphan-1"
+
+    run_id = asyncio.run(scenario())
+
+    with _read(settings) as s:
+        run = s.get(Run, run_id)
+        assert run is not None
+        assert run.status == "cancelled"
+        assert run.ended_at is not None
+        events = list(
+            s.scalars(
+                select(Event).where(Event.run_id == run_id)
+                .order_by(Event.seq)
+            )
+        )
+        assert [e.kind for e in events] == ["run_ended"]
+        assert events[0].payload["status"] == "cancelled"
+        assert "orphaned" in events[0].payload["summary"]
+
+
+def test_cancel_orphaned_run_finalises_db(tmp_path: Path) -> None:
+    """Safety net for ADR-31 startup sweep: if the user clicks Cancel
+    on a run whose in-memory state has been lost (e.g., between the
+    sweep and the click — shouldn't happen in practice, but the
+    button must do *something*), cancel_run finalises the DB row.
+    """
+    settings = _settings(tmp_path)
+
+    async def scenario() -> str:
+        core = RelayCore(
+            settings, harness=ScriptedHarness([TextScript(DONE_BLOCK)])
+        )
+        await core.start()
+        pid = await core.register_project(tmp_path, "p")
+        with _read(settings) as s:
+            s.execute(
+                text(
+                    "INSERT INTO runs (id, project_id, prompt_body, "
+                    "user_id, status, max_iters, iter_timeout) VALUES "
+                    "(:id, :pid, :body, 1, 'running', 5, 600)"
+                ),
+                {"id": "orphan-2", "pid": pid, "body": "stuck"},
+            )
+            s.commit()
+        # Bypass the startup sweep by deleting in-memory state if any.
+        core._runs.pop("orphan-2", None)  # noqa: SLF001
+        await core.cancel_run("orphan-2")
+        await core.aclose()
+        return "orphan-2"
+
+    run_id = asyncio.run(scenario())
+
+    with _read(settings) as s:
+        run = s.get(Run, run_id)
+        assert run is not None
+        assert run.status == "cancelled"
+        assert run.ended_at is not None
+        kinds = [
+            e.kind
+            for e in s.scalars(
+                select(Event).where(Event.run_id == run_id)
+                .order_by(Event.seq)
+            )
+        ]
+        assert "run_ended" in kinds
+
+
 def test_internal_error_finalises_run_as_failed(tmp_path: Path) -> None:
     """ADR-31: an exception out of harness.spawn (or anywhere inside the
     loop) must not leave the run as ``running`` with no closing event.
