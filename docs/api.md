@@ -66,7 +66,7 @@ gets a clean close (it reconnects and replay backfills).
 | Method | Path | RelayCore method | Notes |
 |---|---|---|---|
 | GET | `/projects` | `list_projects` | |
-| POST | `/projects` | `register_project` | body `{root_path, name}`; idempotent on `root_path`; 201 |
+| POST | `/projects` | `register_project` | body `{root_path, name}`; `root_path` is `expanduser`-ed then `resolve`d and must be an existing directory (else **400**); idempotent on the normalised path; 201 |
 | GET | `/projects/{id}` | `get_project` | 404 if absent |
 | DELETE | `/projects/{id}` | `delete_project` | unregister only — **never deletes files on disk**; 204, or 404 if unknown |
 

@@ -535,6 +535,64 @@ def test_resume_missing_project_raises(tmp_path: Path) -> None:
     _run(scenario, settings, harness)
 
 
+def test_internal_error_finalises_run_as_failed(tmp_path: Path) -> None:
+    """ADR-31: an exception out of harness.spawn (or anywhere inside the
+    loop) must not leave the run as ``running`` with no closing event.
+    The run is finalised ``failed`` with a ``run_ended`` carrying an
+    ``internal_error:`` summary, and ``wait_for_run`` returns rather
+    than hanging.
+
+    Reproducer mirrors the field bug: a project root that does not
+    exist on disk causes the harness subprocess spawn to raise
+    ``FileNotFoundError``. The double below raises the same exception
+    so the test stays offline."""
+    settings = _settings(tmp_path)
+
+    class RaisingHarness:
+        name = "raising"
+
+        async def spawn(
+            self,
+            prompt: str,
+            cwd: Path,
+            env: dict[str, str],
+            signal_config: object,
+            resume_from: str | None = None,
+        ) -> object:
+            raise FileNotFoundError(
+                "[Errno 2] No such file or directory: '/bogus'"
+            )
+
+    async def scenario(core: RelayCore) -> str:
+        pid = await core.register_project(tmp_path, "p")
+        run_id = await core.start_run(pid, "Go.")
+        result = await asyncio.wait_for(
+            core.wait_for_run(run_id), timeout=5
+        )
+        assert result.status == "failed"
+        assert result.reason == "internal_error"
+        return run_id
+
+    run_id = _run(scenario, settings, RaisingHarness())  # type: ignore[arg-type]
+
+    with _read(settings) as s:
+        run = s.get(Run, run_id)
+        assert run is not None
+        assert run.status == "failed"
+        assert run.ended_at is not None
+        events = list(
+            s.scalars(
+                select(Event).where(Event.run_id == run_id)
+                .order_by(Event.seq)
+            )
+        )
+        kinds = [e.kind for e in events]
+        assert kinds[0] == "run_started"
+        assert kinds[-1] == "run_ended"
+        assert events[-1].payload["status"] == "failed"
+        assert "internal_error" in events[-1].payload["summary"]
+
+
 def test_aclose_cancels_in_flight_run(tmp_path: Path) -> None:
     """aclose() while a run is hung returns without deadlock and the
     run is finalised (not left 'running')."""

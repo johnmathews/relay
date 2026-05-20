@@ -83,8 +83,21 @@ async def register_project(
     A thin service method (not a route — Phase 3 owns HTTP). ``start_run``
     needs a project FK; tests and the future projects API both go through
     here rather than touching the table directly.
+
+    ``root_path`` is normalised at the registration boundary: ``~`` is
+    expanded and the path resolved to absolute, then the directory must
+    exist (raises ``ValueError``). Otherwise a bogus path would lurk in
+    the DB until ``start_run`` spawned pi with a non-existent ``cwd`` —
+    a ``FileNotFoundError`` deep in the harness layer that the
+    orchestrator's run lifecycle does not surface to the user.
     """
-    root = str(root_path.resolve())
+    expanded = Path(root_path).expanduser().resolve()
+    if not expanded.is_dir():
+        raise ValueError(
+            f"project root_path does not exist or is not a directory: "
+            f"{expanded}"
+        )
+    root = str(expanded)
     async with sm() as s:
         existing = await s.scalar(
             select(Project).where(Project.root_path == root)

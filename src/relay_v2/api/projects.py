@@ -6,7 +6,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Response, status
 
-from relay_v2.api.deps import CoreDep
+from relay_v2.api.deps import CoreDep, http_error
 from relay_v2.api.schemas import ProjectCreate, ProjectOut
 
 router = APIRouter(prefix="/api", tags=["projects"])
@@ -28,7 +28,12 @@ async def list_projects(
 async def create_project(
     body: ProjectCreate, core: CoreDep
 ) -> ProjectOut:
-    project_id = await core.register_project(Path(body.root_path), body.name)
+    try:
+        project_id = await core.register_project(
+            Path(body.root_path), body.name
+        )
+    except ValueError as exc:
+        raise http_error(exc, default_status=400) from exc
     row = await core.get_project(project_id)
     if row is None:  # pragma: no cover - just-created row must exist
         raise HTTPException(status_code=500, detail="project vanished")

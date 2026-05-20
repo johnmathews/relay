@@ -19,6 +19,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import pytest
 from httpx import ASGITransport, AsyncClient
 
 from relay_v2.app import create_app
@@ -97,6 +98,50 @@ def test_project_crud(tmp_path: Path) -> None:
 
         r = await ac.delete(f"/api/projects/{pid}")
         assert r.status_code == 404
+
+    _run(body, s)
+
+
+def test_project_register_expands_tilde(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bug A: ``~`` in root_path is expanded at the registration boundary,
+    so a "~/foo" registration does not lurk as the literal string
+    ``<cwd>/~/foo`` and FileNotFoundError pi spawns later."""
+    s = _settings(tmp_path)
+    home = tmp_path / "home"
+    target = home / "proj"
+    target.mkdir(parents=True)
+    # Re-home so Path.expanduser("~") points at our tmp tree (scoped to
+    # this test via monkeypatch — auto-restored after).
+    monkeypatch.setenv("HOME", str(home))
+
+    async def body(ac: AsyncClient) -> None:
+        r = await ac.post(
+            "/api/projects",
+            json={"root_path": "~/proj", "name": "tilded"},
+        )
+        assert r.status_code == 201, r.text
+        assert r.json()["root_path"] == str(target.resolve())
+
+    _run(body, s)
+
+
+def test_project_register_rejects_missing_path(tmp_path: Path) -> None:
+    """Bug A: a path that does not exist is a 400 at registration, not a
+    silent corruption that fails an iter much later."""
+    s = _settings(tmp_path)
+
+    async def body(ac: AsyncClient) -> None:
+        r = await ac.post(
+            "/api/projects",
+            json={
+                "root_path": str(tmp_path / "definitely-missing"),
+                "name": "ghost",
+            },
+        )
+        assert r.status_code == 400, r.text
+        assert "does not exist" in r.json()["detail"]
 
     _run(body, s)
 

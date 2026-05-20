@@ -1599,3 +1599,107 @@ SSE / MCP / observability contract change.
   acceptances above, which are documented procedures, not code work.
 
 ---
+
+## ADR-31 — Internal-error finalisation: a failing run never stays `running`
+
+**Status:** Accepted (2026-05-20). Post-MVP bugfix surfaced in the
+field; tightens the run lifecycle contract established in ADR-19 / spec.md
+§6 without changing the success path.
+
+**Context.** A user registered a project with a leading `~/...` path
+through the dashboard. `register_project` called
+`Path(root_path).resolve()` — which makes a relative path absolute but
+does NOT expand `~` — so the row stored `<cwd>/~/projects/...`. The
+directory does not exist. When a run was started against that project
+the orchestrator opened an iter, persisted `iter_started`, and called
+`PiHarness.spawn(..., cwd=<bogus path>)`. The subprocess spawn raised
+`FileNotFoundError` because the cwd does not exist.
+
+That exception unwound through `run_loop` into `RelayCore._run`. The
+inner `try/except` only caught `asyncio.CancelledError`; any other
+exception propagated past the `finally` (which set `state.settled` but
+made no DB write) and reached the supervisor's
+`task.add_done_callback(self._tasks.discard)` — discarded. Result: the
+run sat permanently `running` in the DB with no `iter_ended`, no
+`run_ended`, no closing status update. The dashboard SSE-tailed an
+event stream that would never produce another event, polling and
+issuing cancels that finalised nothing.
+
+Two separable bugs fall out: a user-facing one in `register_project`
+(no `expanduser` / no existence check) and a latent lifecycle one in
+`_run` (silent loss of any non-Cancelled exception). The latter is
+this ADR; the former is a straightforward edit and is recorded here
+only as the trigger.
+
+**Alternatives considered.**
+
+1. *Let the exception keep propagating (status quo) and document
+   "operator must clean up stuck rows".* Rejected: the run loop is
+   the single owner of run-level status transitions per spec.md §6 /
+   ADR-19, and "operator cleanup" is exactly the v1 anti-pattern v2
+   exists to replace. A run that can never observably terminate is a
+   contract violation, not a known limitation.
+2. *Re-raise the exception after recording, so the supervisor task
+   still surfaces it.* Rejected: the supervisor already discards the
+   task handle (ADR-19's tracked-task set is for cancellation, not
+   error propagation), so re-raising only produces a
+   "Task exception was never retrieved" line on GC — strictly noisier
+   with no behavioural win. The recorded `run_ended` and the
+   `logger.exception` log line are the actionable signals.
+3. *Add a new `internal_error` run status separate from `failed`.*
+   Rejected: the existing four statuses (`running`/`paused`/`done`/
+   `failed`/`cancelled`) cover the surface (spec.md §3.2). The
+   distinction the operator needs ("crash in our code vs. agent
+   couldn't produce a signal") lives in the run-ended `summary`
+   payload (`internal_error: <exc>`) and the matching `LoopResult.reason
+   == "internal_error"`, mirroring how `max_iters` / `timeout` /
+   `agent_end_no_signal` are surfaced today.
+
+**Decision.** Option as written. In `RelayCore._run`, add an
+`except Exception` peer to the existing `except asyncio.CancelledError`
+that wraps both `run_loop` and the `_apply_result` call. On entry it:
+
+- logs `logger.exception("run %s failed with internal error", ctx.run_id)`
+  via the new module logger so the operator sees a stack trace in the
+  uvicorn log instead of a silent GC notice;
+- sets `state.result = LoopResult("failed", reason="internal_error",
+  summary=str(exc))` so awaiters of `wait_for_run` unblock with a
+  terminal verdict;
+- best-effort writes `set_run_status('failed', ended=True)` and
+  appends `run_ended` with `{"status": "failed", "summary":
+  f"internal_error: {exc!s}"}` — wrapped in
+  `contextlib.suppress(Exception)` mirroring the cancellation branch,
+  because the engine may be mid-dispose during `aclose()`;
+- does not re-raise.
+
+The user-facing trigger is fixed in the same change by `register_project`:
+`Path(root_path).expanduser().resolve()` plus an `is_dir()` precondition
+that raises `ValueError`; the `POST /api/projects` route maps that to
+400 via `http_error(exc, default_status=400)`.
+
+**Consequences.**
+- Changed: `src/relay_v2/core.py` (`_run` peer except; module logger;
+  `import logging`), `src/relay_v2/orchestrator/lifecycle.py`
+  (`register_project` expanduser + existence check), `src/relay_v2/api/
+  projects.py` (catch `ValueError` → 400 via `http_error`),
+  `docs/decisions.md` (this ADR).
+- New tests: `tests/orchestrator/test_loop.py::
+  test_internal_error_finalises_run_as_failed` (uses a `RaisingHarness`
+  double whose `spawn` raises `FileNotFoundError`; asserts the run
+  ends `failed`, the closing event is `run_ended` with
+  `internal_error:` summary, and `wait_for_run` returns within 5 s);
+  `tests/api/test_w2_routes.py::test_project_register_expands_tilde`
+  and `::test_project_register_rejects_missing_path` cover the trigger
+  fix. Suite **194 → 196 passed**; 3 pi-e2e tests remain gated behind
+  `PI_INTEGRATION=1`. `ruff` / `mypy --strict` clean.
+- The event-store / SSE / MCP / OTel-mirror contracts are unchanged.
+  The run lifecycle gains exactly one new terminal-event payload shape
+  (`run_ended` with `summary="internal_error: …"`), which existing
+  consumers tolerate (the dashboard renders the summary verbatim).
+- Distinct from the latent gap ADR-29 / ADR-30 fence off (no
+  `agent_end`/`SessionEnded` row on the sentinel-close path): that one
+  is about the *successful* close path; this ADR is about the
+  *exception* close path. Closing the ADR-29 gap is still owner work
+  with its own ADR.
+
+---

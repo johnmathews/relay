@@ -76,6 +76,13 @@ the spec elides live in `_drive_iter` so the loop stays readable:
   kept in `signal_args` + the `run_ended` summary).
 - **Caps.** `max_iters` (`while seq < max_iters`) and `iter_timeout`
   (orchestrator-enforced wall clock) both fail the run cleanly.
+- **Internal error (ADR-31).** Any non-`CancelledError` exception out of
+  `run_loop` or `_apply_result` is finalised as `failed` with a
+  `run_ended` payload `{"status": "failed", "summary": "internal_error:
+  <exc>"}` and `LoopResult.reason == "internal_error"`. The exception
+  is also logged via `logger.exception`. Without this a spawn-time
+  error (bad project root, missing pi binary) would leave the run
+  permanently `running` with no closing event.
 
 `run_loop` returns a `LoopResult(status, reason, summary, question,
 next_prompt, pause_id)`; `RelayCore` maps it to the run's final status +

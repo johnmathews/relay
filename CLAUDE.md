@@ -99,7 +99,12 @@ repo-root + wheel force-include, manual behavioral verification),
 ADR-29 (Phase-7 OTel mirror: self-owned non-global TracerProvider,
 deferred literal no-op, `opentelemetry-*>=1.27,<2` pins, Option-D
 pi-harness lookahead so terminal-sentinel iters still recover usage,
-automated span-structure tests + manual Langfuse-UI acceptance).
+automated span-structure tests + manual Langfuse-UI acceptance),
+ADR-31 (post-MVP bugfix: a non-Cancelled exception out of the loop
+or `_apply_result` is finalised as `failed` + `run_ended`
+`internal_error: …` instead of leaving the run permanently
+`running` — paired with an `expanduser` + existence check in
+`register_project` so `~/...` no longer lurks as a literal path).
 
 ## What relay v2 is
 

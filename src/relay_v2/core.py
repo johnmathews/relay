@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import secrets
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -60,6 +61,8 @@ from relay_v2.orchestrator.preamble import build_preamble, compose_prompt
 from relay_v2.sse import Broadcaster
 
 __all__ = ["RelayCore"]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -166,6 +169,8 @@ class RelayCore:
                         session_handle=state.session_handle,
                         otel_run=run_span,
                     )
+                    state.result = result
+                    await self._apply_result(ctx, result)
                 except asyncio.CancelledError:
                     state.result = LoopResult(
                         "cancelled", reason="shutdown"
@@ -183,8 +188,32 @@ class RelayCore:
                              "summary": "supervisor shutdown"},
                         )
                     raise
-                state.result = result
-                await self._apply_result(ctx, result)
+                except Exception as exc:
+                    # ADR-31: any other exception from the loop or
+                    # _apply_result is an internal error of the run —
+                    # record it as `failed`/`run_ended` so the DB and
+                    # event stream reflect a terminal state. Without this,
+                    # a spawn-time error (bad project root, missing pi
+                    # binary) leaves the run permanently `running` and
+                    # the dashboard SSE-tails an event stream that will
+                    # never produce another event.
+                    logger.exception(
+                        "run %s failed with internal error", ctx.run_id
+                    )
+                    state.result = LoopResult(
+                        "failed", reason="internal_error", summary=str(exc)
+                    )
+                    # Best-effort finalisation, same caveat as the
+                    # cancellation branch above.
+                    with contextlib.suppress(Exception):
+                        await set_run_status(
+                            self._sm, ctx.run_id, "failed", ended=True
+                        )
+                        await self._store.append(
+                            ctx.run_id, "run_ended",
+                            {"status": "failed",
+                             "summary": f"internal_error: {exc!s}"},
+                        )
             finally:
                 # Guarantee waiters wake even if _apply_result raised — a
                 # never-set settled would hang wait_for_run forever.
