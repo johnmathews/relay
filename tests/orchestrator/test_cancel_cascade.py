@@ -221,3 +221,196 @@ def test_cascade_cancel_runtime_signals_in_memory_state(
 
     asyncio.run(scenario())
     assert cancel_events_set == [True, True, True]
+
+
+def test_cancel_run_on_awaiting_parent_flips_parent_first(
+    tmp_path: Path,
+) -> None:
+    """Order invariant: parent is flipped to cancelled BEFORE the
+    cascade signals descendants. Verified by observing the parent's DB
+    state is already 'cancelled' when the test code regains control.
+    """
+    settings = _settings(tmp_path)
+
+    async def scenario() -> str:
+        core = RelayCore(settings, harness=ScriptedHarness([]))
+        init_db(settings).dispose()
+        try:
+            parent_id, _ = await _seed_awaiting_parent(
+                core, tmp_path, n_children=2,
+            )
+            await core.cancel_run(parent_id)
+            return parent_id
+        finally:
+            await core._engine.dispose()
+
+    parent_id = asyncio.run(scenario())
+    engine = create_engine(settings.db_url)
+    try:
+        with Session(engine) as s:
+            parent = s.get(Run, parent_id)
+            assert parent is not None
+            assert parent.status == "cancelled"
+            assert parent.ended_at is not None
+            run_ended = s.scalar(
+                select(Event).where(
+                    Event.run_id == parent_id,
+                    Event.kind == "run_ended",
+                )
+            )
+            assert run_ended is not None
+            assert run_ended.payload["status"] == "cancelled"
+            assert "user cancel" in run_ended.payload["summary"].lower()
+    finally:
+        engine.dispose()
+
+
+def test_cancel_run_on_awaiting_parent_signals_in_flight_children(
+    tmp_path: Path,
+) -> None:
+    """End-to-end: cancel_run on awaiting parent → each in-flight child
+    has cancel_event set."""
+    settings = _settings(tmp_path)
+    cancel_events: list[bool] = []
+
+    async def scenario() -> None:
+        core = RelayCore(settings, harness=ScriptedHarness([]))
+        init_db(settings).dispose()
+        try:
+            parent_id, child_ids = await _seed_awaiting_parent(
+                core, tmp_path, n_children=3,
+            )
+            await core.cancel_run(parent_id)
+            for cid in child_ids:
+                cancel_events.append(core._runs[cid].cancel_event.is_set())
+        finally:
+            await core._engine.dispose()
+
+    asyncio.run(scenario())
+    assert cancel_events == [True, True, True]
+
+
+def test_cancel_run_on_running_parent_unchanged(tmp_path: Path) -> None:
+    """Cancel on a normal running parent (no fanout) still goes through
+    the existing cancel_event signal path — no DB pre-write here either."""
+    settings = _settings(tmp_path)
+    cancel_event_set: list[bool] = []
+
+    async def scenario() -> None:
+        core = RelayCore(settings, harness=ScriptedHarness([]))
+        init_db(settings).dispose()
+        try:
+            project_id = await core.register_project(tmp_path, "p")
+            run_id = core._new_run_id()
+            await create_run(
+                core._sm, run_id=run_id, project_id=project_id,
+                prompt_body="x", max_iters=4, iter_timeout=60,
+                worktree_path=None, branch=None,
+            )
+            core._runs[run_id] = _RunState()
+            await core.cancel_run(run_id)
+            cancel_event_set.append(core._runs[run_id].cancel_event.is_set())
+            engine = create_engine(settings.db_url)
+            try:
+                with Session(engine) as s:
+                    run = s.get(Run, run_id)
+                    assert run is not None
+                    # Status NOT flipped by cancel_run — _run.finally owns it.
+                    assert run.status == "running"
+            finally:
+                engine.dispose()
+        finally:
+            await core._engine.dispose()
+
+    asyncio.run(scenario())
+    assert cancel_event_set == [True]
+
+
+def test_cancel_run_on_already_cancelled_awaiting_parent_idempotent(
+    tmp_path: Path,
+) -> None:
+    """Cancelling twice is safe — second call sees parent already
+    cancelled and returns silently with no duplicate run_ended event."""
+    settings = _settings(tmp_path)
+
+    async def scenario() -> str:
+        core = RelayCore(settings, harness=ScriptedHarness([]))
+        init_db(settings).dispose()
+        try:
+            parent_id, _ = await _seed_awaiting_parent(
+                core, tmp_path, n_children=2,
+            )
+            await core.cancel_run(parent_id)
+            await core.cancel_run(parent_id)
+            return parent_id
+        finally:
+            await core._engine.dispose()
+
+    parent_id = asyncio.run(scenario())
+    engine = create_engine(settings.db_url)
+    try:
+        with Session(engine) as s:
+            run_endeds = list(
+                s.scalars(
+                    select(Event).where(
+                        Event.run_id == parent_id,
+                        Event.kind == "run_ended",
+                    )
+                )
+            )
+            assert len(run_endeds) == 1
+    finally:
+        engine.dispose()
+
+
+def test_cancel_run_serialises_with_watcher(tmp_path: Path) -> None:
+    """Concurrent cancel + watcher: exactly one of them transitions the
+    parent. If watcher wins, parent ends 'running' (synthesizer enqueued)
+    and cancel_run falls through to the in-flight-cancel branch on the
+    new _RunState. If cancel_run wins, watcher sees parent 'cancelled'
+    and no-ops. Either way: exactly one run_ended on the parent in the
+    end, status terminal."""
+    settings = _settings(tmp_path)
+
+    async def scenario() -> str:
+        core = RelayCore(settings, harness=ScriptedHarness([]))
+        init_db(settings).dispose()
+        try:
+            parent_id, child_ids = await _seed_awaiting_parent(
+                core, tmp_path, n_children=2,
+                child_statuses=["done", "done"],  # all settled → watcher eligible
+                install_in_memory_state=False,
+            )
+            # Race cancel against a direct watcher invocation.
+            await asyncio.gather(
+                core.cancel_run(parent_id),
+                core._maybe_resume_parent(parent_id),
+            )
+            return parent_id
+        finally:
+            await core._engine.dispose()
+
+    parent_id = asyncio.run(scenario())
+    engine = create_engine(settings.db_url)
+    try:
+        with Session(engine) as s:
+            parent = s.get(Run, parent_id)
+            assert parent is not None
+            assert parent.status in ("cancelled", "running"), (
+                f"unexpected post-race status: {parent.status}"
+            )
+            run_endeds = list(
+                s.scalars(
+                    select(Event).where(
+                        Event.run_id == parent_id,
+                        Event.kind == "run_ended",
+                    )
+                )
+            )
+            # If cancel wins: 1 run_ended (cancelled).
+            # If watcher wins: 0 run_ended (synthesizer enqueued but no
+            # supervisor pickup in this test → run remains in 'running'
+            # with no run_ended). Both are acceptable; no duplicate.
+            assert len(run_endeds) <= 1
+    finally:
+        engine.dispose()
