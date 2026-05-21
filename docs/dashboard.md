@@ -105,6 +105,36 @@ post-MVP gap (Phase-4 scoping decision; ADR-25/ADR-26) — no git
 endpoint, no subprocess surface. The pane is structured so the richer
 data slots in later without restructuring.
 
+## Fanout-join dashboard additions (Phase 9e)
+
+Four user-visible pieces landed in 9e:
+
+**Children pane.** `RunDetailView` renders a `ChildrenPane` tab when
+`parent_run_id == null` and at least one child run exists. Each row
+shows `status · short-id · role · branch · summary` (all available from
+`GET /api/runs/{id}/children`). The pane auto-refreshes via SSE: the
+events store extends `INVALIDATING_KINDS` with `subagent_dispatch`,
+`subagent_return`, and `child_runs_resolved`; receiving any of those
+fires a `['runs','children',runId]` Pinia Colada invalidation so the
+`useRunChildrenQuery` hook re-fetches.
+
+**Parent chip.** When `parent_run_id != null`, the run-detail header
+renders a `ParentRunChip` that links back to the parent's `/runs/:id`
+view. Clicking it is a normal vue-router navigation.
+
+**Cascade-aware Cancel button.** The Cancel button is now enabled for
+`status ∈ {running, awaiting_children}`. For a parent in
+`awaiting_children` the label reads "Cancel run and N children" (N
+derived from the children query result length); the cancel API call is
+unchanged — `POST /api/runs/{id}/cancel` cascades automatically via the
+ADR-37 runtime helper added in 9d.
+
+**"Show child runs" toggle.** The Project view Runs pane hides child
+runs by default (they clutter the top-level list). A small toggle sends
+`?include_children=true` to `GET /api/runs` when enabled. The MCP tool
+`relay__list_runs` always passes `include_children=True` so MCP callers
+see the full picture.
+
 ## Toolchain mandates (ADR-26 — do not regress)
 
 1. **vue-router v5** (not v4) — adopted directly (`lib/routes.ts`).
