@@ -344,25 +344,35 @@ These cannot break, and this proposal preserves all of them:
 
 ## Phasing
 
-This is **Phase 9** (post-MVP). MVP is done (CLAUDE.md). Suggested
-sub-phases:
+This is **Phase 9** (post-MVP). MVP is done (CLAUDE.md). Sub-phases:
 
-1. **9a — schema + events (no behaviour).** Add `awaiting_children`
-   status, `child_runs_resolved` event kind. Update spec.md §3.
-   Pure additive, no orchestrator change. Tests assert the new
-   status round-trips.
-2. **9b — fanout dispatch only (no join).** Sentinel parsed; child
-   runs started; parent enters `awaiting_children`. No join iter
-   yet. Tests: scripted-harness fanout to 2 children, both complete,
-   parent stays paused.
-3. **9c — join.** Implement child-completion watcher, preamble
-   extension, parent resume. Tests: full fanout/join round-trip.
-4. **9d — cancellation cascade.** Test-driven; pure orchestrator
-   change.
-5. **9e — dashboard + skill guidance.** Frontend Children pane;
-   skill docs.
-6. **9f — observability.** OTel span parenting across runs;
-   manual Langfuse acceptance.
+1. **9a — schema + events (no behaviour).** ✅ **DONE** (PR #2,
+   merged 4ebb1f8; ADR-34). Added `awaiting_children` status,
+   `child_runs_resolved` event kind, `_cascade_cancel_descendants`
+   helper, spec.md §3 update.
+2. **9b — fanout dispatch only (no join).** ✅ **DONE** (PR #3,
+   merged 381c147; ADR-35). Sentinel parsed; child runs started;
+   parent enters `awaiting_children`. Concurrency cap via
+   `asyncio.Semaphore` (Option A). Depth cap via
+   `max_fanout_depth`. Worktrees branch off parent HEAD.
+3. **9c — join.** ✅ **DONE** (PR #4, merged 37b8cb7; ADR-36).
+   `_maybe_resume_parent` watcher fires from child's `_run` finally;
+   emits `subagent_return` × N + `child_runs_resolved`; transitions
+   parent → `running`; enqueues synthesizer iter whose body is
+   `compose_join_prompt(join_prompt, child_results)` (YAML-ish
+   `RELAY_CHILD_RESULTS:` trailer in body, NOT preamble). Two
+   structural fixes folded in: watcher invoked before
+   `state.settled.set()`; `_dispatch_children` two-pass
+   create-then-enqueue.
+4. **9d — cancellation cascade.** ⏳ **NEXT**
+   (`docs/plans/2026-05-21-fanout-join-9d.md`). Wire
+   `_cascade_cancel_descendants` (already exists from 9a) into the
+   runtime `cancel_run` path so cancelling an `awaiting_children`
+   parent stops its in-flight children. Pure orchestrator change.
+5. **9e — dashboard + skill guidance.** ⏳ **TODO**. Frontend
+   Children pane; skill docs.
+6. **9f — observability.** ⏳ **TODO**. OTel span parenting across
+   runs; manual Langfuse acceptance.
 
 Each sub-phase is shippable, deterministic-testable, and reversible.
 
