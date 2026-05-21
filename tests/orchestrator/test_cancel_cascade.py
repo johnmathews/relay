@@ -416,6 +416,82 @@ def test_cancel_run_serialises_with_watcher(tmp_path: Path) -> None:
         engine.dispose()
 
 
+def test_cancel_run_cascades_through_grandchildren(tmp_path: Path) -> None:
+    """parent → child A (awaiting_children) → 2 grandchildren (running)
+    + child B (running). Cancelling the root cascades all four
+    descendants depth-first."""
+    settings = _settings(tmp_path)
+    cancel_events: dict[str, bool] = {}
+
+    async def scenario() -> tuple[str, str, str, list[str], str]:
+        core = RelayCore(settings, harness=ScriptedHarness([]))
+        init_db(settings).dispose()
+        try:
+            # Root parent
+            parent_id, child_ids = await _seed_awaiting_parent(
+                core, tmp_path, n_children=2,
+                child_statuses=["awaiting_children", "running"],
+                install_in_memory_state=False,  # child A is awaiting, not running
+            )
+            child_a, child_b = child_ids
+            # Promote child B to in-memory (running with a _RunState).
+            core._runs[child_b] = _RunState()
+            # Spawn 2 grandchildren under child A.
+            project_id = (await core.list_projects())[0].id
+            grandchild_ids: list[str] = []
+            for i in range(2):
+                gid = core._new_run_id()
+                await create_run(
+                    core._sm, run_id=gid, project_id=project_id,
+                    prompt_body=f"g{i}", max_iters=4, iter_timeout=60,
+                    worktree_path=str(tmp_path / f"gwt-{i}"),
+                    branch=f"relay/{gid}", parent_run_id=child_a,
+                )
+                await core._store.append(
+                    gid, "run_started",
+                    {"project_id": project_id, "prompt_body": f"g{i}",
+                     "max_iters": 4},
+                )
+                core._runs[gid] = _RunState()
+                grandchild_ids.append(gid)
+
+            await core.cancel_run(parent_id)
+            cancel_events[child_b] = core._runs[child_b].cancel_event.is_set()
+            for gid in grandchild_ids:
+                cancel_events[gid] = core._runs[gid].cancel_event.is_set()
+            return parent_id, child_a, child_b, grandchild_ids, project_id
+        finally:
+            await core._engine.dispose()
+
+    parent_id, child_a, child_b, grandchild_ids, _ = asyncio.run(scenario())
+
+    # In-flight: child B + 2 grandchildren had cancel_event set.
+    assert cancel_events[child_b] is True
+    for gid in grandchild_ids:
+        assert cancel_events[gid] is True, (
+            f"grandchild {gid} cancel_event not set"
+        )
+
+    engine = create_engine(settings.db_url)
+    try:
+        with Session(engine) as s:
+            parent = s.get(Run, parent_id)
+            assert parent is not None and parent.status == "cancelled"
+            # Child A had no in-memory state → DB-finalised.
+            ca = s.get(Run, child_a)
+            assert ca is not None and ca.status == "cancelled"
+            # Child B was in-flight → not DB-finalised by cascade
+            # (would be by its own _run.CancelledError in a real run).
+            cb = s.get(Run, child_b)
+            assert cb is not None and cb.status == "running"
+            # Grandchildren were in-flight → not DB-finalised by cascade.
+            for gid in grandchild_ids:
+                g = s.get(Run, gid)
+                assert g is not None and g.status == "running"
+    finally:
+        engine.dispose()
+
+
 def test_cancelled_before_start_no_iter(tmp_path: Path) -> None:
     """A run pre-flipped to cancelled (DB-only cascade case) that the
     supervisor picks up must exit immediately without opening an iter.
