@@ -30,16 +30,17 @@ from relay_v2.db.models import Iter, Project, Run
 
 __all__ = [
     "RunContext",
-    "register_project",
+    "compose_join_prompt",
+    "compose_resume_prompt",
     "create_run",
-    "provision_workspace",
+    "latest_paused_iter",
+    "load_run",
     "open_iter",
     "close_iter",
-    "set_run_status",
+    "provision_workspace",
+    "register_project",
     "set_iter_session",
-    "load_run",
-    "latest_paused_iter",
-    "compose_resume_prompt",
+    "set_run_status",
 ]
 
 # Safe argv-form subprocess spawner (no shell, no injection surface).
@@ -285,3 +286,38 @@ def compose_resume_prompt(next_prompt: str, question: str, answer: str) -> str:
         f'Answer to the paused question ("{question}"):\n\n'
         f"{answer}\n"
     )
+
+
+def compose_join_prompt(
+    join_prompt: str, child_results: list[dict[str, str]]
+) -> str:
+    """The synthesizer iter's body: ``join_prompt`` followed by a
+    structured ``RELAY_CHILD_RESULTS`` trailer (one entry per child).
+
+    The trailer is YAML-ish (line-based ``key: value``, hand-rendered, no
+    YAML library) so the engineering-team skill can read it the same way
+    it reads the ``RELAY_*`` preamble lines. It lives in the body, not
+    the preamble (ADR-14 — preamble is reserved for ``RELAY_RUN_DIR`` and
+    ``RELAY_PHASE``). Multi-line summaries use YAML literal block
+    (``summary: |``) so newlines survive untouched.
+
+    Schema of each ``child_results`` entry (all ``str``):
+    ``id``, ``role``, ``status``, ``summary``, ``branch``,
+    ``worktree_path``. Empty values render as ``key:`` with a trailing
+    space (never omitted) so the block is structurally uniform.
+    """
+    lines: list[str] = [join_prompt, "", "---", "RELAY_CHILD_RESULTS:"]
+    for r in child_results:
+        lines.append(f"- id: {r['id']}")
+        lines.append(f"  role: {r['role']}")
+        lines.append(f"  status: {r['status']}")
+        summary = r.get("summary", "")
+        if "\n" in summary:
+            lines.append("  summary: |")
+            for sub in summary.split("\n"):
+                lines.append(f"    {sub}")
+        else:
+            lines.append(f"  summary: {summary}")
+        lines.append(f"  branch: {r['branch']}")
+        lines.append(f"  worktree_path: {r['worktree_path']}")
+    return "\n".join(lines) + "\n"
