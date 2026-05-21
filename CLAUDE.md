@@ -132,6 +132,45 @@ amber-tinted variant. 211 backend tests pass (205 + 5 orphan/cascade
 + 1 SSE live; 3 pi-e2e still gated); 142 frontend tests pass (+1 new
 StatusBadge case). No production code path creates an
 `awaiting_children` row yet — 9b/9c land the dispatch + join.
+**Phase 9b** then lands the fanout dispatch
+(`docs/plans/2026-05-21-fanout-join-9b.md`): a new closing sentinel
+verb `[[engteam:fanout]]` paired with a `[[engteam:fanout-start]] …
+[[engteam:fanout-end]]` JSON marker block (spec §5.4) — parsed by
+`extract_fanout_payload` into a Pydantic `FanoutPayload`
+(`src/relay_v2/harness/signaling/fanout.py`), surfaced as a
+terminal `fanout` signal by `detect_in_text`, threaded through the
+loop as a new `LoopResult("awaiting_children", fanout_payload=…)`
+return path. `RelayCore._apply_result` routes that status to
+`_dispatch_children`, which spawns N child runs (Shape B — separate
+`runs` rows joined via `parent_run_id`, NOT iters of the parent)
+whose worktrees branch off the parent's worktree HEAD (not the
+project default branch) via the new
+`provision_workspace(..., parent_worktree_path=…)` param. Concurrency
+is capped by an `asyncio.Semaphore(settings.max_fanout_concurrent)`
+in the supervisor (ADR-35, Option A: every child row exists in the
+DB from dispatch and is swept by the existing orphan-recovery
+machinery on restart — no new persistent intermediate state).
+Recursion is bounded by `max_fanout_depth` (default 2, hard cap 4
+via `RELAY_MAX_FANOUT_DEPTH`); `_fanout_depth` walks the
+`parent_run_id` chain at dispatch time and a depth-exceeded child
+finalises as `failed`. The parent stays in `awaiting_children` with
+no `run_ended` event — 9c will land the join/synthesizer iter that
+transitions it back to `running`. `join_prompt` flows from 9b to
+9c via `iters.signal_args["payload"]["join_prompt"]` on the closing
+fanout iter (OCQ-1 resolution: option a, status-quo, guarded by a
+dedicated integration assertion; promotable to a dedicated column
+in 9c if it feels too implicit). The OCQ-2 "restart with parent in
+`awaiting_children` + children still pending" edge is covered by a
+direct-`_recover_orphans` regression in `test_fanout_integration.py`
+that confirms the 9a cascade helper finalises all three rows. New
+ADR-35 records the Option-A semaphore decision over Option-B
+queue-and-block (queue would replicate the gap 9a closed for
+`awaiting_children`). 237 backend tests pass (211 + 15 sentinel + 2
+loop + 3 lifecycle + 4 dispatch + 2 integration; 3 pi-e2e still
+gated), `ruff`/`mypy --strict` clean (**39** source files), backend
+coverage 94%. No frontend changes in 9b (the dashboard "Children"
+pane is 9e). 9c lands the synthesizer iter + parent resume; 9d the
+runtime cancel-cascade; 9e the dashboard; 9f OTel span parenting.
 
 ## What relay v2 is
 
