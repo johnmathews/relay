@@ -670,6 +670,16 @@ class RelayCore:
                         "failed", reason="internal_error"
                     )
                 state.settled.set()
+                # Fanout-join (9c): when a child run settles, give its
+                # parent a chance to resume. Idempotent + lock-guarded
+                # in _maybe_resume_parent; a no-op when the parent is
+                # not awaiting_children (cascade-cancelled, already
+                # resumed by a sibling, or this run isn't a child at
+                # all). Best-effort — a watcher failure must not leak
+                # back into the run task's shutdown.
+                if ctx.parent_run_id is not None:
+                    with contextlib.suppress(Exception):
+                        await self._maybe_resume_parent(ctx.parent_run_id)
 
     async def _apply_result(
         self, ctx: RunContext, result: LoopResult
