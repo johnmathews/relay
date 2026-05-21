@@ -48,8 +48,10 @@ from relay_v2.harness.pi import PiHarness
 from relay_v2.observability import Instrumentation, build_instrumentation
 from relay_v2.orchestrator.lifecycle import (
     RunContext,
+    compose_join_prompt,
     compose_resume_prompt,
     create_run,
+    latest_fanout_iter,
     latest_paused_iter,
     load_run,
     provision_workspace,
@@ -457,8 +459,104 @@ class RelayCore:
                 return
             if any(c.status not in terminal for c in children):
                 return
-            # Happy path lands in Task 5.
-            return
+            # All children terminal: emit returns + resolved, transition,
+            # enqueue synthesizer.
+            results = await self._collect_child_results(parent_run_id)
+            for r in results:
+                await self._store.append(
+                    parent_run_id,
+                    "subagent_return",
+                    {
+                        "child_run_id": r["id"],
+                        "status": r["status"],
+                        "summary": r["summary"],
+                    },
+                )
+            await self._store.append(
+                parent_run_id,
+                "child_runs_resolved",
+                {
+                    "children_count": len(results),
+                    "terminal_statuses": {
+                        r["id"]: r["status"] for r in results
+                    },
+                },
+            )
+
+            # Recover join_prompt from the closing fanout iter; refuse
+            # to resume if it's missing (defensive — a structurally
+            # impossible state given 9b's writes, but we'd rather leave
+            # the parent in awaiting_children than enqueue a
+            # synthesizer with an empty prompt).
+            closing = await latest_fanout_iter(self._sm, parent_run_id)
+            if closing is None or closing.signal_args is None:
+                logger.error(
+                    "fanout-join: parent %s has no closing fanout iter; "
+                    "leaving in awaiting_children",
+                    parent_run_id,
+                )
+                return
+            payload = closing.signal_args.get("payload") or {}
+            if not isinstance(payload, dict):
+                logger.error(
+                    "fanout-join: parent %s closing iter payload is not "
+                    "a dict (got %r); leaving in awaiting_children",
+                    parent_run_id, type(payload).__name__,
+                )
+                return
+            join_prompt = payload.get("join_prompt", "")
+            if not isinstance(join_prompt, str) or not join_prompt:
+                logger.error(
+                    "fanout-join: parent %s has empty join_prompt; "
+                    "leaving in awaiting_children",
+                    parent_run_id,
+                )
+                return
+
+            body = compose_join_prompt(join_prompt, results)
+
+            # Transition projection first, then enqueue (mirrors
+            # resume_run's order so SSE consumers see the status flip
+            # before the next iter_started lands).
+            await set_run_status(
+                self._sm, parent_run_id, "running", ended=False
+            )
+
+            # Resolve the project + parent worktree for the new ctx.
+            async with self._sm() as s:
+                parent_row = await s.get(Run, parent_run_id)
+                if parent_row is None:
+                    return
+                project = await s.get(Project, parent_row.project_id)
+            if project is None:
+                logger.error(
+                    "fanout-join: parent %s project missing; cannot resume",
+                    parent_run_id,
+                )
+                return
+
+            run_dir = self._settings.data_dir / "runs" / parent_run_id
+            phase_file = run_dir / "phase"
+            phase = (
+                phase_file.read_text().strip()
+                if phase_file.exists() else None
+            )
+            self._runs[parent_run_id] = _RunState()
+            await self._queue.put(
+                RunContext(
+                    run_id=parent_run_id,
+                    project_root=Path(project.root_path),
+                    worktree_path=Path(parent_row.worktree_path)
+                    if parent_row.worktree_path else None,
+                    run_dir=run_dir,
+                    max_iters=parent_row.max_iters,
+                    iter_timeout=parent_row.iter_timeout,
+                    start_seq=closing.seq,  # loop does seq += 1 on entry
+                    phase=phase,
+                    body=body,
+                    parent_run_id=parent_row.parent_run_id,
+                )
+            )
 
     async def aclose(self) -> None:
         if self._supervisor is not None:
