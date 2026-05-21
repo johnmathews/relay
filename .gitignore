@@ -63,3 +63,4 @@ credentials.json
 # --- engineering-team / worktrees (run artifacts, not source) ---
 .claude/
 .engineering-team/
+.worktrees/
