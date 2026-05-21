@@ -209,9 +209,47 @@ new from 9c: 7 lifecycle_join + 8 join_watcher + 1 new fanout-join
 integration; 3 pi-e2e still gated), `ruff`/`mypy --strict` clean
 (**39** source files, no new modules), backend coverage 94%. No
 frontend changes in 9c (the dashboard "Children" pane is still 9e).
-9d lands the runtime cancel-cascade (the `_cascade_cancel_descendants`
-helper from 9a is wired into `cancel_run`); 9e the dashboard
-"Children" pane; 9f OTel span parenting across runs.
+**Phase 9d** then wires the runtime cancel-cascade
+(`docs/plans/2026-05-21-fanout-join-9d.md`): `cancel_run` on an
+`awaiting_children` parent now acquires `_enqueue_lock`, flips the
+parent to `cancelled` *first* (parent-first ordering — load-bearing,
+because the 9c join watcher also acquires the same lock and re-reads
+the parent under it; a child terminal landing between a
+descendants-first cascade and the parent flip would let the watcher
+resume the parent mid-cancel, exactly what we're cancelling), then
+calls a new sibling helper `_cascade_cancel_runtime` that walks
+descendants depth-first and applies a per-descendant strategy: an
+**in-flight** descendant (in-memory `_RunState` exists and not
+settled) gets a fire-and-forget signal — `cancel_event.set()` +
+`session.cancel()` — and lets its own `_run.CancelledError` branch
+write the `run_ended` (pre-writing the DB here would double-emit);
+a **DB-only** descendant (queued-but-not-started, or `_RunState`
+lost) gets `set_run_status(cancelled, ended=True)` + `run_ended`
+written directly, mirroring the 9a startup helper. The 9a
+`_cascade_cancel_descendants` stays as the startup-only sibling
+(no in-memory states exist post-restart by definition). `_run`
+gains a cancelled-before-start guard so a queued descendant
+DB-flipped by the cascade exits immediately on supervisor pickup
+with no stray `iter_started` event; the guard intentionally
+bypasses `_maybe_resume_parent` because the cascade's
+parent-first ordering already moved the parent out of
+`awaiting_children`, so the watcher would no-op anyway. The
+in-flight cancel path (set `cancel_event` + cancel session) stays
+outside the lock — it's preserved verbatim for normal running
+runs, and the ADR-31 orphan safety net for "no in-memory state +
+DB row stuck" is preserved too. No new schema, no new event kinds,
+no new sentinel grammar; `POST /api/runs/{id}/cancel` and the MCP
+`relay__cancel_run` tool inherit the new behaviour with no
+signature change. New ADR-37 records parent-first ordering, the
+in-flight-vs-DB-only split, `_enqueue_lock` reuse for serialising
+against `_maybe_resume_parent`, and the fire-and-forget +
+cancelled-before-start guard rationale. 266 backend tests pass
+(256 + 10 new from 9d in `tests/orchestrator/test_cancel_cascade.py`:
+3 cascade-helper + 5 cancel_run branches + 1 cancelled-before-start
+guard + 1 deep-tree integration; 3 pi-e2e still gated),
+`ruff`/`mypy --strict` clean (**39** source files, no new modules),
+backend coverage 94%. No frontend changes in 9d. 9e lands the
+dashboard "Children" pane; 9f OTel span parenting across runs.
 
 ## What relay v2 is
 
