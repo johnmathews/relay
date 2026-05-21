@@ -1899,3 +1899,88 @@ commitment this ADR extends down into bundled assets), ADR-28
 structurally visible).
 
 ---
+
+## ADR-34 — `awaiting_children` parents are cancelled on server restart (V1)
+
+**Status:** Accepted (2026-05-21).
+**Phase:** 9a (post-MVP fanout-join foundation).
+
+**Context.** The fanout-join feature (proposal:
+`docs/proposals/parallel-iters-fanout-join.md`) introduces a new
+`awaiting_children` run status: a parent suspended pending completion
+of children dispatched via fanout. ADR-31 / ADR-32 established that
+orphan-recovery sweeps any `running` row to `cancelled` on startup
+(single-process MVP per ADR-12). The new status creates a state-machine
+gap: how should the sweep handle `awaiting_children`?
+
+**Decision.** Sweep `awaiting_children` rows the same as `running` —
+mark them `cancelled` with a `run_ended` event whose summary is
+`"orphaned: server restart"`. Additionally, **cascade-cancel** the
+parent's descendants (depth-first, recursively) with summary
+`"orphaned: parent interrupted during fanout"`. Recovering an
+in-flight fanout across a server restart is a deliberate V1 non-goal.
+
+**Rationale.** Honest about the single-user, single-process MVP
+limitation (ADR-12). Symmetric with the existing `running` sweep — no
+new "preserve and reconcile" pathway. The cascade helper
+(`_cascade_cancel_descendants`) is reused by 9d for runtime
+cancellation. A future "preserve and reconcile" model can be added in
+a later ADR if real workflows demand restart-survival.
+
+**Alternatives considered.**
+
+1. *Preserve `awaiting_children` and add a startup reconciler.* Check
+   "have all children finished while we were down?" at boot and
+   either resume the parent (synthesizer iter against now-known
+   results) or finalise it. Rejected: strictly more code — new
+   background task, child-state validation, partial-completion
+   handling — for a benefit (restart survival) that single-user MVP
+   users don't pay for. A future ADR can add this if real workflows
+   demand it.
+2. *Reuse the `paused` status with a discriminator.* Less surface
+   area to add but conceptually muddled — `paused` is human-resolved
+   (a saved `next_prompt` + `question`), `awaiting_children` is
+   machine-resolved (child completion watcher). Rejected: distinct
+   semantics deserve distinct status values; the frontend / MCP /
+   OTel all want to render them differently.
+3. *Sweep only the parent, leave children running.* Children would
+   continue with no consumer for their `subagent_return` events;
+   they'd produce a worktree diff nobody synthesises. Rejected as
+   resource leak (zombie pi processes, orphan worktrees, orphan
+   subscriptions). Cascade-cancel is the only consistent rule.
+
+**Consequences.**
+
+- Changed: `src/relay_v2/core.py` (`_recover_orphans` sweeps both
+  `running` and `awaiting_children`; new private
+  `_cascade_cancel_descendants` helper), `src/relay_v2/api/events.py`
+  (`_TERMINAL` comment notes `awaiting_children` is not terminal —
+  value unchanged), `frontend/src/stores/events.ts` and
+  `frontend/src/views/RunDetailView.vue` (mirror comment update;
+  values unchanged), `frontend/src/components/shared/StatusBadge.vue`
+  (adds `awaiting_children` to `KNOWN`, dedicated CSS modifier),
+  `docs/spec.md` §3.1 / §3.2 / §6, `docs/decisions.md` (this ADR).
+- New tests: `tests/orchestrator/test_loop.py` gains
+  `test_recover_orphans_sweeps_awaiting_children`,
+  `test_recover_orphans_cascades_to_children`,
+  `test_recover_orphans_cascades_recursively`,
+  `test_cascade_skips_already_terminal_children`,
+  `test_cascade_handles_cycle_safely`; `tests/api/test_sse.py` gains
+  `test_sse_treats_awaiting_children_as_live`; the frontend
+  `StatusBadge.spec.ts` adds the `awaiting_children` case.
+- 9a does not parse the fanout sentinel, does not spawn child runs,
+  does not extend the preamble. Production code paths cannot create
+  an `awaiting_children` row yet — all new tests rely on direct DB
+  seeding (the test fixture pattern the orphan-recovery tests
+  already use). 9b/9c inherit a fully-functional recovery path.
+- Multi-process / multi-worker is out of scope (ADR-12) and remains
+  so: the sweep + cascade assume a single owner per database. If
+  that assumption ever changes, this ADR must be revisited
+  alongside ADR-32.
+
+**Related:** ADR-12 (single-process MVP), ADR-31 (run finalisation
+on internal errors), ADR-32 (orphan recovery on startup + cancel
+safety net), proposal `docs/proposals/parallel-iters-fanout-join.md`,
+`docs/plans/2026-05-21-fanout-join-9a.md`.
+
+---
