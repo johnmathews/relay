@@ -37,6 +37,7 @@ from relay_v2.harness import (
     ToolUseStart,
 )
 from relay_v2.harness.signaling import MarkerError, detect_in_text
+from relay_v2.harness.signaling.fanout import FanoutParseError
 from relay_v2.harness.signaling.sentinels import extract_phase_start
 from relay_v2.observability import (
     NOOP_ITER_SPAN,
@@ -54,7 +55,7 @@ from relay_v2.orchestrator.preamble import build_preamble, compose_prompt
 
 __all__ = ["LoopResult", "SessionHandle", "run_loop"]
 
-_TERMINAL = {"done", "handoff", "pause"}
+_TERMINAL = {"done", "handoff", "pause", "fanout"}
 _SIGNAL_CONFIG = SignalConfig(strategy="text_sentinels")
 
 
@@ -69,6 +70,7 @@ class LoopResult:
     question: str | None = None
     next_prompt: str | None = None
     pause_id: str | None = None
+    fanout_payload: dict[str, Any] | None = None
 
 
 @dataclass
@@ -160,8 +162,12 @@ async def _drive_iter(
                     out.text_parts.append(ev.text)
                     try:
                         sig = detect_in_text(turn_text, _SIGNAL_CONFIG)
-                    except MarkerError as err:
-                        out.marker_headline = err.headline
+                    except (MarkerError, FanoutParseError) as err:
+                        out.marker_headline = (
+                            err.headline
+                            if isinstance(err, MarkerError)
+                            else str(err)
+                        )
                         break
                     if sig is None:
                         continue
@@ -367,6 +373,12 @@ async def run_loop(
                     question=signal.args.get("question", ""),
                     next_prompt=signal.args.get("next_prompt", ""),
                     pause_id=signal.args.get("id", ""),
+                )
+            if signal.kind == "fanout":
+                return LoopResult(
+                    "awaiting_children",
+                    reason="signal",
+                    fanout_payload=signal.args.get("payload"),
                 )
             # handoff — carry the compressed prompt; context stays fresh.
             body = signal.args["next_prompt"]
