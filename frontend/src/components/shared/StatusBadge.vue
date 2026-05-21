@@ -6,8 +6,9 @@
 //
 // Props:
 //   status: string  — a run status. Known: running | done | failed |
-//                      paused | cancelled. Any other string is allowed
-//                      and falls back to the "unknown" treatment.
+//                      paused | cancelled | awaiting_children. Any
+//                      other string is allowed and falls back to the
+//                      "unknown" treatment.
 
 import { computed } from 'vue'
 
@@ -19,6 +20,7 @@ const KNOWN = new Set([
   'failed',
   'paused',
   'cancelled',
+  'awaiting_children',
 ])
 
 /** CSS modifier class; falls back to `--unknown` for any other string. */
@@ -68,6 +70,13 @@ const variant = computed(() =>
 
 .status-badge--cancelled {
   color: #9aa1ab;
+}
+
+/* Amber/orange — distinct from `paused` (yellow) and `running` (blue)
+   so a parent suspended on its children reads as a different state at
+   a glance. See ADR-34. */
+.status-badge--awaiting_children {
+  color: #f08a3e;
 }
 
 .status-badge--unknown {

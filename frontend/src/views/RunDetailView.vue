@@ -56,6 +56,13 @@ const currentRun = useCurrentRunStore()
 const invalidate = useInvalidate()
 const cancelRun = useCancelRunMutation()
 
+// Local view-scoped terminal check that governs whether the live SSE
+// stream is force-closed after a status refetch (see onLifecycle / onCancel
+// below). MUST mirror `stores/events.ts::TERMINAL_STATUSES` — `paused` and
+// `awaiting_children` are NOT terminal because they can transition back to
+// `running`. Adding either here would `markTerminal()` an in-flight stream
+// and stop live updates while the parent waits for child completion. See
+// ADR-34 / `docs/spec.md` §3.1.
 const TERMINAL = new Set(['done', 'failed', 'cancelled'])
 
 const status = computed(() => detail.value?.status ?? '')

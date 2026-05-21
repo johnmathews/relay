@@ -47,9 +47,12 @@ if TYPE_CHECKING:
 router = APIRouter(prefix="/api", tags=["events"])
 
 # Run statuses that will emit no further events. A run in one of these is
-# served as paginated history then EOF (replay mode, spec.md §9.3). A
-# ``paused`` run is NOT terminal — it can resume and emit more — so it is
-# treated as live.
+# served as paginated history then EOF (replay mode, spec.md §9.3).
+# ``paused`` and ``awaiting_children`` are NOT terminal — both can
+# transition back to ``running`` (pause/resume; fanout/join respectively)
+# — so both are treated as live. The constant's *value* (the omission of
+# both from the set) is the behaviour; do not add ``awaiting_children``
+# here without re-reading ADR-34.
 _TERMINAL = frozenset({"done", "failed", "cancelled"})
 
 # Page size for the historical replay query (keeps a long run's replay

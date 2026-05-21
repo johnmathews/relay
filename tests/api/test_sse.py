@@ -208,6 +208,89 @@ def test_live_cutover_dedupe_with_concurrent_publish(
 # ── One end-to-end route test through a real FastAPI app ───────────────
 
 
+def test_sse_treats_awaiting_children_as_live(tmp_path: Path) -> None:
+    """ADR-34 / 9a: a run in ``awaiting_children`` opens the SSE live
+    path (subscribe → replay → drain queue) — NOT the terminal-replay
+    path (paginated history then EOF). The constant-test that captures
+    this in runtime behaviour: an event appended *after* the generator
+    starts subscribing must reach the consumer, which is only possible
+    if the generator took the live branch and is awaiting the
+    broadcaster queue.
+
+    Doubles as a regression for the comment update in both
+    ``api/events.py::_TERMINAL`` and the two frontend mirrors
+    (``stores/events.ts`` and ``views/RunDetailView.vue``): adding
+    ``awaiting_children`` to any of them would break this test (or its
+    frontend equivalent) by silently flipping the stream to replay-EOF.
+    """
+    from relay_v2.orchestrator.lifecycle import set_run_status
+
+    settings = _settings(tmp_path)
+    harness = ScriptedHarness([TextScript(DONE)])
+
+    async def scenario(core: RelayCore) -> None:
+        pid = await core.register_project(tmp_path, "p")
+        run_id = await core.start_run(pid, "Go.", max_iters=2)
+        await core.wait_for_run(run_id)
+
+        # Force the run into awaiting_children. Production code paths
+        # cannot create one yet (9b lands the fanout sentinel parser),
+        # so we override the projection directly — same seeding pattern
+        # the orphan-recovery tests use, and the same RelayCore-owned
+        # sessionmaker (no stray engine).
+        await set_run_status(
+            core._sm,  # noqa: SLF001 — test access; same SM the core uses
+            run_id,
+            "awaiting_children",
+            ended=False,
+        )
+        # Re-fetch via the core so ``get_run`` inside the generator
+        # sees the new status (the projection is committed by
+        # ``set_run_status``; no caching layer).
+        run = await core.get_run(run_id)
+        assert run is not None and run.status == "awaiting_children"
+
+        # Anchor the replay cursor at the current tail so:
+        #   1. ``_replay`` returns nothing (no rows with seq > last),
+        #   2. ``max_replayed`` starts at ``last``, so any event we
+        #      publish next will satisfy ``seq > max_replayed`` and
+        #      be yielded by the live drain.
+        existing = await core.list_events(run_id)
+        last = existing[-1].seq
+
+        gen = sse_event_stream(core, run_id, last)
+        frames: list[dict[str, Any]] = []
+
+        async def consume_one() -> None:
+            async for f in gen:
+                if f.startswith(":"):
+                    continue  # keepalive — keep waiting
+                frames.extend(_parse([f]))
+                return
+
+        task = asyncio.create_task(consume_one())
+        # The generator subscribes BEFORE yielding anything (the
+        # ``async with core.broadcaster.subscribe(...)`` line); a small
+        # sleep gives the event loop a turn to reach that subscribe
+        # point before we publish below.
+        await asyncio.sleep(0.05)
+        await core.store_event(
+            run_id,
+            "subagent_dispatch",
+            {"child_run_id": "c-1", "role": "explorer", "prompt": "go"},
+        )
+        await asyncio.wait_for(task, timeout=2)
+        # Drain the still-open generator so its aclose() runs cleanly
+        # (otherwise the suite emits an unhandled-task warning).
+        await gen.aclose()
+
+        assert len(frames) == 1
+        assert frames[0]["event"] == "subagent_dispatch"
+        assert frames[0]["data"]["payload"]["child_run_id"] == "c-1"
+
+    _run(scenario, settings, harness)
+
+
 def test_route_404_and_204_and_stream(tmp_path: Path) -> None:
     """Exercises the route wrapper: 404 unknown run, 204 finished run
     with Last-Event-ID at the tail, and a streamed body otherwise."""
