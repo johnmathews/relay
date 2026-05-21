@@ -86,7 +86,7 @@ def create_mcp_server(core: RelayCore, settings: Settings) -> FastMCP:
             if project_root is not None
             else None
         )
-        rows = await core.list_runs(project_id)
+        rows = await core.list_runs(project_id, include_children=True)
         return [RunOut.model_validate(r) for r in rows]
 
     @mcp.tool(name="relay__get_run")

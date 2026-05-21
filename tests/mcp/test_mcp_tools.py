@@ -130,6 +130,49 @@ def test_list_and_get_run_happy_path(tmp_path: Path) -> None:
     _run(scenario, settings)
 
 
+def test_list_runs_includes_child_runs(tmp_path: Path) -> None:
+    """relay__list_runs passes include_children=True, so child runs appear.
+
+    Creates a parent run, inserts a child run row directly via the DB layer
+    (mirroring _make_child_run from tests/orchestrator/test_relay_core.py),
+    then asserts both parent and child are returned by the MCP tool.  A
+    regression where include_children=True is silently dropped would cause
+    the child to be absent from the result.
+    """
+    settings = _settings(tmp_path)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+
+    async def scenario(core: RelayCore, mcp: FastMCP) -> None:
+        from relay_v2.orchestrator.lifecycle import create_run
+
+        project_id = await core.register_project(proj, "demo")
+        parent_id = await core.start_run(project_id, "parent task")
+        await core.wait_for_run(parent_id)
+
+        # Insert a child run row directly — no fanout sentinel needed; we are
+        # testing that list_runs surfaces child rows, not that dispatch works.
+        child_id = core._new_run_id()
+        await create_run(
+            core._sm,
+            run_id=child_id,
+            project_id=project_id,
+            prompt_body="child task",
+            max_iters=1,
+            iter_timeout=60,
+            worktree_path=None,
+            branch=None,
+            parent_run_id=parent_id,
+        )
+
+        all_runs = await _structured(mcp, "relay__list_runs")
+        returned_ids = {r["id"] for r in all_runs}
+        assert parent_id in returned_ids, "parent run must appear"
+        assert child_id in returned_ids, "child run must appear (include_children=True)"
+
+    _run(scenario, settings)
+
+
 def test_list_runs_unknown_project_root_errors(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
 

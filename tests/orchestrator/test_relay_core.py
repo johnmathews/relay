@@ -133,3 +133,38 @@ async def test_list_children_returns_direct_children_only(
         assert [r.id for r in direct] == [child_a, child_b]
     finally:
         await core.aclose()
+
+
+# ── list_runs ──────────────────────────────────────────────────────────
+
+
+async def test_list_runs_excludes_children_by_default(
+    tmp_path: Path,
+) -> None:
+    """list_runs() default behaviour: top-level rows only (parent_run_id IS NULL)."""
+    core, _settings = await _make_core(tmp_path)
+    try:
+        project_id = await _make_project(core, tmp_path / "proj")
+        parent_id = await core.start_run(project_id, "parent", max_iters=1)
+        _child_id = await _make_child_run(core, project_id, parent_id, "child")
+
+        rows = await core.list_runs(project_id)
+        assert {r.id for r in rows} == {parent_id}
+    finally:
+        await core.aclose()
+
+
+async def test_list_runs_includes_children_when_requested(
+    tmp_path: Path,
+) -> None:
+    """list_runs(include_children=True) returns the full set."""
+    core, _settings = await _make_core(tmp_path)
+    try:
+        project_id = await _make_project(core, tmp_path / "proj")
+        parent_id = await core.start_run(project_id, "parent", max_iters=1)
+        child_id = await _make_child_run(core, project_id, parent_id, "child")
+
+        rows = await core.list_runs(project_id, include_children=True)
+        assert {r.id for r in rows} == {parent_id, child_id}
+    finally:
+        await core.aclose()
