@@ -181,7 +181,12 @@ def test_closing_sentinel_counts(
     name: str, text: str, done: int, handoff: int, pause: int
 ) -> None:
     counts = count_closing_sentinels(text)
-    assert counts == {"done": done, "handoff": handoff, "pause": pause}
+    assert counts == {
+        "done": done,
+        "handoff": handoff,
+        "pause": pause,
+        "fanout": 0,
+    }
 
 
 def test_c2_handoff_prompt_body() -> None:

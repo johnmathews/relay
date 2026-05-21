@@ -32,6 +32,14 @@ class Settings(BaseSettings):
     max_iters: int = 12
     iter_timeout: int = 1800  # seconds
 
+    # Fanout/join (Phase 9, ADR-35).
+    # max_fanout_depth: maximum parent→child recursion depth.
+    #   Default 2, hard cap 4 (proposal §recursion-bounds).
+    # max_fanout_concurrent: semaphore pool size for concurrent child-run
+    #   tasks across all active parents (Option A, ADR-35).
+    max_fanout_depth: int = 2
+    max_fanout_concurrent: int = 4
+
     otel_export: str = "none"  # "langfuse" | "none"
     langfuse_host: str | None = None
     langfuse_public_key: str | None = None
