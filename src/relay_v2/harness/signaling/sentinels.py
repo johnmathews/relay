@@ -16,8 +16,12 @@ operates on that already-isolated text.
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
 
 from relay_v2.harness.protocol import SignalConfig, SignalEmitted
+
+if TYPE_CHECKING:
+    from relay_v2.harness.signaling.fanout import FanoutPayload
 
 __all__ = [
     "MarkerError",
@@ -28,6 +32,7 @@ __all__ = [
     "extract_pause_question",
     "extract_pause_id",
     "extract_phase_start",
+    "extract_fanout_payload",
     "detect_in_text",
 ]
 
@@ -241,6 +246,72 @@ def extract_phase_start(text: str) -> str:
             if m:
                 last = m.group(1)
     return last
+
+
+def extract_fanout_payload(text: str) -> "FanoutPayload":  # noqa: F821
+    """Extract and validate the JSON between ``[[engteam:fanout-start]]``
+    and ``[[engteam:fanout-end]]`` in the turn containing ``[[engteam:fanout]]``.
+
+    Raises :class:`MarkerError` when the block is structurally absent.
+    Raises :class:`~relay_v2.harness.signaling.fanout.FanoutParseError`
+    on invalid JSON or a payload that fails ``FanoutPayload`` validation.
+    """
+    import json as _json
+
+    from pydantic import ValidationError
+
+    from relay_v2.harness.signaling.fanout import FanoutParseError, FanoutPayload
+
+    _REPAIR = (
+        "\n[[engteam:fanout]] requires a JSON block between "
+        "[[engteam:fanout-start]] and [[engteam:fanout-end]]:\n\n"
+        "    [[engteam:fanout-start]]\n"
+        '    {"children": [{"role": "...", "prompt": "..."}],\n'
+        '     "join_prompt": "..."}\n'
+        "    [[engteam:fanout-end]]\n\n"
+        "    [[engteam:fanout]]\n\n"
+        "See: skills/engineering-team/references/sentinels.md\n"
+    )
+
+    lines = text.split("\n")
+
+    end_line = 0
+    for i in range(len(lines), 0, -1):
+        if _FANOUT_END_RE.match(lines[i - 1]):
+            end_line = i
+            break
+    if end_line == 0:
+        raise MarkerError(
+            "extract_fanout_payload: no [[engteam:fanout-end]] found",
+            _REPAIR,
+        )
+
+    start_line = 0
+    for i in range(end_line - 1, 0, -1):
+        if _FANOUT_START_RE.match(lines[i - 1]):
+            start_line = i
+            break
+    if start_line == 0:
+        raise MarkerError(
+            "extract_fanout_payload: no [[engteam:fanout-start]] found "
+            "before [[engteam:fanout-end]]",
+            _REPAIR,
+        )
+
+    body = "\n".join(lines[start_line : end_line - 1]).strip()
+    try:
+        raw = _json.loads(body)
+    except _json.JSONDecodeError as exc:
+        raise FanoutParseError(
+            f"fanout payload is not valid JSON: {exc}\n\nBody was:\n{body}"
+        ) from exc
+
+    try:
+        return FanoutPayload.model_validate(raw)
+    except ValidationError as exc:
+        raise FanoutParseError(
+            f"fanout payload failed validation: {exc}"
+        ) from exc
 
 
 def _first_attr(line: str, name: str) -> str:

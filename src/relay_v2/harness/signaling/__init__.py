@@ -1,12 +1,38 @@
-"""Signaling strategies (ADR-05).
-
-``text_sentinels`` is the MVP strategy on pi; ``mcp_tools`` is a
-post-MVP stub. The orchestrator emits a normalized
-:class:`~relay_v2.harness.protocol.SignalEmitted` regardless of which
-strategy produced it.
-"""
+"""Signaling strategies (ADR-05)."""
 
 from relay_v2.harness.protocol import SignalConfig, SignalEmitted
-from relay_v2.harness.signaling.sentinels import MarkerError, detect_in_text
+from relay_v2.harness.signaling.fanout import (
+    FanoutChild,
+    FanoutParseError,
+    FanoutPayload,
+)
+from relay_v2.harness.signaling.sentinels import (
+    MarkerError,
+    count_closing_sentinels,
+    detect_in_text,
+    extract_fanout_payload,
+    extract_handoff_prompt,
+    extract_pause_id,
+    extract_pause_prompt,
+    extract_pause_question,
+    extract_phase_start,
+    validate_done_no_prompt_markers,
+)
 
-__all__ = ["SignalConfig", "SignalEmitted", "MarkerError", "detect_in_text"]
+__all__ = [
+    "FanoutChild",
+    "FanoutParseError",
+    "FanoutPayload",
+    "MarkerError",
+    "SignalConfig",
+    "SignalEmitted",
+    "count_closing_sentinels",
+    "detect_in_text",
+    "extract_fanout_payload",
+    "extract_handoff_prompt",
+    "extract_pause_id",
+    "extract_pause_prompt",
+    "extract_pause_question",
+    "extract_phase_start",
+    "validate_done_no_prompt_markers",
+]
