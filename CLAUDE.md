@@ -261,9 +261,12 @@ implementation:
   Python (`ruff`/`mypy`/`pytest`) **and** the frontend `npm run check`.
 - Console script: `relay`. Implemented today: `relay serve`,
   `relay --version` (Phase 0), `relay install-skill`
-  (Phase 6 — `[--project PATH] [--force]`; ADR-28, `docs/skills.md`).
-  `relay start` / `status` / `cancel` arrive in later phases. Default
-  bind `127.0.0.1:7800`.
+  (Phase 6 — `[--project PATH] [--force] [--harness NAME]`; ADR-28,
+  `docs/skills.md`). Skill source lives at
+  `skills/engineering-team/<harness>/` (variant directory, default
+  `pi`); the variant model is documented in ADR-33. `relay start` /
+  `status` / `cancel` arrive in later phases. Default bind
+  `127.0.0.1:7800`.
 - Pi integration tests are gated behind `PI_INTEGRATION=1`; harness
   unit tests run offline against the captured `scratch/*.jsonl` fixtures.
   Orchestrator tests live under `tests/orchestrator/` and drive the loop

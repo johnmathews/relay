@@ -10,39 +10,56 @@ chains across fresh pi sessions.
 
 ```
 skills/engineering-team/          canonical source (repo root, spec §12)
-├── SKILL.md                      router: reads RELAY_PHASE + RELAY_RUN_DIR
-├── phases/
-│   ├── phase-1-evaluation.md
-│   ├── phase-2-planning.md
-│   ├── phase-3-development.md
-│   └── phase-4-wrap-up.md
-└── references/
-    ├── sentinels.md              verbatim v1 grammar (spec §12)
-    ├── team-structure.md         roles as single-session lenses
-    ├── workflows.md
-    ├── worktree.md               relay provisions it; skill does not
-    ├── discussion.md
-    └── general-guidelines.md
+├── README.md                     variant selector — human-readable,
+│                                 never loaded by an agent (ADR-33)
+└── pi/                           variant for relay + pi harness
+    ├── SKILL.md                  router: reads RELAY_PHASE + RELAY_RUN_DIR
+    ├── phases/
+    │   ├── phase-1-evaluation.md
+    │   ├── phase-2-planning.md
+    │   ├── phase-3-development.md
+    │   └── phase-4-wrap-up.md
+    └── references/
+        ├── sentinels.md          verbatim v1 grammar (spec §12)
+        ├── team-structure.md     roles as single-session lenses
+        ├── workflows.md
+        ├── worktree.md           relay provisions it; skill does not
+        ├── discussion.md
+        └── general-guidelines.md
 ```
 
-The tree lives at the **repo root**, outside the `src/relay_v2` wheel
-package. A hatch `force-include` (`pyproject.toml`) maps it into built
-wheels as `relay_v2/skills/` so an installed wheel still carries it;
-editable/source installs (the only mode used today) resolve the
-repo-root tree directly.
+Each harness gets its own subdirectory; today only `pi/` exists. A
+future second variant would land as a sibling (e.g. `claude-code/`) —
+see ADR-33 for the rationale. The tree lives at the **repo root**,
+outside the `src/relay_v2` wheel package. A hatch `force-include`
+(`pyproject.toml`) maps the whole `skills/` tree into built wheels as
+`relay_v2/skills/` so new variant subdirectories are automatically
+bundled; editable/source installs (the only mode used today) resolve
+the repo-root tree directly.
 
 ## `relay install-skill`
 
 ```
-relay install-skill                 # → ~/.claude/skills/engineering-team/
-relay install-skill --project PATH  # → PATH/.claude/skills/engineering-team/
-relay install-skill --force         # overwrite, backing the old copy up first
+relay install-skill                       # → ~/.claude/skills/engineering-team/ (pi)
+relay install-skill --project PATH        # → PATH/.claude/skills/engineering-team/
+relay install-skill --force               # overwrite, backing the old copy up first
+relay install-skill --harness pi          # explicit variant selection (default)
+relay install-skill --harness claude-code # errors — variant not present today
 ```
 
 Refuses to clobber an existing install unless `--force`; with `--force`
 the existing directory is moved to `engineering-team.bak-<utcstamp>`
 before the fresh copy is written. Source resolution lives in
 `src/relay_v2/cli/install_skill.py:skill_source_dir`.
+
+`--harness <name>` selects the variant subdirectory under
+`skills/engineering-team/`; the install target path is unchanged
+(no `<name>` suffix at the destination) because the agent reads
+`engineering-team`, not `engineering-team-<harness>`. An unknown
+harness errors with a message listing the available variants. The
+variant-selector `README.md` (one level above the variant directory)
+is copied alongside the variant contents so humans inspecting the
+install can see what was deployed; agents never load it.
 
 ## How relay drives the skill
 

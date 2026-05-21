@@ -35,6 +35,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Overwrite an existing install (the old copy is backed up first)",
     )
+    install.add_argument(
+        "--harness",
+        default="pi",
+        help=(
+            "Skill variant to install (default: pi). "
+            "Errors if the named variant does not exist."
+        ),
+    )
     return parser
 
 

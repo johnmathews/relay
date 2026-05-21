@@ -120,7 +120,7 @@ Example stderr for a handoff parse error:
     the driver no longer accepts it. Wrap the prompt body in the marker
     pair above.
 
-    See: skills/engineering-team/references/sentinels.md
+    See: skills/engineering-team/pi/references/sentinels.md
 
 > Your phase doc (`phases/phase-N-<name>.md`) contains the literal
 > closing-emission template you should copy from when emitting your

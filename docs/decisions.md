@@ -1794,3 +1794,108 @@ lifespan's `core.start()` returns).
   assumption ever changes, this ADR must be revisited.
 
 ---
+
+## ADR-33 — Bundled skill variants live under per-harness subdirectories
+
+**Status:** Accepted (2026-05-21). Makes structurally explicit a
+property that was previously implicit: the bundled
+`engineering-team` skill is the *relay + pi* variant of a workflow
+that could in principle be ported to other harnesses.
+
+**Context.** The skill was ported in Phase 6 (ADR-28) with six
+deliberate adaptations to fit the relay + pi shape: single-session
+execution (no Task-tool subagent dispatch), role names as in-session
+analysis lenses, `.relay/runs/<run_id>/` paths, relay-provisioned
+worktree (the skill verifies, never creates), inlined wrap-up gate
+(no `/done` / `/merge-push` slash commands), `uv run` examples.
+Adaptations 1, 4, and 6 are not presentation tweaks — they change
+what the skill tells the agent to do. But the bundle layout
+(`skills/engineering-team/{SKILL.md, phases/, references/}`) made
+none of this visible. A reader (or a future second harness port)
+would have no structural cue that today's contents are pi-shaped.
+
+Neither pressure forced a change today (one harness in production,
+one bundled skill), but the rename is small and self-contained;
+doing it now beats doing it later when a new variant would
+otherwise mix the structural change with new content in one PR.
+
+**Decision.** Bundled skills live at `skills/<name>/<harness>/`. A
+shared `skills/<name>/README.md` describes the variant set for
+humans (agents never load it). `relay install-skill --harness
+<name>` selects the variant; the default is `pi`. The install
+target path is unchanged
+(`~/.claude/skills/engineering-team/` — no harness suffix at the
+destination), because the agent reads `engineering-team`, not
+`engineering-team-pi`; mixing harnesses in one Claude install
+would be a configuration error worth a separate flag, not the
+default shape.
+
+**Alternatives considered.**
+
+1. *Shared core + harness adapters (templated SKILL.md with
+   `{{#if harness=pi}}` blocks).* Rejected: the differences are
+   workflow shape, not formatting. Two parallel docs are strictly
+   easier to keep correct than one templated doc when the
+   adaptation set is small. Reconsider if the catalogue grows to
+   ≥3 harnesses **and** ≥5 skills.
+2. *Flat `engineering-team-pi/` peers (no nesting).* Rejected:
+   loses the "variants of one skill" grouping. The shared README
+   has nowhere to live, and `relay install-skill` would have to
+   know the suffix convention rather than treating it as normal
+   sub-selection. Nesting makes the variant relationship
+   structural.
+3. *Defer until a second variant actually exists.* Cheaper now
+   (zero work), but at second-variant time you do both the rename
+   **and** the new variant in one PR, mixing concerns. The
+   structural change is small and self-contained; doing it once
+   when the answer is obvious beats doing it later when there is
+   also new content to review.
+4. *Variant selection by env var (`RELAY_HARNESS=pi relay
+   install-skill`).* Rejected: install-skill is invoked at project
+   setup, not at runtime; there is no ambient relay process whose
+   harness selection should propagate. Making it an explicit flag
+   keeps the choice visible in the journal/history.
+5. *Auto-detect (the running relay-v2 supports pi, install pi).*
+   Rejected: couples install-skill to the orchestrator's harness
+   selection — a non-goal until there is a real choice to
+   disambiguate.
+
+**Consequences.**
+
+- Source-tree move: `skills/engineering-team/{SKILL.md, phases,
+  references}` → `skills/engineering-team/pi/{SKILL.md, phases,
+  references}` (history-preserving `git mv`). The single
+  source-tree self-reference in `pi/references/sentinels.md`
+  ("`See: skills/engineering-team/references/sentinels.md`") is
+  updated to the new path. Every other internal cross-reference
+  in the skill is relative and survives unchanged. Runtime error
+  messages in `harness/signaling/sentinels.py` reference the
+  *install-target* path (unchanged), not the source-tree path, so
+  they stay correct.
+- `skill_source_dir(harness="pi")` resolves
+  `<bundle>/<name>/<harness>/`. An unknown harness raises
+  `FileNotFoundError` listing the available variants.
+- `install_skill` additionally copies the variant-selector
+  `README.md` (one level above the variant directory) into the
+  install target. Agents never read it; humans inspecting the
+  install do.
+- Install target path is unchanged
+  (`~/.claude/skills/engineering-team/`). Bytes copied are
+  byte-for-byte identical to before the rename. No agent
+  behaviour change.
+- Wheel packaging: the existing `force-include` maps the whole
+  `skills/` tree, so new variant subdirectories are automatically
+  bundled — no `pyproject.toml` change required.
+- Tests: `tests/cli/test_install_skill.py` gains
+  default-harness, explicit-`--harness pi`, unknown-harness, and
+  parent-README-copy cases.
+  `tests/skills/test_skill_structure.py` needs no changes —
+  `SKILL = skill_source_dir()` now returns the `pi/` directory
+  and all path joins inside it are unchanged.
+
+**Related:** ADR-04 (harness isolation — the multi-harness
+commitment this ADR extends down into bundled assets), ADR-28
+(Phase 6 skill port — the six adaptations this ADR makes
+structurally visible).
+
+---
