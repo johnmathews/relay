@@ -355,6 +355,73 @@ class RelayCore:
                 )
             )
 
+    async def _collect_child_results(
+        self, parent_run_id: str
+    ) -> list[dict[str, str]]:
+        """Gather per-child result dicts for the synthesizer trailer (9c).
+
+        Ordering: children sorted by ``started_at`` asc so the trailer is
+        deterministic and matches dispatch order. Role is recovered from
+        the parent's ``subagent_dispatch`` events (we don't store role
+        on the child run row — single source of truth is the dispatch
+        event, ADR-10). Summary is the closing ``run_ended`` event's
+        ``summary`` field (empty string if absent).
+
+        Schema of each entry (all ``str``):
+        ``id`` / ``role`` / ``status`` / ``summary`` / ``branch`` /
+        ``worktree_path``. Empty branch / worktree_path become empty
+        strings, never None — the trailer formatter expects strings.
+        """
+        async with self._sm() as s:
+            children = list(
+                await s.scalars(
+                    select(Run)
+                    .where(Run.parent_run_id == parent_run_id)
+                    .order_by(Run.started_at.asc())
+                )
+            )
+            # role lookup from subagent_dispatch events on the parent.
+            dispatches = list(
+                await s.scalars(
+                    select(Event).where(
+                        Event.run_id == parent_run_id,
+                        Event.kind == "subagent_dispatch",
+                    )
+                )
+            )
+        role_by_child: dict[str, str] = {}
+        for ev in dispatches:
+            cid = ev.payload.get("child_run_id")
+            role = ev.payload.get("role", "")
+            if isinstance(cid, str):
+                role_by_child[cid] = role if isinstance(role, str) else ""
+
+        results: list[dict[str, str]] = []
+        for child in children:
+            async with self._sm() as s:
+                ended = await s.scalar(
+                    select(Event)
+                    .where(
+                        Event.run_id == child.id,
+                        Event.kind == "run_ended",
+                    )
+                    .order_by(Event.seq.desc())
+                    .limit(1)
+                )
+            summary = ""
+            if ended is not None:
+                raw = ended.payload.get("summary", "")
+                summary = raw if isinstance(raw, str) else ""
+            results.append({
+                "id": child.id,
+                "role": role_by_child.get(child.id, ""),
+                "status": child.status,
+                "summary": summary,
+                "branch": child.branch or "",
+                "worktree_path": child.worktree_path or "",
+            })
+        return results
+
     async def aclose(self) -> None:
         if self._supervisor is not None:
             self._supervisor.cancel()
