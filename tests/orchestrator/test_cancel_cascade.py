@@ -507,8 +507,8 @@ def test_cancelled_before_start_no_iter(tmp_path: Path) -> None:
     async def scenario() -> str:
         # Use a fresh-context harness that would happily emit DONE if
         # the loop ran — if the guard is broken, we'd see an iter.
-        from tests.orchestrator.scripted_harness import TextScript
         from relay_v2.orchestrator.lifecycle import RunContext
+        from tests.orchestrator.scripted_harness import TextScript
         harness = ScriptedHarness([TextScript("ok\n\n[[engteam:done]]")])
         core = RelayCore(settings, harness=harness)
         await core.start()
