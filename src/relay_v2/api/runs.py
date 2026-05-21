@@ -89,6 +89,27 @@ async def get_run(
     return detail
 
 
+@router.get(
+    "/runs/{run_id}/children",
+    response_model=list[RunOut],
+)
+async def list_run_children(
+    run_id: str, core: CoreDep
+) -> list[RunOut]:
+    """Direct children of a run (spec.md §7, 9e).
+
+    Returns the rows where ``parent_run_id == run_id``, ordered by
+    ``started_at`` ascending. Returns ``[]`` for a parent that never
+    fanned out. 404 if ``run_id`` itself is unknown.
+    """
+    if await core.get_run(run_id) is None:
+        raise HTTPException(
+            status_code=404, detail=f"unknown run {run_id}"
+        )
+    children = await core.list_children(run_id)
+    return [RunOut.model_validate(r) for r in children]
+
+
 @router.post("/runs/{run_id}/cancel", response_model=RunOut)
 async def cancel_run(
     run_id: str, core: CoreDep
