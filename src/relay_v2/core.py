@@ -675,6 +675,24 @@ class RelayCore:
 
     async def _run(self, ctx: RunContext) -> None:
         state = self._runs[ctx.run_id]
+        # 9d guard: a row pre-flipped to cancelled (cascade DB-only
+        # branch) that the supervisor picks up should not enter the
+        # loop. _RunState's settled.set() is still required so any
+        # caller awaiting wait_for_run() does not hang. We skip the
+        # _maybe_resume_parent call in _run's finally on purpose: the
+        # cascade flips the parent OUT of awaiting_children before
+        # finalising children (ADR-37 ordering invariant), so the
+        # watcher would observe a non-awaiting parent and no-op anyway.
+        run_row = await load_run(self._sm, ctx.run_id)
+        if run_row is not None and run_row.status in (
+            "done", "failed", "cancelled"
+        ):
+            state.result = LoopResult(
+                run_row.status,
+                reason="cancelled_before_start",
+            )
+            state.settled.set()
+            return
         # ADR-29: the run span lives in _run's try/finally (NOT
         # start_run, which only enqueues), so a crashed or
         # supervisor-cancelled run still closes its span — the `with`

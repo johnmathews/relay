@@ -414,3 +414,94 @@ def test_cancel_run_serialises_with_watcher(tmp_path: Path) -> None:
             assert len(run_endeds) <= 1
     finally:
         engine.dispose()
+
+
+def test_cancelled_before_start_no_iter(tmp_path: Path) -> None:
+    """A run pre-flipped to cancelled (DB-only cascade case) that the
+    supervisor picks up must exit immediately without opening an iter.
+
+    Implementation note: because ScriptedHarness is synchronous, a real
+    start_run→queue→supervisor flow would complete the loop before the
+    test code can flip the DB. Instead we test the guard directly by
+    constructing a DB row in 'cancelled' state and calling _run on it —
+    exactly what the supervisor does when it picks up such a queued ctx.
+    """
+    settings = _settings(tmp_path)
+
+    async def scenario() -> str:
+        # Use a fresh-context harness that would happily emit DONE if
+        # the loop ran — if the guard is broken, we'd see an iter.
+        from tests.orchestrator.scripted_harness import TextScript
+        from relay_v2.orchestrator.lifecycle import RunContext
+        harness = ScriptedHarness([TextScript("ok\n\n[[engteam:done]]")])
+        core = RelayCore(settings, harness=harness)
+        await core.start()
+        try:
+            pid = await core.register_project(tmp_path, "p")
+            # Manually construct a run row in 'cancelled' state — simulating
+            # what _cascade_cancel_runtime does to a queued-but-not-started
+            # descendant that has no in-memory _RunState.
+            run_id = core._new_run_id()
+            await create_run(
+                core._sm, run_id=run_id, project_id=pid,
+                prompt_body="Go.", max_iters=4, iter_timeout=60,
+                worktree_path=None, branch=None,
+            )
+            await core._store.append(
+                run_id, "run_started",
+                {"project_id": pid, "prompt_body": "Go.", "max_iters": 4},
+            )
+            # Pre-flip to cancelled (the DB-only cascade branch).
+            await set_run_status(core._sm, run_id, "cancelled", ended=True)
+            await core._store.append(
+                run_id, "run_ended",
+                {"status": "cancelled", "summary": "pre-start cancel"},
+            )
+            # Install _RunState so _run can find it (supervisor does this
+            # before creating the task).
+            core._runs[run_id] = _RunState()
+            # Call _run directly — this is what the supervisor does when it
+            # creates asyncio.create_task(self._run(ctx)).
+            ctx = RunContext(
+                run_id=run_id,
+                project_root=tmp_path,
+                worktree_path=None,
+                run_dir=tmp_path / ".relay" / "runs" / run_id,
+                max_iters=4,
+                iter_timeout=60,
+                start_seq=0,
+                phase=None,
+                body="Go.",
+            )
+            await core._run(ctx)
+            return run_id
+        finally:
+            await core.aclose()
+
+    run_id = asyncio.run(scenario())
+    engine = create_engine(settings.db_url)
+    try:
+        with Session(engine) as s:
+            run = s.get(Run, run_id)
+            assert run is not None
+            assert run.status == "cancelled"
+            # No iter rows — the loop never started.
+            from relay_v2.db.models import Iter
+            iters = list(
+                s.scalars(select(Iter).where(Iter.run_id == run_id))
+            )
+            assert iters == [], (
+                f"unexpected iter(s) after pre-start cancel: {iters}"
+            )
+            # No duplicate run_ended.
+            run_endeds = list(
+                s.scalars(
+                    select(Event).where(
+                        Event.run_id == run_id,
+                        Event.kind == "run_ended",
+                    )
+                )
+            )
+            assert len(run_endeds) == 1
+    finally:
+        engine.dispose()
