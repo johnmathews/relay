@@ -1,12 +1,10 @@
-"""Route tests for GET /api/runs/{run_id}/children (Phase 9e).
+"""Route tests for GET /api/runs/{run_id}/children and the
+include_children query param on GET /api/runs (Phase 9e).
 
 Uses the same asyncio.run + ASGITransport pattern as test_w2_routes.py.
 The _client_with_core context manager exposes both the ASGI client and
 the live RelayCore (via app.state.core) so tests can seed child rows
 directly via create_run without going through the fanout sentinel path.
-
-Task 4 will extend this file with tests for the include_children query
-param on GET /api/runs.
 """
 
 from __future__ import annotations
@@ -157,5 +155,51 @@ def test_get_run_children_returns_direct_children(tmp_path: Path) -> None:
                 assert row["parent_run_id"] == parent_id
                 assert "status" in row
                 assert "branch" in row
+
+    asyncio.run(body())
+
+
+# ── GET /api/runs ?include_children ────────────────────────────────────
+
+
+def test_list_runs_excludes_children_by_default(tmp_path: Path) -> None:
+    """GET /api/runs returns only top-level runs by default."""
+    s = _settings(tmp_path)
+    proj_root = tmp_path / "proj"
+    proj_root.mkdir()
+
+    async def body() -> None:
+        async with _client_with_core(s) as (ac, core):
+            project_id = await _register_project(ac, proj_root)
+            parent_id = await _start_run(ac, project_id, "parent")
+            _child_id = await _seed_child(core, project_id, parent_id, "child")
+
+            res = await ac.get("/api/runs", params={"project_id": project_id})
+            assert res.status_code == 200
+            body_json: list[dict[str, Any]] = res.json()
+            assert {row["id"] for row in body_json} == {parent_id}
+
+    asyncio.run(body())
+
+
+def test_list_runs_includes_children_when_requested(tmp_path: Path) -> None:
+    """GET /api/runs?include_children=true returns child runs too."""
+    s = _settings(tmp_path)
+    proj_root = tmp_path / "proj"
+    proj_root.mkdir()
+
+    async def body() -> None:
+        async with _client_with_core(s) as (ac, core):
+            project_id = await _register_project(ac, proj_root)
+            parent_id = await _start_run(ac, project_id, "parent")
+            child_id = await _seed_child(core, project_id, parent_id, "child")
+
+            res = await ac.get(
+                "/api/runs",
+                params={"project_id": project_id, "include_children": "true"},
+            )
+            assert res.status_code == 200
+            body_json: list[dict[str, Any]] = res.json()
+            assert {row["id"] for row in body_json} == {parent_id, child_id}
 
     asyncio.run(body())

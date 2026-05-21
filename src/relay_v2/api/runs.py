@@ -66,8 +66,9 @@ async def list_runs(
     status: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    include_children: bool = False,
 ) -> list[RunOut]:
-    rows = await core.list_runs(project_id)
+    rows = await core.list_runs(project_id, include_children=include_children)
     if status is not None:
         rows = [r for r in rows if r.status == status]
     rows = rows[offset : offset + limit]
