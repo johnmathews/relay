@@ -44,6 +44,9 @@ _UNIT_START_RE = re.compile(r"^\[\[engteam:unit-start[ \t]")
 _UNIT_DONE_RE = re.compile(r"^\[\[engteam:unit-done[ \t]")
 _UNIT_ABANDONED_RE = re.compile(r"^\[\[engteam:unit-abandoned[ \t]")
 _BLANK_RE = re.compile(r"^[ \t]*$")
+_FANOUT_RE = re.compile(r"^\[\[engteam:fanout\]\][ \t]*$")
+_FANOUT_START_RE = re.compile(r"^\[\[engteam:fanout-start\]\][ \t]*$")
+_FANOUT_END_RE = re.compile(r"^\[\[engteam:fanout-end\]\][ \t]*$")
 
 
 def _marker_repair_recipe(close: str) -> str:
@@ -90,7 +93,7 @@ def count_closing_sentinels(text: str) -> dict[str, int]:
     """Count line-anchored closing sentinels. The driver bails if the
     total != 1; that policy is the orchestrator's (Phase 2). Here we
     just report the raw counts, exactly as v1's ``grep -c`` did."""
-    done = handoff = pause = 0
+    done = handoff = pause = fanout = 0
     for line in text.split("\n"):
         if _DONE_RE.match(line):
             done += 1
@@ -98,7 +101,9 @@ def count_closing_sentinels(text: str) -> dict[str, int]:
             handoff += 1
         elif _PAUSE_RE.match(line):
             pause += 1
-    return {"done": done, "handoff": handoff, "pause": pause}
+        elif _FANOUT_RE.match(line):
+            fanout += 1
+    return {"done": done, "handoff": handoff, "pause": pause, "fanout": fanout}
 
 
 def _extract_marker_prompt(

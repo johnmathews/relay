@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 from relay_v2.harness.signaling.fanout import FanoutParseError, FanoutPayload
+from relay_v2.harness.signaling.sentinels import count_closing_sentinels
 
 
 def test_fanout_payload_valid() -> None:
@@ -28,3 +29,17 @@ def test_fanout_payload_missing_join_prompt_raises() -> None:
         FanoutPayload.model_validate({
             "children": [{"role": "r", "prompt": "p"}],
         })
+
+
+def test_count_fanout_sentinel() -> None:
+    counts = count_closing_sentinels("Some work.\n\n[[engteam:fanout]]\n")
+    assert counts["fanout"] == 1 and counts["done"] == 0
+
+
+def test_count_fanout_not_at_column_zero_ignored() -> None:
+    assert count_closing_sentinels("    [[engteam:fanout]]\n")["fanout"] == 0
+
+
+def test_count_existing_sentinels_unaffected() -> None:
+    counts = count_closing_sentinels("All done.\n\n[[engteam:done]]")
+    assert counts["done"] == 1 and counts["fanout"] == 0
