@@ -189,6 +189,12 @@ export interface RunListFilters {
   status?: string
   limit?: number
   offset?: number
+  /**
+   * When true, include child runs (parent_run_id NOT NULL). Default
+   * false — the run lists default-hide children so the list stays
+   * readable when fanout is in use (spec.md §9.1, 9e).
+   */
+  includeChildren?: boolean
 }
 
 /** A page window for the paginated event-replay endpoint. */
@@ -219,6 +225,13 @@ export const keys = {
   /** One run's detail (used by W3/W4/W5). */
   runDetail: (runId: string): readonly ['runs', 'detail', string] =>
     ['runs', 'detail', runId] as const,
+  /**
+   * Direct children of a parent run (`GET /api/runs/{id}/children`).
+   * Nested under `['runs', …]` so `invalidate(keys.runs())` (post-
+   * mutation / SSE push) also refreshes an open Children pane.
+   */
+  runChildren: (runId: string): readonly ['runs', 'children', string] =>
+    ['runs', 'children', runId] as const,
   /**
    * A paginated page of a run's persisted events (W4 replay path for a
    * finished run). Keyed by the page window so each page is its own
@@ -390,6 +403,7 @@ export function useRunsQuery(
               status: f.status,
               limit: f.limit,
               offset: f.offset,
+              include_children: f.includeChildren,
             },
           },
         }),
@@ -648,6 +662,28 @@ export function useRunDetailQuery(
     query: async () =>
       unwrap(
         await api.GET('/api/runs/{run_id}', {
+          params: { path: { run_id: toValue(runId) } },
+        }),
+      ),
+  })
+}
+
+/**
+ * `useQuery` for a run's direct children (`GET /api/runs/{id}/children`).
+ * Feeds the dashboard Children pane (spec.md §9.1, 9e). The events
+ * store invalidates `keys.runChildren(runId)` when a `subagent_dispatch`,
+ * `subagent_return`, or `child_runs_resolved` event lands on the parent's
+ * SSE stream, so the pane refetches in lockstep with each lifecycle
+ * transition. No polling; no per-child SSE.
+ */
+export function useRunChildrenQuery(
+  runId: MaybeRefOrGetter<string>,
+): UseQueryReturn<Run[]> {
+  return useQuery({
+    key: () => keys.runChildren(toValue(runId)),
+    query: async () =>
+      unwrap(
+        await api.GET('/api/runs/{run_id}/children', {
           params: { path: { run_id: toValue(runId) } },
         }),
       ),
