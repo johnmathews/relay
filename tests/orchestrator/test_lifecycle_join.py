@@ -4,7 +4,18 @@ All offline, all pure-function — no DB, no pi.
 """
 from __future__ import annotations
 
-from relay_v2.orchestrator.lifecycle import compose_join_prompt
+import asyncio
+from pathlib import Path
+
+from relay_v2.config import Settings
+from relay_v2.db import init_db, make_async_engine, make_async_sessionmaker
+from relay_v2.orchestrator.lifecycle import (
+    close_iter,
+    compose_join_prompt,
+    create_run,
+    latest_fanout_iter,
+    open_iter,
+)
 
 
 def test_compose_join_prompt_two_children_done() -> None:
@@ -101,3 +112,70 @@ def test_compose_join_prompt_multiline_summary_indented() -> None:
     assert "  summary: |" in body
     assert "    line one" in body
     assert "    line two" in body
+
+
+def test_latest_fanout_iter_returns_most_recent_fanout_iter(tmp_path: Path) -> None:
+    settings = Settings(data_dir=tmp_path / ".relay")
+    init_db(settings).dispose()
+
+    async def scenario() -> None:
+        engine = make_async_engine(settings.async_db_url)
+        sm = make_async_sessionmaker(engine)
+        try:
+            # Project + run row (project FK satisfied by direct insert).
+            async with sm() as s:
+                from relay_v2.db.models import Project
+                s.add(Project(root_path=str(tmp_path), name="p"))
+                await s.commit()
+                project = (await s.scalars(
+                    __import__("sqlalchemy").select(Project)
+                )).one()
+            await create_run(
+                sm, run_id="r-1", project_id=project.id,
+                prompt_body="p", max_iters=4, iter_timeout=60,
+                worktree_path=None, branch=None,
+            )
+            # Iter 1: handoff (not fanout).
+            i1 = await open_iter(sm, run_id="r-1", seq=1, phase=None,
+                                 prompt="x", preamble="")
+            await close_iter(sm, i1, signal_kind="handoff",
+                             signal_args={"next_prompt": "y"},
+                             exit_reason="signal")
+            # Iter 2: fanout — this one should win.
+            i2 = await open_iter(sm, run_id="r-1", seq=2, phase=None,
+                                 prompt="x", preamble="")
+            await close_iter(sm, i2, signal_kind="fanout",
+                             signal_args={"payload": {
+                                 "children": [
+                                     {"role": "a", "prompt": "do a"}
+                                 ],
+                                 "join_prompt": "merge",
+                             }},
+                             exit_reason="signal")
+
+            row = await latest_fanout_iter(sm, "r-1")
+            assert row is not None
+            assert row.seq == 2
+            assert row.signal_kind == "fanout"
+            assert row.signal_args is not None
+            assert row.signal_args["payload"]["join_prompt"] == "merge"
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def test_latest_fanout_iter_none_when_no_fanout(tmp_path: Path) -> None:
+    settings = Settings(data_dir=tmp_path / ".relay")
+    init_db(settings).dispose()
+
+    async def scenario() -> None:
+        engine = make_async_engine(settings.async_db_url)
+        sm = make_async_sessionmaker(engine)
+        try:
+            row = await latest_fanout_iter(sm, "nonexistent-run")
+            assert row is None
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())

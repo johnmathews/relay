@@ -33,6 +33,7 @@ __all__ = [
     "compose_join_prompt",
     "compose_resume_prompt",
     "create_run",
+    "latest_fanout_iter",
     "latest_paused_iter",
     "load_run",
     "open_iter",
@@ -269,6 +270,25 @@ async def latest_paused_iter(
         row: Iter | None = await s.scalar(
             select(Iter)
             .where(Iter.run_id == run_id, Iter.signal_kind == "pause")
+            .order_by(Iter.seq.desc())
+            .limit(1)
+        )
+        return row
+
+
+async def latest_fanout_iter(
+    sm: async_sessionmaker[AsyncSession], run_id: str
+) -> Iter | None:
+    """The most recent ``signal_kind='fanout'`` iter for ``run_id``.
+
+    Read by ``RelayCore._maybe_resume_parent`` (9c) to recover the
+    ``join_prompt`` from ``signal_args["payload"]["join_prompt"]``.
+    Mirrors :func:`latest_paused_iter` for the resume path.
+    """
+    async with sm() as s:
+        row: Iter | None = await s.scalar(
+            select(Iter)
+            .where(Iter.run_id == run_id, Iter.signal_kind == "fanout")
             .order_by(Iter.seq.desc())
             .limit(1)
         )
