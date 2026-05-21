@@ -189,7 +189,7 @@ The `events.kind` column is a discriminator. Payloads are JSON.
 | `tool_use_end` | tool returns | `{tool_id, result, is_error, duration_ms}` |
 | `signal_emit` | parser detects handoff/done/pause/phase_start/etc. | `{kind, args}` |
 | `subagent_dispatch` | orchestrator spawns a subagent run | `{child_run_id, role, prompt}` |
-| `subagent_return` | subagent run finishes | `{child_run_id, status, result}` |
+| `subagent_return` | subagent run finishes; emitted on the parent's stream by the join watcher (9c). | `{child_run_id, status, summary}` |
 | `child_runs_resolved` | after all children of an `awaiting_children` parent reach a terminal status; immediately before the parent's synthesizer iter is enqueued (9c). Optional but recommended for replay diffing — derivable from the preceding `subagent_return` events. | `{children_count, terminal_statuses}` (`terminal_statuses` is `dict[run_id, status]`) |
 | `iter_ended` | iter N closes | `{seq, signal_kind, exit_reason}` |
 | `pause_requested` | pause signal handled | `{question}` |
@@ -481,6 +481,40 @@ parents in `awaiting_children` are treated as orphans: cancelled, with
 their children cascade-cancelled (ADR-34). Single-process MVP —
 recovering an in-flight fanout across a restart is a deliberate non-goal
 for V1.
+
+**Join (9c).** When all children of an `awaiting_children` parent reach
+a terminal status (`done`, `failed`, or `cancelled`), the orchestrator:
+
+1. Appends one `subagent_return` event per child on the parent's stream
+   (`{child_run_id, status, summary}` — `summary` is the child's
+   closing `run_ended` payload `summary`, empty string when absent).
+2. Appends one `child_runs_resolved` event
+   (`{children_count, terminal_statuses}` — `terminal_statuses` is a
+   `dict[run_id, status]`).
+3. Transitions the parent run `awaiting_children` → `running`.
+4. Re-enqueues the parent with a synthesizer `RunContext`. The
+   synthesizer iter's body is `join_prompt` (recovered from the closing
+   fanout iter's `iters.signal_args["payload"]["join_prompt"]`) followed
+   by a `---` separator and a YAML-ish `RELAY_CHILD_RESULTS:` trailer
+   listing the per-child `id` / `role` / `status` / `summary` /
+   `branch` / `worktree_path`. Multi-line summaries use YAML literal
+   block (`summary: |`).
+
+The trailer lives in the body, not the `RELAY_*` preamble (ADR-14 reserves
+the preamble for `RELAY_RUN_DIR` and `RELAY_PHASE`). The synthesizer iter
+runs on the **parent's existing worktree** (no new worktree provisioned —
+the join is supposed to see the parent's pre-fanout state, not a sibling).
+Recursive fanout from the synthesizer is permitted up to `max_fanout_depth`.
+
+Partial-failure semantics: the synthesizer ALWAYS runs once all children
+settle, regardless of how many failed or were cancelled. The orchestrator
+does not auto-fail the parent on a child's failure — the agent decides via
+the trailer (ADR-36).
+
+A child-completion watcher (ADR-36) is an in-process direct call from the
+child's `_run` task, lock-guarded by `RelayCore._enqueue_lock`. The watcher
+is a no-op when the parent is not `awaiting_children` (already resumed by
+a sibling, or cascade-cancelled).
 
 ### 6.1 Runtime model (ADR-19, ADR-21)
 

@@ -48,8 +48,10 @@ from relay_v2.harness.pi import PiHarness
 from relay_v2.observability import Instrumentation, build_instrumentation
 from relay_v2.orchestrator.lifecycle import (
     RunContext,
+    compose_join_prompt,
     compose_resume_prompt,
     create_run,
+    latest_fanout_iter,
     latest_paused_iter,
     load_run,
     provision_workspace,
@@ -299,6 +301,17 @@ class RelayCore:
                 raise ValueError(f"project {project_id} not found")
             project_root = Path(project.root_path)
 
+        # Two passes (9c): create ALL child rows + dispatch events first,
+        # THEN enqueue them. If we interleaved create/enqueue, the
+        # supervisor could start the first child and let it finish (the
+        # ScriptedHarness path is instantaneous) before we returned to
+        # create the second child's row — at which point the
+        # ``_maybe_resume_parent`` watcher's "are all children terminal?"
+        # check would short-circuit on the partial child set and resume
+        # the parent with only one ``subagent_return`` event. Creating
+        # all rows up-front guarantees the watcher always sees the full
+        # child set.
+        contexts: list[RunContext] = []
         for child in payload.children:
             child_run_id = self._new_run_id()
             wt, branch, run_dir = await provision_workspace(
@@ -340,7 +353,7 @@ class RelayCore:
                 },
             )
             self._runs[child_run_id] = _RunState()
-            await self._queue.put(
+            contexts.append(
                 RunContext(
                     run_id=child_run_id,
                     project_root=project_root,
@@ -352,6 +365,211 @@ class RelayCore:
                     phase=None,
                     body=child.prompt,
                     parent_run_id=parent_run_id,
+                )
+            )
+        # Enqueue only after every child row exists, so the watcher
+        # cannot observe a partial child set.
+        for ctx in contexts:
+            await self._queue.put(ctx)
+
+    async def _collect_child_results(
+        self, parent_run_id: str
+    ) -> list[dict[str, str]]:
+        """Gather per-child result dicts for the synthesizer trailer (9c).
+
+        Ordering: children sorted by ``started_at`` asc so the trailer is
+        deterministic and matches dispatch order. Role is recovered from
+        the parent's ``subagent_dispatch`` events (we don't store role
+        on the child run row — single source of truth is the dispatch
+        event, ADR-10). Summary is the closing ``run_ended`` event's
+        ``summary`` field (empty string if absent).
+
+        Schema of each entry (all ``str``):
+        ``id`` / ``role`` / ``status`` / ``summary`` / ``branch`` /
+        ``worktree_path``. Empty branch / worktree_path become empty
+        strings, never None — the trailer formatter expects strings.
+        """
+        async with self._sm() as s:
+            children = list(
+                await s.scalars(
+                    select(Run)
+                    .where(Run.parent_run_id == parent_run_id)
+                    .order_by(Run.started_at.asc())
+                )
+            )
+            # role lookup from subagent_dispatch events on the parent.
+            dispatches = list(
+                await s.scalars(
+                    select(Event).where(
+                        Event.run_id == parent_run_id,
+                        Event.kind == "subagent_dispatch",
+                    )
+                )
+            )
+        role_by_child: dict[str, str] = {}
+        for ev in dispatches:
+            cid = ev.payload.get("child_run_id")
+            role = ev.payload.get("role", "")
+            if isinstance(cid, str):
+                role_by_child[cid] = role if isinstance(role, str) else ""
+
+        results: list[dict[str, str]] = []
+        for child in children:
+            async with self._sm() as s:
+                ended = await s.scalar(
+                    select(Event)
+                    .where(
+                        Event.run_id == child.id,
+                        Event.kind == "run_ended",
+                    )
+                    .order_by(Event.seq.desc())
+                    .limit(1)
+                )
+            summary = ""
+            if ended is not None:
+                raw = ended.payload.get("summary", "")
+                summary = raw if isinstance(raw, str) else ""
+            results.append({
+                "id": child.id,
+                "role": role_by_child.get(child.id, ""),
+                "status": child.status,
+                "summary": summary,
+                "branch": child.branch or "",
+                "worktree_path": child.worktree_path or "",
+            })
+        return results
+
+    async def _maybe_resume_parent(self, parent_run_id: str) -> None:
+        """If ``parent_run_id`` is in ``awaiting_children`` AND all its
+        children have reached a terminal status, emit one
+        ``subagent_return`` per child + one ``child_runs_resolved``,
+        transition the parent to ``running``, and re-enqueue it with a
+        synthesizer ``RunContext`` (9c).
+
+        No-op (silent) when:
+        - the parent row is unknown,
+        - the parent status is not ``awaiting_children`` (already
+          resumed, cascade-cancelled by 9d/restart, or never awaiting),
+        - any child is still non-terminal.
+
+        The single-user MVP ``_enqueue_lock`` (already serialising
+        ``resume_run``'s look-then-decide-then-enqueue) is reused so
+        two near-simultaneous child terminals can't both resume the
+        parent.
+        """
+        terminal = ("done", "failed", "cancelled")
+        async with self._enqueue_lock:
+            async with self._sm() as s:
+                parent = await s.get(Run, parent_run_id)
+                if parent is None or parent.status != "awaiting_children":
+                    return
+                children = list(
+                    await s.scalars(
+                        select(Run).where(
+                            Run.parent_run_id == parent_run_id
+                        )
+                    )
+                )
+            if not children:
+                return
+            if any(c.status not in terminal for c in children):
+                return
+            # All children terminal: emit returns + resolved, transition,
+            # enqueue synthesizer.
+            results = await self._collect_child_results(parent_run_id)
+            for r in results:
+                await self._store.append(
+                    parent_run_id,
+                    "subagent_return",
+                    {
+                        "child_run_id": r["id"],
+                        "status": r["status"],
+                        "summary": r["summary"],
+                    },
+                )
+            await self._store.append(
+                parent_run_id,
+                "child_runs_resolved",
+                {
+                    "children_count": len(results),
+                    "terminal_statuses": {
+                        r["id"]: r["status"] for r in results
+                    },
+                },
+            )
+
+            # Recover join_prompt from the closing fanout iter; refuse
+            # to resume if it's missing (defensive — a structurally
+            # impossible state given 9b's writes, but we'd rather leave
+            # the parent in awaiting_children than enqueue a
+            # synthesizer with an empty prompt).
+            closing = await latest_fanout_iter(self._sm, parent_run_id)
+            if closing is None or closing.signal_args is None:
+                logger.error(
+                    "fanout-join: parent %s has no closing fanout iter; "
+                    "leaving in awaiting_children",
+                    parent_run_id,
+                )
+                return
+            payload = closing.signal_args.get("payload") or {}
+            if not isinstance(payload, dict):
+                logger.error(
+                    "fanout-join: parent %s closing iter payload is not "
+                    "a dict (got %r); leaving in awaiting_children",
+                    parent_run_id, type(payload).__name__,
+                )
+                return
+            join_prompt = payload.get("join_prompt", "")
+            if not isinstance(join_prompt, str) or not join_prompt:
+                logger.error(
+                    "fanout-join: parent %s has empty join_prompt; "
+                    "leaving in awaiting_children",
+                    parent_run_id,
+                )
+                return
+
+            body = compose_join_prompt(join_prompt, results)
+
+            # Transition projection first, then enqueue (mirrors
+            # resume_run's order so SSE consumers see the status flip
+            # before the next iter_started lands).
+            await set_run_status(
+                self._sm, parent_run_id, "running", ended=False
+            )
+
+            # Resolve the project + parent worktree for the new ctx.
+            async with self._sm() as s:
+                parent_row = await s.get(Run, parent_run_id)
+                if parent_row is None:
+                    return
+                project = await s.get(Project, parent_row.project_id)
+            if project is None:
+                logger.error(
+                    "fanout-join: parent %s project missing; cannot resume",
+                    parent_run_id,
+                )
+                return
+
+            run_dir = self._settings.data_dir / "runs" / parent_run_id
+            phase_file = run_dir / "phase"
+            phase = (
+                phase_file.read_text().strip()
+                if phase_file.exists() else None
+            )
+            self._runs[parent_run_id] = _RunState()
+            await self._queue.put(
+                RunContext(
+                    run_id=parent_run_id,
+                    project_root=Path(project.root_path),
+                    worktree_path=Path(parent_row.worktree_path)
+                    if parent_row.worktree_path else None,
+                    run_dir=run_dir,
+                    max_iters=parent_row.max_iters,
+                    iter_timeout=parent_row.iter_timeout,
+                    start_seq=closing.seq,  # loop does seq += 1 on entry
+                    phase=phase,
+                    body=body,
+                    parent_run_id=parent_row.parent_run_id,
                 )
             )
 
@@ -466,6 +684,19 @@ class RelayCore:
                     state.result = LoopResult(
                         "failed", reason="internal_error"
                     )
+                # Fanout-join (9c): when a child run settles, give its
+                # parent a chance to resume. Idempotent + lock-guarded
+                # in _maybe_resume_parent; a no-op when the parent is
+                # not awaiting_children (cascade-cancelled, already
+                # resumed by a sibling, or this run isn't a child at
+                # all). Best-effort — a watcher failure must not leak
+                # back into the run task's shutdown. Runs BEFORE
+                # state.settled.set() so a caller awaiting this child's
+                # wait_for_run() then immediately awaiting the parent's
+                # cannot race the watcher's swap of self._runs[parent].
+                if ctx.parent_run_id is not None:
+                    with contextlib.suppress(Exception):
+                        await self._maybe_resume_parent(ctx.parent_run_id)
                 state.settled.set()
 
     async def _apply_result(

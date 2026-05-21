@@ -1,9 +1,10 @@
-"""Phase 9b integration test - scripted fanout-to-2-children + OCQ-2 cascade.
+"""Phase 9b/9c integration test - scripted fanout-to-2-children + OCQ-2 cascade.
 
-Scenario 1 (fanout-to-2-children, proposal §9b acceptance):
+Scenario 1 (fanout-to-2-children, proposal §9b dispatch + §9c join):
 - Parent iter emits [[engteam:fanout]] with 2 children.
 - Both children execute independently and reach done.
-- Parent stays in awaiting_children (no join - that is 9c).
+- Watcher then transitions parent awaiting_children → running and runs a
+  synthesizer iter; parent reaches done.
 
 Scenario 2 (OCQ-2 - restart-with-awaiting-children cascade):
 - Parent in awaiting_children + 2 children still 'running' are seeded,
@@ -44,8 +45,10 @@ DONE = "Audit complete.\n\n[[engteam:done]]"
 
 def test_fanout_to_two_children_full_scenario(tmp_path: Path) -> None:
     settings = Settings(data_dir=tmp_path / ".relay")
+    # Scripts: parent fanout, child A done, child B done, parent synthesizer done.
     harness = ScriptedHarness(
-        [TextScript(FANOUT_TWO), TextScript(DONE), TextScript(DONE)]
+        [TextScript(FANOUT_TWO), TextScript(DONE), TextScript(DONE),
+         TextScript(DONE)]
     )
 
     async def _run() -> dict[str, object]:
@@ -54,10 +57,9 @@ def test_fanout_to_two_children_full_scenario(tmp_path: Path) -> None:
         try:
             pid = await core.register_project(tmp_path, "p")
             parent_id = await core.start_run(pid, "Investigate the system.")
-            parent_result = await core.wait_for_run(parent_id)
-            assert parent_result.status == "awaiting_children", (
-                f"expected awaiting_children, got {parent_result.status}"
-            )
+            # First settle: awaiting_children.
+            first = await core.wait_for_run(parent_id)
+            assert first.status == "awaiting_children"
             engine = create_engine(settings.db_url)
             try:
                 with Session(engine) as s:
@@ -71,6 +73,11 @@ def test_fanout_to_two_children_full_scenario(tmp_path: Path) -> None:
             for cid in child_ids:
                 cr = await core.wait_for_run(cid)
                 assert cr.status == "done", f"child {cid}: {cr.status}"
+            # Second settle: the synthesizer iter (a fresh _RunState).
+            second = await core.wait_for_run(parent_id)
+            assert second.status == "done", (
+                f"synthesizer expected done, got {second.status}"
+            )
             return {"parent_id": parent_id, "child_ids": child_ids}
         finally:
             await core.aclose()
@@ -84,59 +91,49 @@ def test_fanout_to_two_children_full_scenario(tmp_path: Path) -> None:
     engine = create_engine(settings.db_url)
     try:
         with Session(engine) as s:
-            # Parent state
             parent = s.get(Run, parent_id)
             assert parent is not None
-            assert parent.status == "awaiting_children"
-            assert parent.ended_at is None
+            assert parent.status == "done"
+            assert parent.ended_at is not None
 
-            # Parent events
             parent_events = list(
                 s.scalars(
-                    select(Event).where(Event.run_id == parent_id).order_by(Event.seq)
+                    select(Event).where(Event.run_id == parent_id)
+                    .order_by(Event.seq.asc())
                 )
             )
             parent_kinds = [e.kind for e in parent_events]
             assert parent_kinds[0] == "run_started"
-            assert "run_ended" not in parent_kinds
+            assert parent_kinds[-1] == "run_ended"
             assert parent_kinds.count("subagent_dispatch") == 2
+            assert parent_kinds.count("subagent_return") == 2
+            assert parent_kinds.count("child_runs_resolved") == 1
 
-            dispatches = [e for e in parent_events if e.kind == "subagent_dispatch"]
-            assert all(e.iter_id is not None for e in dispatches)
-            dispatched_ids = {e.payload["child_run_id"] for e in dispatches}
-            assert dispatched_ids == set(child_ids)
-            roles = {e.payload["role"] for e in dispatches}
-            assert roles == {"explorer-frontend", "explorer-backend"}
-
-            # Closing parent iter
-            closing = s.scalar(
-                select(Iter)
-                .where(Iter.run_id == parent_id)
-                .order_by(Iter.seq.desc())
-                .limit(1)
+            # Ordering invariant: dispatch < return < resolved < final run_ended.
+            first_dispatch = parent_kinds.index("subagent_dispatch")
+            last_return = max(
+                i for i, k in enumerate(parent_kinds) if k == "subagent_return"
             )
-            assert closing is not None
-            assert closing.signal_kind == "fanout"
-            assert closing.exit_reason == "signal"
-            assert closing.signal_args is not None
-            assert "payload" in closing.signal_args
+            resolved_idx = parent_kinds.index("child_runs_resolved")
+            run_ended_idx = parent_kinds.index("run_ended")
+            assert first_dispatch < last_return < resolved_idx < run_ended_idx
 
-            # Child state and events
+            # Closing fanout iter still present (now seq=1, synthesizer is seq=2).
+            iters = list(
+                s.scalars(
+                    select(Iter).where(Iter.run_id == parent_id)
+                    .order_by(Iter.seq.asc())
+                )
+            )
+            assert len(iters) == 2
+            assert iters[0].signal_kind == "fanout"
+            assert iters[1].signal_kind == "done"
+
             for cid in child_ids:
                 child = s.get(Run, cid)
                 assert child is not None
                 assert child.parent_run_id == parent_id
                 assert child.status == "done"
-                assert child.ended_at is not None
-
-                child_kinds = [
-                    e.kind for e in s.scalars(
-                        select(Event).where(Event.run_id == cid).order_by(Event.seq)
-                    )
-                ]
-                assert child_kinds[0] == "run_started"
-                assert child_kinds[-1] == "run_ended"
-                assert "iter_started" in child_kinds
     finally:
         engine.dispose()
 

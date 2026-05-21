@@ -2034,3 +2034,150 @@ is lost on restart and breaks the restart-recovery guarantee ADR-34 establishes.
 
 **Related:** ADR-12 (single-process MVP), ADR-32 / ADR-34 (orphan recovery),
 `docs/proposals/parallel-iters-fanout-join.md`.
+
+## ADR-36 — Fanout-join watcher placement + synthesizer body shape
+
+**Status:** accepted (2026-05-21)
+**Phase:** 9c (fanout-join: synthesizer iter + parent resume)
+
+**Context.** Phase 9b lands fanout dispatch — a parent emits
+`[[engteam:fanout]]`, children spawn, parent enters `awaiting_children`.
+Phase 9c closes the loop: when all children settle, append the
+synthesizer iter on the parent's stream. Three design questions
+resolved in this ADR:
+
+- **OCQ-3 — where does the child-completion watcher live?**
+- **OCQ-5 — what is the shape of the synthesizer iter's prompt body?**
+- **OCQ-4 — does `join_prompt` move out of `iters.signal_args` into a
+  dedicated column now that 9c has to read it?**
+
+### Decision (OCQ-3: watcher placement)
+
+**In-process direct call from the child's `_run` task, lock-guarded by
+the existing `RelayCore._enqueue_lock`.** After `state.settled.set()`
+in `_run`'s `finally`, if `ctx.parent_run_id is not None`, call
+`core._maybe_resume_parent(ctx.parent_run_id)`. The helper takes
+`_enqueue_lock`, re-reads the parent under the lock, returns silently
+when the parent is no longer `awaiting_children` (cascade-cancel,
+already resumed by a sibling, or never awaiting). When all siblings
+are terminal: emit `subagent_return` × N + `child_runs_resolved`,
+transition parent → `running`, enqueue synthesizer `RunContext`.
+
+**Rationale.** The child's `_run` task already owns the child's
+terminal write — it is the natural notification point with full local
+context (`ctx.parent_run_id`) and zero new task plumbing. The existing
+`_enqueue_lock` is the right serialiser: it is the same lock
+`resume_run` uses for the look-then-decide-then-enqueue race, which is
+exactly the race a near-simultaneous "last two children settle"
+introduces. Single-user MVP (ADR-12) makes the lock's coarse scope
+acceptable.
+
+**Refinement (implementation).** Two structural fixes surfaced when
+the watcher landed and were folded into the same patch:
+(a) `_run`'s `finally` invokes the watcher *before* `state.settled.set()`,
+not after — otherwise a caller awaiting a child's `wait_for_run()`
+then immediately the parent's could race the watcher's swap of
+`self._runs[parent_id]` for a fresh `_RunState` and observe the stale
+`awaiting_children` result instead of the synthesizer's terminal
+status. (b) `_dispatch_children` creates *all* child rows + their
+`subagent_dispatch` events in one pass, then enqueues them in a
+second pass — interleaving create/enqueue let a fast harness
+(the scripted-test path) start child A and let it finish before
+child B's row existed, at which point the watcher's "are all
+children terminal?" check would short-circuit on the partial set
+and resume the parent with one `subagent_return` instead of two.
+Both fixes are pre-conditions for the watcher behaving correctly
+under the asynchrony the design assumes.
+
+**Rejected — `EventStore.append` post-commit hook.** Fires on every
+event, requires kind/status filtering, and introduces reentrancy
+concerns (the watcher itself appends events through the same store).
+Strictly more code and more failure modes for the same observable
+behaviour.
+
+**Rejected — background polling task.** Wastes CPU; lags by the poll
+interval; conflicts with the "everything routes through `RelayCore`"
+invariant (ADR-07).
+
+**Rejected — `Broadcaster` post-publish hook.** The broadcaster is a
+read-only/UI-facing observer (ADR-23) — never the right place to land
+orchestrator state transitions.
+
+### Decision (OCQ-5: synthesizer body shape)
+
+**`join_prompt` followed by a `---` separator and a YAML-ish
+`RELAY_CHILD_RESULTS:` trailer (one `- id: …` entry per child, with
+`role` / `status` / `summary` / `branch` / `worktree_path` indented
+underneath). Multi-line summaries use YAML literal block
+(`summary: |`).** Hand-rendered, no YAML library. Lives in the body,
+NOT the preamble.
+
+**Rationale.** Distinct from `compose_resume_prompt`'s text shape —
+that helper is one question/one answer; fanout-join is N children,
+structured. The skill reads it the same way it reads the `RELAY_*`
+preamble lines (line-based `key: value`). Keeping it in the body
+preserves ADR-14's invariant that the preamble carries exactly
+`RELAY_RUN_DIR` and `RELAY_PHASE` and nothing else — bending that for
+a one-iter-per-fanout-event feature would compromise the canonical
+contract.
+
+**Rejected — JSON in a fenced code block.** Heavier to read for the
+skill (it'd need a JSON parser); the YAML-ish trailer is line-readable
+with the same patterns the skill already uses.
+
+**Rejected — extending the preamble with a third reserved field.**
+Violates ADR-14. The synthesizer trailer is per-iter content, not
+per-run frame.
+
+### Decision (OCQ-4: join_prompt channel)
+
+**Stays in `iters.signal_args["payload"]["join_prompt"]` (9b's
+status-quo Option a).** Re-evaluated with the 9c read concrete, and
+the implicit channel is no harder to use than a dedicated column —
+one `select(Iter)` filtered by `signal_kind='fanout'`, ordered by
+`seq desc`, exactly mirroring `latest_paused_iter` for the resume
+path.
+
+**Rationale.** A dedicated `iters.fanout_payload JSON` column would
+require a schema bump (hand-rolled `create_all`, ADR-17), a model
+edit, and a migration story for a single read-write pair both inside
+`core.py`. The orchestrator owns both ends; the implicit dependency is
+guarded by `test_fanout_loop.py::test_closing_iter_signal_args_contains_payload`
+(9b) and the new `test_fanout_join_integration.py` (9c). Promote only
+if 9d/9e need to read the payload from a non-orchestrator surface —
+and even then, a `RelayCore.get_fanout_payload(run_id)` accessor is
+cheaper than a column.
+
+### Decision (OCQ-6: partial-failure)
+
+**Synthesizer always runs once all children settle; the orchestrator
+never auto-fails the parent on a child's failure.** Each child's
+status appears in the trailer; the agent decides whether the partial
+result is workable.
+
+**Rationale.** Codifies the proposal §cancellation-semantics decision
+("cancelled child counts as resolved with status=`cancelled`"). The
+orchestrator does not have the domain context to decide whether a
+single failed explorer makes the join unworkable — the agent that
+wrote the `join_prompt` does. Honest separation of concerns.
+
+### Consequences
+
+- A child run task that crashes uncleanly (raises into `_run`'s outer
+  except) still calls `_maybe_resume_parent` from the `finally` — the
+  watcher's lock + status re-read make this safe (the parent observes
+  the crashed child as `failed` via ADR-31's safety-net writes).
+- Two children settling near-simultaneously may both invoke the watcher;
+  the lock + re-read keeps exactly one of them through the happy-path
+  branch (`test_maybe_resume_parent_idempotent_under_double_fire`).
+- The synthesizer iter runs on the parent's existing worktree (no new
+  worktree provisioned). Child branches survive in the data dir for the
+  agent's perusal — the orchestrator never auto-merges (proposal
+  §tradeoffs).
+
+**Related:** ADR-07/15 (RelayCore single chokepoint), ADR-14 (preamble
+reserved fields), ADR-20 (pause/resume — the mechanism this resume
+mirrors), ADR-23 (broadcaster scope: read-only/UI-facing),
+ADR-31/32/34 (run finalisation + orphan/cascade — the safety net the
+watcher relies on for crashed children), ADR-35 (fanout concurrency
+cap — 9b sibling), proposal `docs/proposals/parallel-iters-fanout-join.md`.

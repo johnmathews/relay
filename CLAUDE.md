@@ -171,6 +171,47 @@ gated), `ruff`/`mypy --strict` clean (**39** source files), backend
 coverage 94%. No frontend changes in 9b (the dashboard "Children"
 pane is 9e). 9c lands the synthesizer iter + parent resume; 9d the
 runtime cancel-cascade; 9e the dashboard; 9f OTel span parenting.
+**Phase 9c** then closes the fanout-join loop
+(`docs/plans/2026-05-21-fanout-join-9c.md`): a new
+`RelayCore._maybe_resume_parent` watcher fired from each child's `_run`
+finally block (ADR-36, OCQ-3) — when all siblings of an
+`awaiting_children` parent reach a terminal status, the watcher emits
+one `subagent_return` per child + one `child_runs_resolved`, transitions
+the parent `awaiting_children → running`, and re-enqueues it with a
+synthesizer `RunContext` whose body is
+`compose_join_prompt(join_prompt, child_results)` — the `join_prompt`
+recovered from the closing fanout iter's
+`signal_args["payload"]["join_prompt"]` (OCQ-1's 9b channel kept, OCQ-4
+evaluated and held), the trailer a YAML-ish `RELAY_CHILD_RESULTS:`
+block listing each child's `id`/`role`/`status`/`summary`/`branch`/
+`worktree_path` (OCQ-5: body, NOT preamble — ADR-14's
+`RELAY_RUN_DIR`/`RELAY_PHASE` invariant unchanged). The synthesizer
+iter runs on the parent's existing worktree (no new worktree for the
+join); recursive fanout from the synthesizer is permitted up to
+`max_fanout_depth`. Partial-failure semantics: the synthesizer always
+runs once all children settle regardless of mix; the orchestrator
+never auto-fails the parent on a child's failure — the agent decides
+via the trailer (OCQ-6, proposal §cancellation-semantics). Two
+structural fixes landed with the watcher and are recorded in ADR-36's
+implementation-refinement section: (a) `_run`'s finally calls the
+watcher *before* `state.settled.set()` so a caller awaiting a child's
+`wait_for_run()` then immediately the parent's cannot race the
+watcher's swap of `self._runs[parent_id]` and observe the stale
+`awaiting_children` result; (b) `_dispatch_children` creates all child
+rows + their `subagent_dispatch` events in one pass and enqueues them
+in a second pass, so a fast harness cannot let child A finish before
+child B's row exists (which would short-circuit the watcher's "all
+terminal?" check on a partial set). The existing `_enqueue_lock`
+serialises the watcher so two children settling near-simultaneously
+cannot both resume the parent. New ADR-36 records the watcher-
+placement + body-shape decisions. 256 backend tests pass (237 + 15
+new from 9c: 7 lifecycle_join + 8 join_watcher + 1 new fanout-join
+integration; 3 pi-e2e still gated), `ruff`/`mypy --strict` clean
+(**39** source files, no new modules), backend coverage 94%. No
+frontend changes in 9c (the dashboard "Children" pane is still 9e).
+9d lands the runtime cancel-cascade (the `_cascade_cancel_descendants`
+helper from 9a is wired into `cancel_run`); 9e the dashboard
+"Children" pane; 9f OTel span parenting across runs.
 
 ## What relay v2 is
 

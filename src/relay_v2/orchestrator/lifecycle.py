@@ -30,16 +30,18 @@ from relay_v2.db.models import Iter, Project, Run
 
 __all__ = [
     "RunContext",
-    "register_project",
+    "compose_join_prompt",
+    "compose_resume_prompt",
     "create_run",
-    "provision_workspace",
+    "latest_fanout_iter",
+    "latest_paused_iter",
+    "load_run",
     "open_iter",
     "close_iter",
-    "set_run_status",
+    "provision_workspace",
+    "register_project",
     "set_iter_session",
-    "load_run",
-    "latest_paused_iter",
-    "compose_resume_prompt",
+    "set_run_status",
 ]
 
 # Safe argv-form subprocess spawner (no shell, no injection surface).
@@ -274,6 +276,25 @@ async def latest_paused_iter(
         return row
 
 
+async def latest_fanout_iter(
+    sm: async_sessionmaker[AsyncSession], run_id: str
+) -> Iter | None:
+    """The most recent ``signal_kind='fanout'`` iter for ``run_id``.
+
+    Read by ``RelayCore._maybe_resume_parent`` (9c) to recover the
+    ``join_prompt`` from ``signal_args["payload"]["join_prompt"]``.
+    Mirrors :func:`latest_paused_iter` for the resume path.
+    """
+    async with sm() as s:
+        row: Iter | None = await s.scalar(
+            select(Iter)
+            .where(Iter.run_id == run_id, Iter.signal_kind == "fanout")
+            .order_by(Iter.seq.desc())
+            .limit(1)
+        )
+        return row
+
+
 def compose_resume_prompt(next_prompt: str, question: str, answer: str) -> str:
     """The resumed iter's body: the paused iter's saved next-prompt with
     the human's answer appended as a clearly delimited block (ADR-20).
@@ -285,3 +306,38 @@ def compose_resume_prompt(next_prompt: str, question: str, answer: str) -> str:
         f'Answer to the paused question ("{question}"):\n\n'
         f"{answer}\n"
     )
+
+
+def compose_join_prompt(
+    join_prompt: str, child_results: list[dict[str, str]]
+) -> str:
+    """The synthesizer iter's body: ``join_prompt`` followed by a
+    structured ``RELAY_CHILD_RESULTS`` trailer (one entry per child).
+
+    The trailer is YAML-ish (line-based ``key: value``, hand-rendered, no
+    YAML library) so the engineering-team skill can read it the same way
+    it reads the ``RELAY_*`` preamble lines. It lives in the body, not
+    the preamble (ADR-14 — preamble is reserved for ``RELAY_RUN_DIR`` and
+    ``RELAY_PHASE``). Multi-line summaries use YAML literal block
+    (``summary: |``) so newlines survive untouched.
+
+    Schema of each ``child_results`` entry (all ``str``):
+    ``id``, ``role``, ``status``, ``summary``, ``branch``,
+    ``worktree_path``. Empty values render as ``key:`` with a trailing
+    space (never omitted) so the block is structurally uniform.
+    """
+    lines: list[str] = [join_prompt, "", "---", "RELAY_CHILD_RESULTS:"]
+    for r in child_results:
+        lines.append(f"- id: {r['id']}")
+        lines.append(f"  role: {r['role']}")
+        lines.append(f"  status: {r['status']}")
+        summary = r.get("summary", "")
+        if "\n" in summary:
+            lines.append("  summary: |")
+            for sub in summary.split("\n"):
+                lines.append(f"    {sub}")
+        else:
+            lines.append(f"  summary: {summary}")
+        lines.append(f"  branch: {r['branch']}")
+        lines.append(f"  worktree_path: {r['worktree_path']}")
+    return "\n".join(lines) + "\n"
