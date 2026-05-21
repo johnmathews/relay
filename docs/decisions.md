@@ -1984,3 +1984,53 @@ safety net), proposal `docs/proposals/parallel-iters-fanout-join.md`,
 `docs/plans/2026-05-21-fanout-join-9a.md`.
 
 ---
+
+## ADR-35 — Fanout concurrency cap: `asyncio.Semaphore` in the supervisor (Option A)
+
+**Status:** Accepted (2026-05-21)
+**Phase:** 9b (fanout dispatch)
+
+**Context.** The fanout-join feature dispatches N child runs when a parent iter
+emits `[[engteam:fanout]]`. The proposal names `max_fanout_concurrent`
+(default 4) as an operational guard against too many parallel pi sessions. Two
+implementation options were considered:
+
+- **Option A — Semaphore in `RelayCore`:** all N child run rows are created
+  immediately as `running` rows; the supervisor acquires the semaphore before
+  launching each child task and releases on task completion. Children waiting for
+  a slot sit in the supervisor queue as `running` rows not yet started.
+- **Option B — Queue-and-block at dispatch:** `RelayCore` creates only the first N
+  rows; the rest are held in a pending queue (in-memory or a new DB table) and
+  created/enqueued as slots free.
+
+**Decision.** Option A.
+
+**Rationale.** Option B requires a new persistent queue that must survive server
+restart — replicating exactly the gap 9a closed for `awaiting_children`. An
+in-memory queue is lost on restart; a DB queue requires a new table, a new status
+value, and a new startup sweep. Option A avoids all of this: every child row
+exists in the DB from the moment of dispatch. On restart, the existing
+orphan-recovery sweep (ADR-32 / ADR-34) handles them correctly — children waiting
+for a semaphore slot are swept as `running` orphans, giving them the
+"parent interrupted during fanout" summary if their parent is
+`awaiting_children`. Fairness across multiple parents is natural: one shared
+semaphore pools all concurrent child tasks. The semaphore is created in
+`RelayCore.start()` after the event loop exists, initialized from
+`settings.max_fanout_concurrent`.
+
+**Consequences.**
+- Child rows created-but-not-yet-executing sit as `running` rows in the
+  supervisor queue. On restart they are swept as any `running` orphan.
+- The semaphore count is not persisted across restarts; acceptable for
+  single-user MVP (ADR-12).
+- `max_fanout_concurrent` is a `Settings` field
+  (`RELAY_MAX_FANOUT_CONCURRENT` env var, default 4).
+- `max_fanout_depth` is also a `Settings` field
+  (`RELAY_MAX_FANOUT_DEPTH`, default 2, hard cap enforced at dispatch time).
+
+**Rejected:** Option B — new persistent intermediate state, new startup sweep,
+disproportionate complexity for a single-user MVP guard. An in-memory-only queue
+is lost on restart and breaks the restart-recovery guarantee ADR-34 establishes.
+
+**Related:** ADR-12 (single-process MVP), ADR-32 / ADR-34 (orphan recovery),
+`docs/proposals/parallel-iters-fanout-join.md`.

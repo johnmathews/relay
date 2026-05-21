@@ -150,7 +150,7 @@ CREATE TABLE iters (
   pi_session_id TEXT,                    -- pi's session UUID for this iter
   prompt        TEXT NOT NULL,           -- the prompt sent to pi
   preamble      TEXT NOT NULL,           -- the RELAY_* preamble (snapshot)
-  signal_kind   TEXT,                    -- terminal signal that closed this iter: 'handoff'|'done'|'pause'|NULL
+  signal_kind   TEXT,                    -- terminal signal that closed this iter: 'handoff'|'done'|'pause'|'fanout'|NULL
                                          -- (mid-iter signals like 'phase_start' / 'unit_done' are recorded only in the events table)
   signal_args   JSON,                    -- {next_prompt, summary, question, ...}
   started_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -364,6 +364,11 @@ Signal kinds: `phase_start`, `unit_start`, `unit_done`, `unit_abandoned`,
 `handoff`, `done`, `pause` (matching v1 except naming convention may
 shift to snake_case in the args).
 
+New in 9b: `fanout` closes the iter and requests N child runs. The JSON
+payload is carried between `[[engteam:fanout-start]]` and
+`[[engteam:fanout-end]]` markers; `[[engteam:fanout]]` is the closing
+verb. See §5.4 for the full grammar.
+
 The prompt-marker pair (`[[engteam:prompt-start]]` … `[[engteam:prompt-end]]`)
 remains the mechanism for carrying the next-iter prompt before `handoff`
 and `pause`. See `references/signaling.md` (TBD).
@@ -384,6 +389,33 @@ in MVP per ADR-05's MVP recommendation, but the strategy hook is there.
 Nothing precludes using both: agent can use sentinels for the canonical
 contract and MCP tools as a richer event channel (e.g., dashboard
 annotations, audit logs). Out of scope for MVP.
+
+### 5.4 Fanout sentinel (9b)
+
+Closes the iter and requests parallel child runs. Full grammar:
+
+    [[engteam:fanout-start]]
+    {
+      "children": [
+        { "role": "<label>", "prompt": "<child prompt body>" },
+        ...
+      ],
+      "join_prompt": "<prompt body for the synthesizer iter — used in 9c>"
+    }
+    [[engteam:fanout-end]]
+
+    [[engteam:fanout]]
+
+The JSON body between `fanout-start` and `fanout-end` must parse and
+validate as a `FanoutPayload` (at least one child; `join_prompt`
+present). The `[[engteam:fanout]]` verb line must follow after the end
+marker (intervening blank lines allowed), at column 0 with no indentation.
+A malformed body, missing markers, or a `join_prompt`-less payload is
+treated as `agent_end_no_signal` and fails the run.
+
+Depth is limited by `RELAY_MAX_FANOUT_DEPTH` (default 2, hard cap 4).
+Concurrent child tasks are bounded by `RELAY_MAX_FANOUT_CONCURRENT`
+(default 4, Option A semaphore — ADR-35).
 
 ## 6. Orchestrator
 
@@ -771,6 +803,8 @@ Per ADR-10.
 | `RELAY_LANGFUSE_SECRET_KEY` | unset | " |
 | `RELAY_HOST` | `127.0.0.1` | server bind address |
 | `RELAY_PORT` | `7800` | server port |
+| `RELAY_MAX_FANOUT_DEPTH` | `2` | maximum parent→child recursion depth (hard cap 4) |
+| `RELAY_MAX_FANOUT_CONCURRENT` | `4` | concurrent child-run task semaphore pool size |
 
 Pi-side env vars (passed through to subprocess):
 - `PI_AGENT_SDK=1` — always set by `PiHarness` per ADR-09.
