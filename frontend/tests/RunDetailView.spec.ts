@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import { PiniaColada } from '@pinia/colada'
+import { createRouter, createMemoryHistory } from 'vue-router'
 
 const GET = vi.fn()
 const POST = vi.fn()
@@ -13,6 +14,7 @@ vi.mock('@/api/client', () => ({
 }))
 
 import RunDetailView from '../src/views/RunDetailView.vue'
+import type { Run } from '../src/lib/queries'
 
 // jsdom has no EventSource; stub a no-op so the LIVE path (running/
 // paused) doesn't throw. The store↔wrapper contract itself is covered
@@ -26,6 +28,14 @@ beforeEach(() => {
     NoopEventSource as unknown
 })
 
+// Router required for ParentRunChip's router-link to render as <a> tags.
+const router = createRouter({
+  history: createMemoryHistory(),
+  routes: [
+    { path: '/runs/:id', name: 'run-detail', component: { template: '<div/>' } },
+  ],
+})
+
 function ok<T>(data: T): { data: T; error: undefined; response: Response } {
   return {
     data,
@@ -34,7 +44,7 @@ function ok<T>(data: T): { data: T; error: undefined; response: Response } {
   }
 }
 
-function detail(over: Record<string, unknown> = {}): Record<string, unknown> {
+function makeDetail(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     id: 'run-1',
     project_id: 1,
@@ -54,19 +64,79 @@ function detail(over: Record<string, unknown> = {}): Record<string, unknown> {
   }
 }
 
-function mountView(): ReturnType<typeof mount> {
+// Keep `detail` as a convenience alias so existing tests stay unchanged.
+const detail = makeDetail
+
+function makeChildRow(
+  overrides: Partial<{
+    id: string
+    status: string
+    branch: string
+    parent_run_id: string
+  }> = {},
+): Run {
+  return {
+    id: 'child-a',
+    project_id: 1,
+    prompt_id: null,
+    prompt_body: 'x',
+    user_id: 0,
+    status: 'running',
+    started_at: '2026-05-21T00:00:00Z',
+    ended_at: null,
+    max_iters: 1,
+    iter_timeout: 60,
+    worktree_path: '/wt/child-a',
+    branch: 'relay/child-a',
+    parent_run_id: 'parent-1',
+    ...overrides,
+  } as unknown as Run
+}
+
+/**
+ * Mount RunDetailView.
+ *
+ * The caller is responsible for setting up `GET.mockImplementation`
+ * (or `mockResolvedValue`) BEFORE calling `mountView` — exactly as the
+ * existing tests already do.  `mountView` wraps that implementation to
+ * additionally handle `/api/runs/{run_id}/children` (returning
+ * `opts.children`, default `[]`) so existing tests don't need to care
+ * about the children endpoint at all.
+ */
+function mountView(opts: { children?: Run[] } = {}): ReturnType<typeof mount> {
+  const childRows = opts.children ?? []
+  // Capture whatever mock the caller set up (may be mockImplementation
+  // OR mockResolvedValue — both are accessible via GET.getMockImplementation).
+  const callerImpl = GET.getMockImplementation()
+
+  GET.mockImplementation((path: string, ...rest: unknown[]) => {
+    if (path === '/api/runs/{run_id}/children') {
+      return Promise.resolve(ok(childRows))
+    }
+    if (callerImpl) {
+      return callerImpl(path, ...rest)
+    }
+    // Fallback: resolve undefined so the query doesn't hang.
+    return Promise.resolve(ok(undefined))
+  })
+
   return mount(RunDetailView, {
     props: { id: 'run-1' },
     global: {
-      plugins: [createPinia(), PiniaColada],
+      plugins: [createPinia(), PiniaColada, router],
       // ArtifactsPane mounts the shared FileTree (which fires its own
       // listing query); stub it here — its behaviour is covered by
       // ArtifactsPane.spec.ts. WorktreePane is light + network-free so
       // we let it render to assert the W7 wiring end-to-end.
+      // ChildrenPane is stubbed — its internal router-links and
+      // useRunChildrenQuery usage are covered by ChildrenPane.spec.ts.
+      // ParentRunChip is NOT stubbed so we can assert the rendered <a>
+      // href (router plugin above makes router-link resolve to <a>).
       stubs: {
         TimelinePane: true,
         PauseAnswerForm: true,
         ArtifactsPane: true,
+        ChildrenPane: true,
       },
     },
   })
@@ -262,5 +332,63 @@ describe('RunDetailView', () => {
       'relay/run-1',
     )
     expect(w.find('[data-testid="worktree-note"]').exists()).toBe(true)
+  })
+
+  // ── 9e: ChildrenPane + ParentRunChip + cascade-aware Cancel ──────────
+
+  it('shows the Cancel button on awaiting_children with cascade copy', async () => {
+    GET.mockImplementation((path: string) => {
+      if (path === '/api/runs/{run_id}')
+        return Promise.resolve(ok(makeDetail({ status: 'awaiting_children' })))
+      return Promise.resolve(ok({ events: [], after_seq: 0, limit: 500, offset: 0 }))
+    })
+    const w = mountView({
+      children: [makeChildRow({ id: 'child-a' }), makeChildRow({ id: 'child-b' })],
+    })
+    await flushPromises()
+
+    const btn = w.find('[data-testid="cancel-run"]')
+    expect(btn.exists()).toBe(true)
+    expect(btn.text()).toBe('Cancel run and 2 children')
+  })
+
+  it('shows "Cancel run" (no cascade copy) when running with zero children', async () => {
+    GET.mockImplementation((path: string) => {
+      if (path === '/api/runs/{run_id}')
+        return Promise.resolve(ok(makeDetail({ status: 'running' })))
+      return Promise.resolve(ok({ events: [], after_seq: 0, limit: 500, offset: 0 }))
+    })
+    const w = mountView({ children: [] })
+    await flushPromises()
+
+    const btn = w.find('[data-testid="cancel-run"]')
+    expect(btn.exists()).toBe(true)
+    expect(btn.text()).toBe('Cancel run')
+  })
+
+  it('renders the Parent chip when detail.parent_run_id is set', async () => {
+    GET.mockImplementation((path: string) => {
+      if (path === '/api/runs/{run_id}')
+        return Promise.resolve(ok(makeDetail({ parent_run_id: 'parent-abc' })))
+      return Promise.resolve(ok({ events: [], after_seq: 0, limit: 500, offset: 0 }))
+    })
+    const w = mountView({ children: [] })
+    await flushPromises()
+
+    const chip = w.find('[data-testid="parent-run-chip"]')
+    expect(chip.exists()).toBe(true)
+    expect(chip.attributes('href')).toBe('/runs/parent-abc')
+  })
+
+  it('omits the Parent chip on top-level runs', async () => {
+    GET.mockImplementation((path: string) => {
+      if (path === '/api/runs/{run_id}')
+        return Promise.resolve(ok(makeDetail({ parent_run_id: null })))
+      return Promise.resolve(ok({ events: [], after_seq: 0, limit: 500, offset: 0 }))
+    })
+    const w = mountView({ children: [] })
+    await flushPromises()
+
+    expect(w.find('[data-testid="parent-run-chip"]').exists()).toBe(false)
   })
 })

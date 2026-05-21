@@ -33,10 +33,13 @@ import ItersPane from '@/components/runs/ItersPane.vue'
 import PauseAnswerForm from '@/components/runs/PauseAnswerForm.vue'
 import ArtifactsPane from '@/components/runs/ArtifactsPane.vue'
 import WorktreePane from '@/components/runs/WorktreePane.vue'
+import ChildrenPane from '@/components/runs/ChildrenPane.vue'
+import ParentRunChip from '@/components/shared/ParentRunChip.vue'
 import {
   useRunDetailQuery,
   useCancelRunMutation,
   useInvalidate,
+  useRunChildrenQuery,
   asAsyncState,
   type RunDetail,
 } from '@/lib/queries'
@@ -66,10 +69,26 @@ const cancelRun = useCancelRunMutation()
 const TERMINAL = new Set(['done', 'failed', 'cancelled'])
 
 const status = computed(() => detail.value?.status ?? '')
-const isRunning = computed(() => status.value === 'running')
 const isPaused = computed(() => status.value === 'paused')
 
 const iters = computed(() => detail.value?.iters ?? [])
+
+// 9e — Children query for cascade-aware cancel label.
+const childrenQuery = useRunChildrenQuery(() => props.id)
+const children = computed(() => childrenQuery.data.value ?? [])
+const childCount = computed(() => children.value.length)
+
+/** True when the run can still be cancelled (running OR awaiting children). */
+const isCancellable = computed(
+  () => status.value === 'running' || status.value === 'awaiting_children',
+)
+
+/** Cancel button label — cascade-aware when parent has live children. */
+const cancelLabel = computed(() => {
+  if (childCount.value === 0) return 'Cancel run'
+  const n = childCount.value
+  return `Cancel run and ${n} child${n === 1 ? '' : 'ren'}`
+})
 const iterCount = computed(() => iters.value.length)
 const currentPhase = computed(() => {
   const last = iters.value[iters.value.length - 1]
@@ -225,6 +244,7 @@ onBeforeUnmount(() => {
               Run {{ detail.id }}
             </h1>
             <StatusBadge :status="detail.status" />
+            <ParentRunChip :parent-run-id="detail.parent_run_id" />
           </div>
           <dl class="run-detail__meta">
             <div>
@@ -259,12 +279,12 @@ onBeforeUnmount(() => {
 
           <div class="run-detail__actions">
             <ActionButton
-              v-if="isRunning"
+              v-if="isCancellable"
               :loading="cancelling"
               data-testid="cancel-run"
               @click="onCancel"
             >
-              Cancel run
+              {{ cancelLabel }}
             </ActionButton>
           </div>
         </header>
@@ -313,6 +333,11 @@ onBeforeUnmount(() => {
         <div data-testid="iters-pane-slot">
           <ItersPane :iters="iters" />
         </div>
+
+        <!-- 9e — Children pane: direct children dispatched via fanout
+             (spec.md §9.1, 9e). Conditional — renders nothing on a run
+             that never fanned out. -->
+        <ChildrenPane :run-id="detail.id" />
 
         <!-- W7 — Artifacts pane: the shared FileTree+FileViewer wired
              to the run-artifacts source (ADR-25). -->
