@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
+
 from relay_v2.harness.protocol import SignalConfig
 from relay_v2.harness.signaling import MarkerError
 from relay_v2.harness.signaling.fanout import FanoutParseError, FanoutPayload
@@ -28,12 +30,12 @@ def test_fanout_payload_valid() -> None:
 
 
 def test_fanout_payload_empty_children_raises() -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         FanoutPayload.model_validate({"children": [], "join_prompt": "x"})
 
 
 def test_fanout_payload_missing_join_prompt_raises() -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         FanoutPayload.model_validate({
             "children": [{"role": "r", "prompt": "p"}],
         })
