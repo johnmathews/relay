@@ -1,8 +1,9 @@
 """``relay install-skill`` — deploy the bundled engineering-team skill.
 
 The canonical skill source lives at the repo root in
-``skills/engineering-team/`` (spec.md §12). Two consumption modes must
-both work:
+``skills/engineering-team/<harness>/`` (spec.md §12, ADR-33). Each
+harness gets its own subdirectory; ``pi/`` is the only variant today.
+Two consumption modes must both work:
 
 - **Source / editable install** (the only mode relay-v2 uses today —
   ``uv sync`` + ``uv run``): ``relay_v2`` resolves to ``src/relay_v2``;
@@ -34,7 +35,7 @@ SKILL_NAME = "engineering-team"
 
 
 def skill_source_dir() -> Path:
-    """Locate the bundled skill tree.
+    """Locate the bundled skill tree (the ``pi`` variant directory).
 
     Packaged (wheel, force-include) location is preferred; the repo-root
     source layout is the fallback for editable/source installs. Raises
@@ -42,12 +43,12 @@ def skill_source_dir() -> Path:
     ship with the package).
     """
     pkg_root = Path(__file__).resolve().parent.parent  # …/relay_v2
-    packaged = pkg_root / "skills" / SKILL_NAME
+    packaged = pkg_root / "skills" / SKILL_NAME / "pi"
     if packaged.is_dir():
         return packaged
     # parents: [0]=cli [1]=relay_v2 [2]=src [3]=<repo root>
     repo_root = Path(__file__).resolve().parents[3]
-    source = repo_root / "skills" / SKILL_NAME
+    source = repo_root / "skills" / SKILL_NAME / "pi"
     if source.is_dir():
         return source
     raise FileNotFoundError(
