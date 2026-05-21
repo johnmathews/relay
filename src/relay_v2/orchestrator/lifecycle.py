@@ -65,6 +65,7 @@ class RunContext:
     start_seq: int
     phase: str | None
     body: str
+    parent_run_id: str | None = None  # set for child runs dispatched via fanout (9b)
 
     @property
     def cwd(self) -> Path:
@@ -120,6 +121,7 @@ async def create_run(
     iter_timeout: int,
     worktree_path: str | None,
     branch: str | None,
+    parent_run_id: str | None = None,
 ) -> None:
     async with sm() as s:
         s.add(
@@ -132,18 +134,25 @@ async def create_run(
                 iter_timeout=iter_timeout,
                 worktree_path=worktree_path,
                 branch=branch,
+                parent_run_id=parent_run_id,
             )
         )
         await s.commit()
 
 
 async def provision_workspace(
-    project_root: Path, data_dir: Path, run_id: str
+    project_root: Path,
+    data_dir: Path,
+    run_id: str,
+    parent_worktree_path: Path | None = None,
 ) -> tuple[Path | None, str | None, Path]:
     """Create the artifacts dir; best-effort per-run git worktree.
 
-    Returns ``(worktree_path, branch, run_dir)``. ``worktree_path`` /
-    ``branch`` are ``None`` when the project root is not a git work tree.
+    When ``parent_worktree_path`` is given and exists, branches the new
+    worktree off the parent worktree's HEAD commit rather than the
+    project default branch (spec.md §6 — child runs start from the
+    parent's in-progress work). When the parent worktree path does not
+    exist or git fails, degrades to branching from the project HEAD.
     """
     run_dir = data_dir / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -152,15 +161,30 @@ async def provision_workspace(
     wt = worktrees / run_id
     branch = f"relay/{run_id}"
     worktrees.mkdir(parents=True, exist_ok=True)
+
+    # Resolve parent HEAD commit as start-point (child branches from
+    # parent's in-progress state, not the project default branch tip).
+    parent_commit: str | None = None
+    if parent_worktree_path is not None and parent_worktree_path.is_dir():
+        head_proc = await _spawn_argv(
+            "git", "-C", str(parent_worktree_path),
+            "rev-parse", "HEAD",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await head_proc.communicate()
+        if head_proc.returncode == 0:
+            parent_commit = stdout.decode().strip()
+
+    git_cmd = [
+        "git", "-C", str(project_root),
+        "worktree", "add", "-b", branch, str(wt),
+    ]
+    if parent_commit:
+        git_cmd.append(parent_commit)
+
     proc = await _spawn_argv(
-        "git",
-        "-C",
-        str(project_root),
-        "worktree",
-        "add",
-        "-b",
-        branch,
-        str(wt),
+        *git_cmd,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
     )
