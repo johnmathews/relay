@@ -48,8 +48,10 @@ def test_dispatch_creates_two_child_runs_with_parent_run_id(
     tmp_path: Path,
 ) -> None:
     settings = _settings(tmp_path)
+    # Scripts: parent fanout, 2 children, synthesizer done (9c).
     harness = ScriptedHarness(
-        [TextScript(FANOUT_TWO), TextScript(DONE), TextScript(DONE)]
+        [TextScript(FANOUT_TWO), TextScript(DONE), TextScript(DONE),
+         TextScript(DONE)]
     )
 
     async def scenario(core: RelayCore) -> tuple[str, list[str]]:
@@ -67,6 +69,8 @@ def test_dispatch_creates_two_child_runs_with_parent_run_id(
         child_ids = [c.id for c in children]
         for cid in child_ids:
             await core.wait_for_run(cid)
+        # Drain synthesizer iter so aclose doesn't race the watcher.
+        await core.wait_for_run(parent_id)
         return parent_id, child_ids
 
     parent_id, child_ids = _run_sync(scenario, settings, harness)
@@ -75,8 +79,9 @@ def test_dispatch_creates_two_child_runs_with_parent_run_id(
     try:
         with Session(engine) as s:
             parent = s.get(Run, parent_id)
-            assert parent is not None and parent.status == "awaiting_children"
-            assert parent.ended_at is None
+            # Post-9c the synthesizer iter completes; parent reaches done.
+            assert parent is not None and parent.status == "done"
+            assert parent.ended_at is not None
             assert len(child_ids) == 2
             for cid in child_ids:
                 child = s.get(Run, cid)
@@ -163,16 +168,33 @@ def test_dispatch_depth_limit_fails_child_run(tmp_path: Path) -> None:
         engine.dispose()
 
 
-def test_parent_run_no_run_ended_event(tmp_path: Path) -> None:
-    """awaiting_children parent must have no run_ended event (9c's territory)."""
+def test_parent_run_emits_join_events_in_order(tmp_path: Path) -> None:
+    """Post-9c: parent's event stream includes subagent_return × N,
+    child_runs_resolved, then run_ended in that order (the ordering
+    invariant that downstream tooling — the dashboard timeline, OTel
+    span mirror — depends on)."""
     settings = _settings(tmp_path)
     harness = ScriptedHarness(
-        [TextScript(FANOUT_TWO), TextScript(DONE), TextScript(DONE)]
+        [TextScript(FANOUT_TWO), TextScript(DONE), TextScript(DONE),
+         TextScript(DONE)]
     )
 
     async def scenario(core: RelayCore) -> str:
         pid = await core.register_project(tmp_path, "p")
         parent_id = await core.start_run(pid, "Start.")
+        await core.wait_for_run(parent_id)
+        engine = create_engine(settings.db_url)
+        try:
+            with Session(engine) as s:
+                child_ids = [
+                    c.id for c in s.scalars(
+                        select(Run).where(Run.parent_run_id == parent_id)
+                    )
+                ]
+        finally:
+            engine.dispose()
+        for cid in child_ids:
+            await core.wait_for_run(cid)
         await core.wait_for_run(parent_id)
         return parent_id
 
@@ -185,6 +207,14 @@ def test_parent_run_no_run_ended_event(tmp_path: Path) -> None:
                     select(Event).where(Event.run_id == parent_id).order_by(Event.seq)
                 )
             ]
-            assert "run_ended" not in kinds
+            assert "run_ended" in kinds
+            assert kinds.count("subagent_return") == 2
+            assert kinds.count("child_runs_resolved") == 1
+            last_return = max(
+                i for i, k in enumerate(kinds) if k == "subagent_return"
+            )
+            resolved_idx = kinds.index("child_runs_resolved")
+            run_ended_idx = kinds.index("run_ended")
+            assert last_return < resolved_idx < run_ended_idx
     finally:
         engine.dispose()

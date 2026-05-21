@@ -301,6 +301,17 @@ class RelayCore:
                 raise ValueError(f"project {project_id} not found")
             project_root = Path(project.root_path)
 
+        # Two passes (9c): create ALL child rows + dispatch events first,
+        # THEN enqueue them. If we interleaved create/enqueue, the
+        # supervisor could start the first child and let it finish (the
+        # ScriptedHarness path is instantaneous) before we returned to
+        # create the second child's row — at which point the
+        # ``_maybe_resume_parent`` watcher's "are all children terminal?"
+        # check would short-circuit on the partial child set and resume
+        # the parent with only one ``subagent_return`` event. Creating
+        # all rows up-front guarantees the watcher always sees the full
+        # child set.
+        contexts: list[RunContext] = []
         for child in payload.children:
             child_run_id = self._new_run_id()
             wt, branch, run_dir = await provision_workspace(
@@ -342,7 +353,7 @@ class RelayCore:
                 },
             )
             self._runs[child_run_id] = _RunState()
-            await self._queue.put(
+            contexts.append(
                 RunContext(
                     run_id=child_run_id,
                     project_root=project_root,
@@ -356,6 +367,10 @@ class RelayCore:
                     parent_run_id=parent_run_id,
                 )
             )
+        # Enqueue only after every child row exists, so the watcher
+        # cannot observe a partial child set.
+        for ctx in contexts:
+            await self._queue.put(ctx)
 
     async def _collect_child_results(
         self, parent_run_id: str
@@ -669,17 +684,20 @@ class RelayCore:
                     state.result = LoopResult(
                         "failed", reason="internal_error"
                     )
-                state.settled.set()
                 # Fanout-join (9c): when a child run settles, give its
                 # parent a chance to resume. Idempotent + lock-guarded
                 # in _maybe_resume_parent; a no-op when the parent is
                 # not awaiting_children (cascade-cancelled, already
                 # resumed by a sibling, or this run isn't a child at
                 # all). Best-effort — a watcher failure must not leak
-                # back into the run task's shutdown.
+                # back into the run task's shutdown. Runs BEFORE
+                # state.settled.set() so a caller awaiting this child's
+                # wait_for_run() then immediately awaiting the parent's
+                # cannot race the watcher's swap of self._runs[parent].
                 if ctx.parent_run_id is not None:
                     with contextlib.suppress(Exception):
                         await self._maybe_resume_parent(ctx.parent_run_id)
+                state.settled.set()
 
     async def _apply_result(
         self, ctx: RunContext, result: LoopResult
