@@ -109,7 +109,29 @@ extended in the same iter with a startup-time orphan sweep in
 `RelayCore.start()` and a `cancel_run` safety net that finalise any
 'running' row whose owning process is gone — single-user/-process
 MVP per ADR-12, so a 'running' row at startup must come from a
-prior process and can never resume).
+prior process and can never resume). **Phase 9a** then adds the
+defensive plumbing for the post-MVP fanout-join feature
+(`docs/proposals/parallel-iters-fanout-join.md`,
+`docs/plans/2026-05-21-fanout-join-9a.md`): a new
+`awaiting_children` run status (NOT terminal — can transition back
+to `running` once children settle in 9c), a reserved
+`child_runs_resolved` event kind in the taxonomy, and a depth-first
+cascade-cancel helper threaded through `_recover_orphans` so a
+parent in `awaiting_children` at startup is finalised together with
+its descendants under the S1 convention (ADR-34: recovering an
+in-flight fanout across a restart is a V1 non-goal; the helper is
+reused by 9d for runtime cancel-cascade). The `_TERMINAL` constants
+in `api/events.py`, `frontend/src/stores/events.ts`, and
+`frontend/src/views/RunDetailView.vue` keep their existing values
+(they already exclude `awaiting_children` correctly) — the change is
+the comments + a regression test
+(`tests/api/test_sse.py::test_sse_treats_awaiting_children_as_live`)
+that an event appended after the SSE generator subscribes still
+reaches the consumer. `StatusBadge.vue` gains a dedicated
+amber-tinted variant. 211 backend tests pass (205 + 5 orphan/cascade
++ 1 SSE live; 3 pi-e2e still gated); 142 frontend tests pass (+1 new
+StatusBadge case). No production code path creates an
+`awaiting_children` row yet — 9b/9c land the dispatch + join.
 
 ## What relay v2 is
 

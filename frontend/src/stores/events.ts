@@ -50,7 +50,16 @@ import {
 } from '@/api/sse'
 import type { EventRow } from '@/lib/queries'
 
-/** Run statuses that mean the run is finished and immutable. */
+/**
+ * Run statuses that mean the run is finished and immutable.
+ *
+ * `paused` and `awaiting_children` are deliberately NOT terminal —
+ * both can transition back to `running` (pause/resume; fanout/join
+ * respectively). Adding either here would force the live SSE path to
+ * close (replay mode), so a parent waiting for its children would
+ * stop receiving the eventual `child_runs_resolved` + synthesizer-iter
+ * events. See ADR-34 / `docs/spec.md` §3.1.
+ */
 const TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled'])
 
 /**

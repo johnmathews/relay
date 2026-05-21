@@ -126,7 +126,12 @@ CREATE TABLE runs (
   prompt_id     INTEGER REFERENCES prompts(id),  -- nullable: ad-hoc prompts allowed
   prompt_body   TEXT NOT NULL,                   -- snapshot at run start
   user_id       INTEGER NOT NULL DEFAULT 1,
-  status        TEXT NOT NULL,           -- 'running'|'done'|'failed'|'paused'|'cancelled'
+  status        TEXT NOT NULL,           -- 'running'|'done'|'failed'|'paused'|'cancelled'|'awaiting_children'
+                                         -- ``awaiting_children`` — parent run is suspended pending
+                                         -- completion of child runs dispatched via fanout. Not
+                                         -- terminal; transitions back to ``running`` when all
+                                         -- children settle (9c). Set under the S1 cancel-with-cascade
+                                         -- convention on server restart (ADR-34, 9a).
   started_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   ended_at      TIMESTAMP,
   max_iters     INTEGER NOT NULL DEFAULT 12,
@@ -185,6 +190,7 @@ The `events.kind` column is a discriminator. Payloads are JSON.
 | `signal_emit` | parser detects handoff/done/pause/phase_start/etc. | `{kind, args}` |
 | `subagent_dispatch` | orchestrator spawns a subagent run | `{child_run_id, role, prompt}` |
 | `subagent_return` | subagent run finishes | `{child_run_id, status, result}` |
+| `child_runs_resolved` | after all children of an `awaiting_children` parent reach a terminal status; immediately before the parent's synthesizer iter is enqueued (9c). Optional but recommended for replay diffing — derivable from the preceding `subagent_return` events. | `{children_count, terminal_statuses}` (`terminal_statuses` is `dict[run_id, status]`) |
 | `iter_ended` | iter N closes | `{seq, signal_kind, exit_reason}` |
 | `pause_requested` | pause signal handled | `{question}` |
 | `pause_resolved` | answer received | `{answer}` |
@@ -438,7 +444,11 @@ inter-iter chaining.
 strategy when needed), the orchestrator spawns a child run with a fresh
 session, ties it to the parent via `parent_run_id`, and feeds its result
 back to the parent. Out of scope for MVP — the engineering-team skill
-in v2 may not require subagents in the initial port.
+in v2 may not require subagents in the initial port. On server restart,
+parents in `awaiting_children` are treated as orphans: cancelled, with
+their children cascade-cancelled (ADR-34). Single-process MVP —
+recovering an in-flight fanout across a restart is a deliberate non-goal
+for V1.
 
 ### 6.1 Runtime model (ADR-19, ADR-21)
 
