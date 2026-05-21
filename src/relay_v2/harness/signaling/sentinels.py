@@ -248,7 +248,7 @@ def extract_phase_start(text: str) -> str:
     return last
 
 
-def extract_fanout_payload(text: str) -> "FanoutPayload":  # noqa: F821
+def extract_fanout_payload(text: str) -> FanoutPayload:
     """Extract and validate the JSON between ``[[engteam:fanout-start]]``
     and ``[[engteam:fanout-end]]`` in the turn containing ``[[engteam:fanout]]``.
 
@@ -350,6 +350,14 @@ def detect_in_text(text: str, config: SignalConfig) -> SignalEmitted | None:
                 "question": extract_pause_question(text),
                 "id": extract_pause_id(text),
             },
+        )
+    if counts.get("fanout"):
+        # FanoutParseError and MarkerError propagate to the loop's
+        # _drive_iter catch clause (loop.py — Task 6).
+        payload = extract_fanout_payload(text)
+        return SignalEmitted(
+            kind="fanout",
+            args={"payload": payload.model_dump()},
         )
 
     for line in text.split("\n"):

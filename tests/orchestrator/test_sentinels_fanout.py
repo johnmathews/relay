@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import pytest
+from relay_v2.harness.protocol import SignalConfig
 from relay_v2.harness.signaling import MarkerError
 from relay_v2.harness.signaling.fanout import FanoutParseError, FanoutPayload
 from relay_v2.harness.signaling.sentinels import (
     count_closing_sentinels,
+    detect_in_text,
     extract_fanout_payload,
 )
+
+_CFG = SignalConfig(strategy="text_sentinels")
 
 
 def test_fanout_payload_valid() -> None:
@@ -109,3 +113,22 @@ def test_extract_fanout_payload_multiline_json() -> None:
         "[[engteam:fanout]]"
     )
     assert extract_fanout_payload(text).children[0].role == "r"
+
+
+def test_detect_in_text_fanout_returns_fanout_signal() -> None:
+    sig = detect_in_text(FANOUT_BLOCK, _CFG)
+    assert sig is not None
+    assert sig.kind == "fanout"
+    assert sig.args["payload"]["join_prompt"] == "Merge."
+    assert sig.args["payload"]["children"][0]["role"] == "explorer-a"
+
+
+def test_detect_in_text_fanout_beats_unit_done() -> None:
+    """fanout in same text as unit_done: fanout wins (terminal beats non-terminal)."""
+    text = FANOUT_BLOCK + '\n\n[[engteam:unit-done id="u1" title="s"]]\n'
+    sig = detect_in_text(text, _CFG)
+    assert sig is not None and sig.kind == "fanout"
+
+
+def test_detect_in_text_no_fanout_sentinel_returns_none() -> None:
+    assert detect_in_text("Ordinary text.", _CFG) is None
