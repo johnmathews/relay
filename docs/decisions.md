@@ -2181,3 +2181,68 @@ mirrors), ADR-23 (broadcaster scope: read-only/UI-facing),
 ADR-31/32/34 (run finalisation + orphan/cascade — the safety net the
 watcher relies on for crashed children), ADR-35 (fanout concurrency
 cap — 9b sibling), proposal `docs/proposals/parallel-iters-fanout-join.md`.
+
+## ADR-37 — Runtime cancel-cascade: parent-first under `_enqueue_lock`
+
+**Status:** accepted (2026-05-21)
+**Phase:** 9d (runtime cancel-cascade)
+
+**Context.** 9c landed the join watcher (`_maybe_resume_parent`) that
+transitions an `awaiting_children` parent → `running` when all
+children settle. 9d closes the symmetric gap: when the *user* cancels
+such a parent, the cancel must propagate to descendants and the
+watcher must not race the cancel.
+
+**Decision — parent-first.** `cancel_run` acquires `_enqueue_lock`,
+flips the parent to `cancelled` first, then walks descendants via
+`_cascade_cancel_runtime`. The watcher acquires the same lock and
+re-reads the parent; finding `cancelled`, it no-ops. With the reverse
+order (descendants first, then parent), a child terminal landing
+between the cascade and the parent flip would let the watcher resume
+the parent — exactly what we are trying to cancel.
+
+**Decision — in-flight vs DB-only split.** Per descendant:
+- in-flight (`self._runs[id]` exists and not settled): signal
+  `cancel_event` + `session.cancel()`. The child's `_run.CancelledError`
+  branch writes its own `run_ended`. Do NOT pre-write the DB here —
+  that would double-emit.
+- otherwise: write `set_run_status(cancelled, ended=True)` + `run_ended`
+  directly (same body as the 9a startup helper).
+
+The 9a `_cascade_cancel_descendants` (DB-only) stays — at startup
+there are no in-memory states by definition.
+
+**Decision — `_run` cancelled-before-start guard.** A queued
+descendant pre-flipped to `cancelled` by the cascade must not run when
+the supervisor picks it up. `_run` checks the DB status on entry and
+returns immediately if terminal. The guard intentionally bypasses
+`_run`'s `_maybe_resume_parent` finally call: the cascade flips the
+parent OUT of `awaiting_children` *before* finalising children (the
+parent-first ordering above), so the watcher would observe a
+non-awaiting parent and no-op anyway.
+
+**Rejected — await-each-descendant.** Blocking `cancel_run` on every
+in-flight child finishing would make a Cancel button on a 10-child
+fanout feel broken. Fire-and-forget matches the existing single-run
+cancel semantics. Descendant count is bounded by
+`max_fanout_concurrent × max_fanout_depth`, so the lock-held cascade
+loop (`session.cancel()` per descendant) has a bounded duration.
+
+**Rejected — cancel from inside the watcher.** Having the watcher
+detect "user cancelled mid-resume" and back out is more complex than
+serialising both via `_enqueue_lock`. The lock already exists for
+exactly this kind of "look-decide-mutate" race.
+
+**Consequences.**
+- An `await cancel_run(parent)` returns quickly; descendants finalise
+  asynchronously. Tests that need full quiescence use
+  `await wait_for_run(descendant_id)`.
+- A new test pattern (`test_cancel_run_serialises_with_watcher`)
+  documents the safe race outcomes: either the cancel wins (parent
+  cancelled, no `run_ended` duplication) or the watcher wins (parent
+  back to running, cancel falls through to the in-flight branch
+  against the synthesizer's new `_RunState`).
+
+**Related:** ADR-12 (single-process MVP), ADR-31/32 (run finalisation
++ orphan safety nets), ADR-34 (startup cascade helper, 9a), ADR-36
+(join watcher, 9c — the same `_enqueue_lock` serialiser).
