@@ -58,7 +58,13 @@ const projectState = asAsyncState(projectQuery)
 // W2's run-list query already covers a project-scoped list (the hub
 // uses it with `{ projectId, limit: 1 }`); here we list the project's
 // runs newest-first. No new query/key was needed.
-const runsQuery = useRunsQuery(() => ({ projectId: projectId.value }))
+// `showChildren` defaults to false so the list shows only top-level
+// runs; toggling it includes child runs in the result (Task 11, 9e).
+const showChildren = ref(false)
+const runsQuery = useRunsQuery(() => ({
+  projectId: projectId.value,
+  includeChildren: showChildren.value,
+}))
 const runs = computed(() => runsQuery.data.value ?? [])
 const runsState = asAsyncState(runsQuery)
 
@@ -290,6 +296,14 @@ async function onConfirmUnregister(): Promise<void> {
           aria-labelledby="project-tab-runs"
           data-testid="panel-runs"
         >
+          <label class="project-view__runs-toggle">
+            <input
+              v-model="showChildren"
+              type="checkbox"
+              data-testid="show-children-toggle"
+            >
+            Show child runs
+          </label>
           <AsyncBoundary
             :loading="runsState.isLoading.value"
             :error="runsState.error.value"
@@ -686,5 +700,13 @@ async function onConfirmUnregister(): Promise<void> {
   grid-template-columns: minmax(200px, 320px) 1fr;
   gap: 1rem;
   align-items: start;
+}
+
+.project-view__runs-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85em;
+  color: var(--color-text-dim);
 }
 </style>
