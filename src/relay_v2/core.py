@@ -246,6 +246,65 @@ class RelayCore:
                 {"status": "cancelled", "summary": summary},
             )
 
+    async def _cascade_cancel_runtime(
+        self, parent_run_id: str, *, summary: str,
+        _visited: set[str] | None = None,
+    ) -> None:
+        """Runtime cancel-cascade: signal in-flight descendants and
+        DB-finalise the rest (9d).
+
+        Sibling of :meth:`_cascade_cancel_descendants` (the DB-only
+        startup variant, ADR-34) — kept distinct because at runtime we
+        must NOT pre-finalise a row whose ``_run`` task is alive (that
+        would race the task's own CancelledError finalisation and
+        double-emit ``run_ended``). Per-descendant strategy:
+
+        - ``self._runs[id]`` exists and ``not settled.is_set()``: set
+          ``cancel_event`` + cancel the harness session. The ``_run``
+          task's CancelledError branch owns the DB write.
+        - otherwise (no in-memory state, or state already settled):
+          write ``set_run_status(cancelled, ended=True)`` + ``run_ended``
+          via the same path as :meth:`_cascade_cancel_descendants`.
+
+        Depth-first: a grandchild settles before its parent, so the
+        intermediate parent observes a fully-cancelled subtree.
+        """
+        terminal = ("done", "failed", "cancelled")
+        visited = _visited if _visited is not None else set()
+        async with self._sm() as s:
+            children = list(
+                await s.scalars(
+                    select(Run).where(Run.parent_run_id == parent_run_id)
+                )
+            )
+        for child in children:
+            if child.id in visited:
+                continue
+            if child.status in terminal:
+                continue
+            visited.add(child.id)
+            # Recurse first so grandchildren settle before the child.
+            await self._cascade_cancel_runtime(
+                child.id, summary=summary, _visited=visited
+            )
+            state = self._runs.get(child.id)
+            if state is not None and not state.settled.is_set():
+                # In-flight: signal and let _run finalise.
+                state.cancel_event.set()
+                session = state.session_handle.session
+                if session is not None:
+                    await session.cancel()
+            else:
+                # DB-only: queued, lost state, or already settled.
+                await set_run_status(
+                    self._sm, child.id, "cancelled", ended=True
+                )
+                await self._store.append(
+                    child.id,
+                    "run_ended",
+                    {"status": "cancelled", "summary": summary},
+                )
+
     async def _fanout_depth(self, run_id: str) -> int:
         """Walk the parent_run_id chain and return the depth (0 = root).
 
@@ -616,6 +675,24 @@ class RelayCore:
 
     async def _run(self, ctx: RunContext) -> None:
         state = self._runs[ctx.run_id]
+        # 9d guard: a row pre-flipped to cancelled (cascade DB-only
+        # branch) that the supervisor picks up should not enter the
+        # loop. _RunState's settled.set() is still required so any
+        # caller awaiting wait_for_run() does not hang. We skip the
+        # _maybe_resume_parent call in _run's finally on purpose: the
+        # cascade flips the parent OUT of awaiting_children before
+        # finalising children (ADR-37 ordering invariant), so the
+        # watcher would observe a non-awaiting parent and no-op anyway.
+        run_row = await load_run(self._sm, ctx.run_id)
+        if run_row is not None and run_row.status in (
+            "done", "failed", "cancelled"
+        ):
+            state.result = LoopResult(
+                run_row.status,
+                reason="cancelled_before_start",
+            )
+            state.settled.set()
+            return
         # ADR-29: the run span lives in _run's try/finally (NOT
         # start_run, which only enqueues), so a crashed or
         # supervisor-cancelled run still closes its span — the `with`
@@ -805,26 +882,69 @@ class RelayCore:
         return run_id
 
     async def cancel_run(self, run_id: str) -> None:
-        state = self._runs.get(run_id)
-        if state is None:
-            # No in-memory state: either an unknown run id (route's
-            # 404 precedes us) or an orphaned row the startup sweep
-            # missed (process raced a Cancel click). Finalise the DB
-            # so the button always does *something* visible — never a
-            # silent 200 on a stuck row (ADR-31 safety net).
+        """Cancel ``run_id``.
+
+        Three branches:
+
+        1. **Awaiting children** (9d): the run has fanned out and has no
+           ``_run`` task of its own. Acquire ``_enqueue_lock``, flip
+           parent to ``cancelled`` (so the join watcher cannot race a
+           resume), then cascade-cancel descendants via
+           :meth:`_cascade_cancel_runtime`. Fire-and-forget: in-flight
+           descendants finalise themselves via their own
+           ``CancelledError`` branch.
+        2. **In-flight** (normal case): set ``state.cancel_event`` and
+           cancel the harness session. ``_run.finally`` writes the DB.
+        3. **No in-memory state + DB row stuck** (orphan, ADR-31 safety
+           net): finalise the DB row directly so the user sees a
+           visible status flip.
+        """
+        async with self._enqueue_lock:
             run = await load_run(self._sm, run_id)
-            if run is not None and run.status not in (
-                "done", "failed", "cancelled"
-            ):
+            if run is None:
+                return
+            if run.status == "awaiting_children":
+                # Parent first (ordering invariant — see ADR-37 + the
+                # watcher race comment in _maybe_resume_parent).
                 await set_run_status(
                     self._sm, run_id, "cancelled", ended=True
                 )
                 await self._store.append(
                     run_id,
                     "run_ended",
-                    {"status": "cancelled",
-                     "summary": "orphaned: process state lost"},
+                    {"status": "cancelled", "summary": "user cancelled"},
                 )
+                # We hold ``_enqueue_lock`` across the cascade on
+                # purpose: that's what closes the watcher race (ADR-37).
+                # The cascade's per-descendant ``session.cancel()`` runs
+                # under the lock, but descendant count is bounded by
+                # ``max_fanout_concurrent × max_fanout_depth``.
+                await self._cascade_cancel_runtime(
+                    run_id,
+                    summary="parent cancelled by user",
+                )
+                return
+            if run.status in ("done", "failed", "cancelled"):
+                # Already terminal — idempotent no-op.
+                return
+
+        # Outside the lock: the existing in-flight signal path. The loop
+        # itself does not acquire ``_enqueue_lock``, so holding it here
+        # would not deadlock — but ``session.cancel()`` may await pi I/O
+        # for an unbounded time, and ``resume_run`` / ``_maybe_resume_parent``
+        # share this lock. Releasing before the I/O keeps them responsive.
+        state = self._runs.get(run_id)
+        if state is None:
+            # ADR-31 safety net.
+            await set_run_status(
+                self._sm, run_id, "cancelled", ended=True
+            )
+            await self._store.append(
+                run_id,
+                "run_ended",
+                {"status": "cancelled",
+                 "summary": "orphaned: process state lost"},
+            )
             return
         state.cancel_event.set()
         session = state.session_handle.session

@@ -540,8 +540,23 @@ Concerns the pseudocode elides, all owned by the orchestrator:
   orchestrator (the harness has no internal timeout); a `try/finally`
   around the event stream guarantees the pi subprocess is terminated
   even if the run task is cancelled at shutdown.
-- **Cancellation.** `cancel_run` sets a per-run flag and cancels the
-  in-flight session; the iter closes with `exit_reason="cancelled"`.
+- **Cancellation.** `cancel_run` has three branches (ADR-37):
+  - **In-flight** (normal): set the run's `cancel_event` + cancel the
+    harness session; the iter closes with `exit_reason="cancelled"`.
+  - **`awaiting_children`** (9d): under `_enqueue_lock`, flip the
+    parent to `cancelled` *first* (so the 9c join watcher cannot race
+    a resume — both `cancel_run` and `_maybe_resume_parent` serialise
+    on the same lock), then `_cascade_cancel_runtime` walks descendants
+    depth-first: in-flight ones get a fire-and-forget
+    `cancel_event` + `session.cancel()` (their own `_run.CancelledError`
+    writes the `run_ended`); descendants with no in-memory `_RunState`
+    (queued, or state lost) get DB-finalised in place.
+  - **Orphan**: no in-memory state and DB row not terminal → finalise
+    the row directly so the Cancel button is never a silent no-op
+    (ADR-31 safety net).
+  - `_run` carries a cancelled-before-start guard: a queued descendant
+    whose row was DB-flipped by the cascade exits immediately, so no
+    `iter_started` appears on an already-terminal run.
 - **No usable closing signal.** A clean `agent_end` with no column-0
   closing sentinel (including a fenced/indented one — the matcher is
   line-anchored) *and* a marker-contract violation (`MarkerError`) both
