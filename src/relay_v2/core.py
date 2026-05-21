@@ -108,6 +108,9 @@ class RelayCore:
         # violation). Single-user MVP (ADR-12) makes this rare, but the
         # guard is cheap and the right pattern before Phase 3 wires HTTP.
         self._enqueue_lock = asyncio.Lock()
+        # Fanout concurrency cap (ADR-35, 9b). Initialized in start()
+        # after the event loop exists; None before then.
+        self._fanout_sem: asyncio.Semaphore | None = None
 
     # ── lifecycle ──────────────────────────────────────────────────────
 
@@ -121,6 +124,9 @@ class RelayCore:
         immediately so its connection pool does not leak (ADR-21)."""
         bootstrap_engine = init_db(self._settings)
         bootstrap_engine.dispose()
+        self._fanout_sem = asyncio.Semaphore(
+            self._settings.max_fanout_concurrent
+        )
         await self._recover_orphans()
         self._supervisor = asyncio.create_task(self._supervise())
 
@@ -238,6 +244,117 @@ class RelayCore:
                 {"status": "cancelled", "summary": summary},
             )
 
+    async def _fanout_depth(self, run_id: str) -> int:
+        """Walk the parent_run_id chain and return the depth (0 = root).
+
+        Bounded by ``max_fanout_depth + 1`` hops to guard against a
+        malformed DB cycle.
+        """
+        depth = 0
+        current_id: str | None = run_id
+        cap = self._settings.max_fanout_depth + 2
+        while current_id is not None and depth <= cap:
+            async with self._sm() as s:
+                row = await s.get(Run, current_id)
+            if row is None:
+                break
+            current_id = row.parent_run_id
+            if current_id is not None:
+                depth += 1
+        return depth
+
+    async def _dispatch_children(
+        self,
+        parent_run_id: str,
+        parent_worktree_path: Path | None,
+        fanout_payload: dict[str, Any],
+        iter_id: int | None,
+    ) -> None:
+        """Create N child runs and enqueue them (spec.md §6, 9b).
+
+        Depth bound (ADR-35): raises ``ValueError`` when
+        ``depth(parent) + 1 > max_fanout_depth``.
+        """
+        from relay_v2.harness.signaling.fanout import FanoutPayload
+
+        parent_depth = await self._fanout_depth(parent_run_id)
+        if parent_depth + 1 > self._settings.max_fanout_depth:
+            raise ValueError(
+                f"fanout depth limit: parent {parent_run_id} is at depth "
+                f"{parent_depth}, max_fanout_depth="
+                f"{self._settings.max_fanout_depth}"
+            )
+
+        payload = FanoutPayload.model_validate(fanout_payload)
+
+        async with self._sm() as s:
+            parent_run = await s.get(Run, parent_run_id)
+            if parent_run is None:
+                raise ValueError(f"parent run {parent_run_id} not found")
+            project_id = parent_run.project_id
+
+        async with self._sm() as s:
+            project = await s.get(Project, project_id)
+            if project is None:
+                raise ValueError(f"project {project_id} not found")
+            project_root = Path(project.root_path)
+
+        for child in payload.children:
+            child_run_id = self._new_run_id()
+            wt, branch, run_dir = await provision_workspace(
+                project_root,
+                self._settings.data_dir,
+                child_run_id,
+                parent_worktree_path=parent_worktree_path,
+            )
+            await create_run(
+                self._sm,
+                run_id=child_run_id,
+                project_id=project_id,
+                prompt_body=child.prompt,
+                max_iters=self._settings.max_iters,
+                iter_timeout=self._settings.iter_timeout,
+                worktree_path=str(wt) if wt else None,
+                branch=branch,
+                parent_run_id=parent_run_id,
+            )
+            # subagent_dispatch on the parent stream (spec.md §3.2).
+            await self._store.append(
+                parent_run_id,
+                "subagent_dispatch",
+                {
+                    "child_run_id": child_run_id,
+                    "role": child.role,
+                    "prompt": child.prompt,
+                },
+                iter_id=iter_id,
+            )
+            # run_started on the child's own stream.
+            await self._store.append(
+                child_run_id,
+                "run_started",
+                {
+                    "project_id": project_id,
+                    "prompt_body": child.prompt,
+                    "max_iters": self._settings.max_iters,
+                },
+            )
+            self._runs[child_run_id] = _RunState()
+            await self._queue.put(
+                RunContext(
+                    run_id=child_run_id,
+                    project_root=project_root,
+                    worktree_path=wt,
+                    run_dir=run_dir,
+                    max_iters=self._settings.max_iters,
+                    iter_timeout=self._settings.iter_timeout,
+                    start_seq=0,
+                    phase=None,
+                    body=child.prompt,
+                    parent_run_id=parent_run_id,
+                )
+            )
+
     async def aclose(self) -> None:
         if self._supervisor is not None:
             self._supervisor.cancel()
@@ -261,7 +378,20 @@ class RelayCore:
     async def _supervise(self) -> None:
         while True:
             ctx = await self._queue.get()
-            task = asyncio.create_task(self._run(ctx))
+            if ctx.parent_run_id is not None and self._fanout_sem is not None:
+                # Child run: acquire slot before creating the task so at
+                # most max_fanout_concurrent children run concurrently.
+                # The done-callback releases regardless of outcome.
+                await self._fanout_sem.acquire()
+                task = asyncio.create_task(self._run(ctx))
+                sem = self._fanout_sem
+
+                def _release(t: asyncio.Task[None], s: asyncio.Semaphore = sem) -> None:
+                    s.release()
+
+                task.add_done_callback(_release)
+            else:
+                task = asyncio.create_task(self._run(ctx))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
             self._queue.task_done()
@@ -352,6 +482,27 @@ class RelayCore:
                 {"question": result.question or ""},
             )
             return
+        if result.status == "awaiting_children":
+            # Status first so SSE consumers see a consistent state when
+            # the subagent_dispatch events land.
+            await set_run_status(
+                self._sm, ctx.run_id, "awaiting_children", ended=False
+            )
+            # Find the closing iter's id for iter-scoped dispatch events.
+            async with self._sm() as s:
+                closing = await s.scalar(
+                    select(Iter)
+                    .where(Iter.run_id == ctx.run_id)
+                    .order_by(Iter.seq.desc())
+                    .limit(1)
+                )
+            await self._dispatch_children(
+                parent_run_id=ctx.run_id,
+                parent_worktree_path=ctx.worktree_path,
+                fanout_payload=result.fanout_payload or {},
+                iter_id=closing.id if closing else None,
+            )
+            return
         await set_run_status(
             self._sm, ctx.run_id, result.status, ended=True
         )
@@ -374,6 +525,7 @@ class RelayCore:
         *,
         max_iters: int | None = None,
         iter_timeout: int | None = None,
+        parent_run_id: str | None = None,
     ) -> str:
         async with self._sm() as s:
             project = await s.get(Project, project_id)
@@ -396,6 +548,7 @@ class RelayCore:
             iter_timeout=timeout,
             worktree_path=str(wt) if wt else None,
             branch=branch,
+            parent_run_id=parent_run_id,
         )
         await self._store.append(
             run_id,
@@ -415,6 +568,7 @@ class RelayCore:
                 start_seq=0,
                 phase=None,
                 body=prompt_body,
+                parent_run_id=parent_run_id,
             )
         )
         return run_id

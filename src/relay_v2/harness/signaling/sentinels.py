@@ -16,8 +16,12 @@ operates on that already-isolated text.
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
 
 from relay_v2.harness.protocol import SignalConfig, SignalEmitted
+
+if TYPE_CHECKING:
+    from relay_v2.harness.signaling.fanout import FanoutPayload
 
 __all__ = [
     "MarkerError",
@@ -28,6 +32,7 @@ __all__ = [
     "extract_pause_question",
     "extract_pause_id",
     "extract_phase_start",
+    "extract_fanout_payload",
     "detect_in_text",
 ]
 
@@ -44,6 +49,9 @@ _UNIT_START_RE = re.compile(r"^\[\[engteam:unit-start[ \t]")
 _UNIT_DONE_RE = re.compile(r"^\[\[engteam:unit-done[ \t]")
 _UNIT_ABANDONED_RE = re.compile(r"^\[\[engteam:unit-abandoned[ \t]")
 _BLANK_RE = re.compile(r"^[ \t]*$")
+_FANOUT_RE = re.compile(r"^\[\[engteam:fanout\]\][ \t]*$")
+_FANOUT_START_RE = re.compile(r"^\[\[engteam:fanout-start\]\][ \t]*$")
+_FANOUT_END_RE = re.compile(r"^\[\[engteam:fanout-end\]\][ \t]*$")
 
 
 def _marker_repair_recipe(close: str) -> str:
@@ -90,7 +98,7 @@ def count_closing_sentinels(text: str) -> dict[str, int]:
     """Count line-anchored closing sentinels. The driver bails if the
     total != 1; that policy is the orchestrator's (Phase 2). Here we
     just report the raw counts, exactly as v1's ``grep -c`` did."""
-    done = handoff = pause = 0
+    done = handoff = pause = fanout = 0
     for line in text.split("\n"):
         if _DONE_RE.match(line):
             done += 1
@@ -98,7 +106,9 @@ def count_closing_sentinels(text: str) -> dict[str, int]:
             handoff += 1
         elif _PAUSE_RE.match(line):
             pause += 1
-    return {"done": done, "handoff": handoff, "pause": pause}
+        elif _FANOUT_RE.match(line):
+            fanout += 1
+    return {"done": done, "handoff": handoff, "pause": pause, "fanout": fanout}
 
 
 def _extract_marker_prompt(
@@ -238,6 +248,72 @@ def extract_phase_start(text: str) -> str:
     return last
 
 
+def extract_fanout_payload(text: str) -> FanoutPayload:
+    """Extract and validate the JSON between ``[[engteam:fanout-start]]``
+    and ``[[engteam:fanout-end]]`` in the turn containing ``[[engteam:fanout]]``.
+
+    Raises :class:`MarkerError` when the block is structurally absent.
+    Raises :class:`~relay_v2.harness.signaling.fanout.FanoutParseError`
+    on invalid JSON or a payload that fails ``FanoutPayload`` validation.
+    """
+    import json as _json
+
+    from pydantic import ValidationError
+
+    from relay_v2.harness.signaling.fanout import FanoutParseError, FanoutPayload
+
+    _REPAIR = (
+        "\n[[engteam:fanout]] requires a JSON block between "
+        "[[engteam:fanout-start]] and [[engteam:fanout-end]]:\n\n"
+        "    [[engteam:fanout-start]]\n"
+        '    {"children": [{"role": "...", "prompt": "..."}],\n'
+        '     "join_prompt": "..."}\n'
+        "    [[engteam:fanout-end]]\n\n"
+        "    [[engteam:fanout]]\n\n"
+        "See: skills/engineering-team/references/sentinels.md\n"
+    )
+
+    lines = text.split("\n")
+
+    end_line = 0
+    for i in range(len(lines), 0, -1):
+        if _FANOUT_END_RE.match(lines[i - 1]):
+            end_line = i
+            break
+    if end_line == 0:
+        raise MarkerError(
+            "extract_fanout_payload: no [[engteam:fanout-end]] found",
+            _REPAIR,
+        )
+
+    start_line = 0
+    for i in range(end_line - 1, 0, -1):
+        if _FANOUT_START_RE.match(lines[i - 1]):
+            start_line = i
+            break
+    if start_line == 0:
+        raise MarkerError(
+            "extract_fanout_payload: no [[engteam:fanout-start]] found "
+            "before [[engteam:fanout-end]]",
+            _REPAIR,
+        )
+
+    body = "\n".join(lines[start_line : end_line - 1]).strip()
+    try:
+        raw = _json.loads(body)
+    except _json.JSONDecodeError as exc:
+        raise FanoutParseError(
+            f"fanout payload is not valid JSON: {exc}\n\nBody was:\n{body}"
+        ) from exc
+
+    try:
+        return FanoutPayload.model_validate(raw)
+    except ValidationError as exc:
+        raise FanoutParseError(
+            f"fanout payload failed validation: {exc}"
+        ) from exc
+
+
 def _first_attr(line: str, name: str) -> str:
     m = re.search(rf'{name}="((?:[^"\\]|\\.)*)"', line)
     return m.group(1).replace('\\"', '"') if m else ""
@@ -274,6 +350,14 @@ def detect_in_text(text: str, config: SignalConfig) -> SignalEmitted | None:
                 "question": extract_pause_question(text),
                 "id": extract_pause_id(text),
             },
+        )
+    if counts.get("fanout"):
+        # FanoutParseError and MarkerError propagate to the loop's
+        # _drive_iter catch clause (loop.py — Task 6).
+        payload = extract_fanout_payload(text)
+        return SignalEmitted(
+            kind="fanout",
+            args={"payload": payload.model_dump()},
         )
 
     for line in text.split("\n"):
