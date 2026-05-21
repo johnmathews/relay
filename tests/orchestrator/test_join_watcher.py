@@ -15,14 +15,14 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-import pytest  # noqa: F401  (used by Tasks 4/5 in same file)
-from sqlalchemy import create_engine, select  # noqa: F401  (Tasks 4/5)
-from sqlalchemy.orm import Session  # noqa: F401  (Tasks 4/5)
+import pytest  # noqa: F401  (used by Task 5 in same file)
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
 
 from relay_v2.config import Settings
 from relay_v2.core import RelayCore
 from relay_v2.db import init_db
-from relay_v2.db.models import (  # noqa: F401  (Iter/Project used in 4/5)
+from relay_v2.db.models import (  # noqa: F401  (Iter/Project used in 5)
     Event,
     Iter,
     Project,
@@ -202,3 +202,103 @@ def test_collect_child_results_includes_all_children(tmp_path: Path) -> None:
     returned_ids = asyncio.run(scenario())
     assert len(returned_ids) == 3
     assert len(set(returned_ids)) == 3  # no duplicates
+
+
+def test_maybe_resume_parent_no_op_when_parent_not_awaiting(
+    tmp_path: Path,
+) -> None:
+    """Cascade-cancelled / already-resumed parent: watcher returns
+    silently, emits no events, enqueues nothing.
+    """
+    settings = _settings(tmp_path)
+
+    async def scenario() -> tuple[str, int]:
+        core = RelayCore(settings, harness=ScriptedHarness([]))
+        init_db(settings).dispose()
+        try:
+            parent_id, _ = await _seed_fanout_state(
+                core, tmp_path,
+                child_statuses=["done", "done"],
+            )
+            # Flip parent off awaiting_children (simulate cascade-cancel
+            # or an already-fired watcher).
+            await set_run_status(core._sm, parent_id, "cancelled",
+                                 ended=True)
+            qsize_before = core._queue.qsize()
+            await core._maybe_resume_parent(parent_id)
+            qsize_after = core._queue.qsize()
+            return parent_id, qsize_after - qsize_before
+        finally:
+            await core._engine.dispose()
+
+    parent_id, qsize_delta = asyncio.run(scenario())
+    assert qsize_delta == 0
+
+    engine = create_engine(settings.db_url)
+    try:
+        with Session(engine) as s:
+            kinds = [
+                e.kind for e in s.scalars(
+                    select(Event).where(Event.run_id == parent_id)
+                )
+            ]
+            assert "subagent_return" not in kinds
+            assert "child_runs_resolved" not in kinds
+    finally:
+        engine.dispose()
+
+
+def test_maybe_resume_parent_no_op_when_some_children_still_running(
+    tmp_path: Path,
+) -> None:
+    """Watcher must NOT resume if any sibling is still non-terminal."""
+    settings = _settings(tmp_path)
+
+    async def scenario() -> tuple[str, int]:
+        core = RelayCore(settings, harness=ScriptedHarness([]))
+        init_db(settings).dispose()
+        try:
+            parent_id, child_ids = await _seed_fanout_state(
+                core, tmp_path,
+                child_statuses=["done", "running"],
+            )
+            qsize_before = core._queue.qsize()
+            await core._maybe_resume_parent(parent_id)
+            return parent_id, core._queue.qsize() - qsize_before
+        finally:
+            await core._engine.dispose()
+
+    parent_id, qsize_delta = asyncio.run(scenario())
+    assert qsize_delta == 0
+
+    engine = create_engine(settings.db_url)
+    try:
+        with Session(engine) as s:
+            parent = s.get(Run, parent_id)
+            assert parent is not None
+            assert parent.status == "awaiting_children"
+            assert "subagent_return" not in {
+                e.kind for e in s.scalars(
+                    select(Event).where(Event.run_id == parent_id)
+                )
+            }
+    finally:
+        engine.dispose()
+
+
+def test_maybe_resume_parent_no_op_when_parent_unknown(
+    tmp_path: Path,
+) -> None:
+    """Unknown parent id — never raises."""
+    settings = _settings(tmp_path)
+
+    async def scenario() -> None:
+        core = RelayCore(settings, harness=ScriptedHarness([]))
+        init_db(settings).dispose()
+        try:
+            # Should be a silent no-op, not a raise.
+            await core._maybe_resume_parent("does-not-exist")
+        finally:
+            await core._engine.dispose()
+
+    asyncio.run(scenario())

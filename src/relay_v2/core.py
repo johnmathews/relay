@@ -422,6 +422,44 @@ class RelayCore:
             })
         return results
 
+    async def _maybe_resume_parent(self, parent_run_id: str) -> None:
+        """If ``parent_run_id`` is in ``awaiting_children`` AND all its
+        children have reached a terminal status, emit one
+        ``subagent_return`` per child + one ``child_runs_resolved``,
+        transition the parent to ``running``, and re-enqueue it with a
+        synthesizer ``RunContext`` (9c).
+
+        No-op (silent) when:
+        - the parent row is unknown,
+        - the parent status is not ``awaiting_children`` (already
+          resumed, cascade-cancelled by 9d/restart, or never awaiting),
+        - any child is still non-terminal.
+
+        The single-user MVP ``_enqueue_lock`` (already serialising
+        ``resume_run``'s look-then-decide-then-enqueue) is reused so
+        two near-simultaneous child terminals can't both resume the
+        parent.
+        """
+        terminal = ("done", "failed", "cancelled")
+        async with self._enqueue_lock:
+            async with self._sm() as s:
+                parent = await s.get(Run, parent_run_id)
+                if parent is None or parent.status != "awaiting_children":
+                    return
+                children = list(
+                    await s.scalars(
+                        select(Run).where(
+                            Run.parent_run_id == parent_run_id
+                        )
+                    )
+                )
+            if not children:
+                return
+            if any(c.status not in terminal for c in children):
+                return
+            # Happy path lands in Task 5.
+            return
+
     async def aclose(self) -> None:
         if self._supervisor is not None:
             self._supervisor.cancel()
