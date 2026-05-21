@@ -1032,6 +1032,21 @@ class RelayCore:
                 stmt = stmt.where(Run.project_id == project_id)
             return list(await s.scalars(stmt))
 
+    async def list_children(self, parent_run_id: str) -> list[Run]:
+        """Direct children of ``parent_run_id``, ordered by started_at asc.
+
+        Returns ``[]`` for a parent that never fanned out. Does NOT walk
+        grandchildren — the dashboard pane (spec.md §9.1, 9e) renders one row
+        per direct child only. A nested-tree view is a future enhancement.
+        """
+        async with self._sm() as s:
+            stmt = (
+                select(Run)
+                .where(Run.parent_run_id == parent_run_id)
+                .order_by(Run.started_at.asc())
+            )
+            return list(await s.scalars(stmt))
+
     async def get_run(self, run_id: str) -> Run | None:
         return await load_run(self._sm, run_id)
 
