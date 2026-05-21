@@ -125,7 +125,8 @@ class RelayCore:
         self._supervisor = asyncio.create_task(self._supervise())
 
     async def _recover_orphans(self) -> None:
-        """Finalise any 'running' row from a prior process (ADR-31).
+        """Finalise any pre-existing in-flight run from a prior process
+        (ADR-31, ADR-32, ADR-34).
 
         Single-user, single-process MVP (ADR-12): if a row is 'running'
         at startup it cannot be owned by any in-process task — the
@@ -137,12 +138,52 @@ class RelayCore:
         a clear summary and the closing ``run_ended`` so consumers
         see a terminal state. 'paused' rows are NOT swept — they can
         legitimately be resumed across a restart (``resume_run``
-        rebuilds the loop from DB state)."""
+        rebuilds the loop from DB state).
+
+        ``awaiting_children`` rows are swept under the S1 convention
+        (ADR-34, 9a): cancel the parent AND cascade-cancel its
+        descendants. Recovering an in-flight fanout across a restart
+        is a deliberate V1 non-goal — once the parent's in-memory
+        watcher is gone, the children would have no consumer for
+        their ``subagent_return`` events and the parent would never
+        receive its synthesizer iter. Tear the whole subtree down.
+
+        Order matters: cascade-from-awaiting-parents FIRST, then sweep
+        the remaining ``running`` rows. A child of an awaiting parent
+        is itself ``running`` and would otherwise be matched by both
+        passes — the cascade gives it the more-specific
+        "parent interrupted during fanout" summary; the second pass
+        must skip the rows it already finalised."""
         async with self._sm() as s:
-            rows = list(
+            awaiting = list(
+                await s.scalars(
+                    select(Run).where(Run.status == "awaiting_children")
+                )
+            )
+        for parent in awaiting:
+            await self._cascade_cancel_descendants(
+                parent.id,
+                summary="orphaned: parent interrupted during fanout",
+                _visited={parent.id},
+            )
+            await set_run_status(
+                self._sm, parent.id, "cancelled", ended=True
+            )
+            await self._store.append(
+                parent.id,
+                "run_ended",
+                {"status": "cancelled",
+                 "summary": "orphaned: server restart"},
+            )
+
+        # Pass 2: stuck `running` rows from a prior process whose
+        # owning task is gone (ADR-32). Re-query so a row finalised by
+        # the cascade above is no longer in the set.
+        async with self._sm() as s:
+            running = list(
                 await s.scalars(select(Run).where(Run.status == "running"))
             )
-        for run in rows:
+        for run in running:
             await set_run_status(
                 self._sm, run.id, "cancelled", ended=True
             )
@@ -151,6 +192,50 @@ class RelayCore:
                 "run_ended",
                 {"status": "cancelled",
                  "summary": "orphaned: server restart"},
+            )
+
+    async def _cascade_cancel_descendants(
+        self, parent_run_id: str, *, summary: str,
+        _visited: set[str] | None = None,
+    ) -> None:
+        """Cancel every non-terminal run descended from ``parent_run_id``.
+
+        Used by orphan recovery on startup (ADR-34, 9a) and reserved
+        for the runtime cancel-cascade in 9d. Depth-first so a child's
+        children resolve before the child itself: a parent cannot
+        observe a half-finished subtree mid-cascade. Skips children
+        already in a terminal status (no duplicate ``run_ended`` event).
+
+        ``_visited`` is an internal cycle guard threaded through the
+        recursion. Production code paths cannot create a cycle (a row's
+        ``parent_run_id`` is set once at child-run creation in 9b), but
+        a malformed DB — including a self-cycle written by a test or by
+        a manual SQL edit — must not loop forever. Seed it with the
+        starting parent at the top-level call site so the first recursion
+        cannot revisit the root.
+        """
+        terminal = ("done", "failed", "cancelled")
+        visited = _visited if _visited is not None else set()
+        async with self._sm() as s:
+            children = list(
+                await s.scalars(
+                    select(Run).where(Run.parent_run_id == parent_run_id)
+                )
+            )
+        for child in children:
+            if child.id in visited:
+                continue
+            if child.status in terminal:
+                continue
+            visited.add(child.id)
+            await self._cascade_cancel_descendants(
+                child.id, summary=summary, _visited=visited
+            )
+            await set_run_status(self._sm, child.id, "cancelled", ended=True)
+            await self._store.append(
+                child.id,
+                "run_ended",
+                {"status": "cancelled", "summary": summary},
             )
 
     async def aclose(self) -> None:

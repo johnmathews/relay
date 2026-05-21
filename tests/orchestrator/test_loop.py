@@ -717,3 +717,354 @@ def test_aclose_cancels_in_flight_run(tmp_path: Path) -> None:
     with _read(settings) as s:
         run = s.get(Run, run_id)
         assert run is not None and run.status == "cancelled"
+
+
+# ── ADR-34 / 9a — awaiting_children orphan recovery + cascade ─────────
+
+
+def _seed_run(
+    settings: Settings,
+    *,
+    run_id: str,
+    project_id: int,
+    status: str,
+    parent_run_id: str | None = None,
+    body: str = "stuck",
+) -> None:
+    """Insert a ``runs`` row directly via SQL — the same pattern the
+    pre-existing orphan tests use, lifted into a helper because the
+    cascade tests need to seed parent + several children per run."""
+    engine = create_engine(settings.db_url)
+    try:
+        with Session(engine) as s:
+            s.execute(
+                text(
+                    "INSERT INTO runs (id, project_id, prompt_body, "
+                    "user_id, status, max_iters, iter_timeout, "
+                    "parent_run_id) VALUES "
+                    "(:id, :pid, :body, 1, :status, 5, 600, :parent)"
+                ),
+                {
+                    "id": run_id,
+                    "pid": project_id,
+                    "body": body,
+                    "status": status,
+                    "parent": parent_run_id,
+                },
+            )
+            s.commit()
+    finally:
+        engine.dispose()
+
+
+def test_recover_orphans_sweeps_awaiting_children(tmp_path: Path) -> None:
+    """ADR-34 / 9a: an `awaiting_children` row from a prior process is
+    finalised the same way a `running` orphan is — `cancelled` + a
+    `run_ended` summary `"orphaned: server restart"`."""
+    settings = _settings(tmp_path)
+
+    async def scenario() -> str:
+        core1 = RelayCore(
+            settings, harness=ScriptedHarness([TextScript(DONE_BLOCK)])
+        )
+        await core1.start()
+        pid = await core1.register_project(tmp_path, "p")
+        await core1.aclose()
+        _seed_run(
+            settings,
+            run_id="parent-aw",
+            project_id=pid,
+            status="awaiting_children",
+        )
+
+        # Fresh process: the sweep must finalise the awaiting parent.
+        core2 = RelayCore(
+            settings, harness=ScriptedHarness([TextScript(DONE_BLOCK)])
+        )
+        await core2.start()
+        await core2.aclose()
+        return "parent-aw"
+
+    run_id = asyncio.run(scenario())
+    with _read(settings) as s:
+        run = s.get(Run, run_id)
+        assert run is not None
+        assert run.status == "cancelled"
+        assert run.ended_at is not None
+        events = list(
+            s.scalars(
+                select(Event).where(Event.run_id == run_id)
+                .order_by(Event.seq)
+            )
+        )
+        assert [e.kind for e in events] == ["run_ended"]
+        assert events[0].payload["status"] == "cancelled"
+        assert events[0].payload["summary"] == "orphaned: server restart"
+
+
+def test_recover_orphans_cascades_to_children(tmp_path: Path) -> None:
+    """ADR-34 / 9a: a parent in `awaiting_children` is cancelled AND
+    each running child gets its own `run_ended` carrying the cascade
+    summary `"orphaned: parent interrupted during fanout"`."""
+    settings = _settings(tmp_path)
+
+    async def scenario() -> tuple[str, str, str]:
+        core1 = RelayCore(
+            settings, harness=ScriptedHarness([TextScript(DONE_BLOCK)])
+        )
+        await core1.start()
+        pid = await core1.register_project(tmp_path, "p")
+        await core1.aclose()
+        _seed_run(
+            settings,
+            run_id="parent-aw",
+            project_id=pid,
+            status="awaiting_children",
+        )
+        _seed_run(
+            settings,
+            run_id="child-a",
+            project_id=pid,
+            status="running",
+            parent_run_id="parent-aw",
+        )
+        _seed_run(
+            settings,
+            run_id="child-b",
+            project_id=pid,
+            status="running",
+            parent_run_id="parent-aw",
+        )
+
+        core2 = RelayCore(
+            settings, harness=ScriptedHarness([TextScript(DONE_BLOCK)])
+        )
+        await core2.start()
+        await core2.aclose()
+        return ("parent-aw", "child-a", "child-b")
+
+    parent_id, a_id, b_id = asyncio.run(scenario())
+    with _read(settings) as s:
+        for rid in (parent_id, a_id, b_id):
+            row = s.get(Run, rid)
+            assert row is not None
+            assert row.status == "cancelled"
+            assert row.ended_at is not None
+        # Children carry the cascade summary; parent carries the
+        # startup-sweep summary (distinct strings so an operator can
+        # tell the boundary apart in the timeline).
+        for rid in (a_id, b_id):
+            ev = list(
+                s.scalars(
+                    select(Event).where(Event.run_id == rid)
+                    .order_by(Event.seq)
+                )
+            )
+            assert [e.kind for e in ev] == ["run_ended"]
+            assert ev[0].payload["status"] == "cancelled"
+            assert (
+                ev[0].payload["summary"]
+                == "orphaned: parent interrupted during fanout"
+            )
+        pev = list(
+            s.scalars(
+                select(Event).where(Event.run_id == parent_id)
+                .order_by(Event.seq)
+            )
+        )
+        assert pev[-1].payload["summary"] == "orphaned: server restart"
+
+
+def test_recover_orphans_cascades_recursively(tmp_path: Path) -> None:
+    """ADR-34 / 9a: the cascade is depth-first. A parent →
+    awaiting-child → running-grandchild chain finalises the
+    grandchild before the child, and the child before the parent
+    (event-store ordering preserves the depth-first invariant)."""
+    settings = _settings(tmp_path)
+
+    async def scenario() -> tuple[str, str, str]:
+        core1 = RelayCore(
+            settings, harness=ScriptedHarness([TextScript(DONE_BLOCK)])
+        )
+        await core1.start()
+        pid = await core1.register_project(tmp_path, "p")
+        await core1.aclose()
+        _seed_run(
+            settings,
+            run_id="gp",
+            project_id=pid,
+            status="awaiting_children",
+        )
+        _seed_run(
+            settings,
+            run_id="p",
+            project_id=pid,
+            status="awaiting_children",
+            parent_run_id="gp",
+        )
+        _seed_run(
+            settings,
+            run_id="c",
+            project_id=pid,
+            status="running",
+            parent_run_id="p",
+        )
+
+        core2 = RelayCore(
+            settings, harness=ScriptedHarness([TextScript(DONE_BLOCK)])
+        )
+        await core2.start()
+        await core2.aclose()
+        return ("gp", "p", "c")
+
+    gp, p, c = asyncio.run(scenario())
+    with _read(settings) as s:
+        # All three finalised cancelled.
+        for rid in (gp, p, c):
+            row = s.get(Run, rid)
+            assert row is not None and row.status == "cancelled"
+        # Depth-first: the grandchild's run_ended must have been
+        # appended before the child's, and the child's before the
+        # grandparent's. The events.id column is a monotonic
+        # AUTOINCREMENT across the whole table — comparing the
+        # closing-event ids captures emission order globally.
+        def _ended_id(rid: str) -> int:
+            ev = s.scalar(
+                select(Event.id).where(
+                    Event.run_id == rid, Event.kind == "run_ended"
+                )
+            )
+            assert ev is not None
+            return int(ev)
+
+        assert _ended_id(c) < _ended_id(p) < _ended_id(gp)
+
+
+def test_cascade_skips_already_terminal_children(tmp_path: Path) -> None:
+    """ADR-34 / 9a: a child already in a terminal status (done /
+    failed / cancelled) is left alone — no second ``run_ended`` is
+    appended. Only the live siblings + the parent are finalised."""
+    settings = _settings(tmp_path)
+
+    async def scenario() -> tuple[str, str, str]:
+        core1 = RelayCore(
+            settings, harness=ScriptedHarness([TextScript(DONE_BLOCK)])
+        )
+        await core1.start()
+        pid = await core1.register_project(tmp_path, "p")
+        await core1.aclose()
+        _seed_run(
+            settings,
+            run_id="parent-aw",
+            project_id=pid,
+            status="awaiting_children",
+        )
+        _seed_run(
+            settings,
+            run_id="child-done",
+            project_id=pid,
+            status="done",
+            parent_run_id="parent-aw",
+        )
+        _seed_run(
+            settings,
+            run_id="child-live",
+            project_id=pid,
+            status="running",
+            parent_run_id="parent-aw",
+        )
+        # Pretend the done child already wrote its own run_ended.
+        engine = create_engine(settings.db_url)
+        try:
+            with Session(engine) as s:
+                s.execute(
+                    text(
+                        "INSERT INTO events "
+                        "(run_id, seq, kind, payload) VALUES "
+                        "('child-done', 1, 'run_ended', "
+                        "'{\"status\": \"done\", "
+                        "\"summary\": \"all good\"}')"
+                    )
+                )
+                s.commit()
+        finally:
+            engine.dispose()
+
+        core2 = RelayCore(
+            settings, harness=ScriptedHarness([TextScript(DONE_BLOCK)])
+        )
+        await core2.start()
+        await core2.aclose()
+        return ("parent-aw", "child-done", "child-live")
+
+    parent_id, done_id, live_id = asyncio.run(scenario())
+    with _read(settings) as s:
+        # Done child: status preserved, no second run_ended appended.
+        done = s.get(Run, done_id)
+        assert done is not None and done.status == "done"
+        done_events = list(
+            s.scalars(
+                select(Event).where(Event.run_id == done_id)
+                .order_by(Event.seq)
+            )
+        )
+        assert [e.kind for e in done_events] == ["run_ended"]
+        assert done_events[0].payload["status"] == "done"
+        # Live child: cancelled with the cascade summary.
+        live = s.get(Run, live_id)
+        assert live is not None and live.status == "cancelled"
+        live_events = list(
+            s.scalars(
+                select(Event).where(Event.run_id == live_id)
+                .order_by(Event.seq)
+            )
+        )
+        assert [e.kind for e in live_events] == ["run_ended"]
+        assert (
+            live_events[0].payload["summary"]
+            == "orphaned: parent interrupted during fanout"
+        )
+        # Parent finalised.
+        parent = s.get(Run, parent_id)
+        assert parent is not None and parent.status == "cancelled"
+
+
+def test_cascade_handles_cycle_safely(tmp_path: Path) -> None:
+    """ADR-34 / 9a: a self-referential or cyclic parent_run_id (only
+    reachable via malformed DB seeding) must not loop forever. The
+    early-return on terminal status terminates the recursion as soon
+    as the first node is finalised."""
+    settings = _settings(tmp_path)
+
+    async def scenario() -> str:
+        core1 = RelayCore(
+            settings, harness=ScriptedHarness([TextScript(DONE_BLOCK)])
+        )
+        await core1.start()
+        pid = await core1.register_project(tmp_path, "p")
+        await core1.aclose()
+        # Self-cycle: an awaiting_children row that names itself as
+        # its own parent. The sweep visits it once (via the status
+        # query), recurses, finds the same row, finds it (eventually)
+        # terminal after the first cancel append, and stops.
+        _seed_run(
+            settings,
+            run_id="loop",
+            project_id=pid,
+            status="awaiting_children",
+            parent_run_id="loop",
+        )
+
+        core2 = RelayCore(
+            settings, harness=ScriptedHarness([TextScript(DONE_BLOCK)])
+        )
+        # If the recursion did not terminate this hangs the event loop
+        # — wait_for is the load-bearing assertion.
+        await asyncio.wait_for(core2.start(), timeout=5)
+        await core2.aclose()
+        return "loop"
+
+    run_id = asyncio.run(scenario())
+    with _read(settings) as s:
+        row = s.get(Run, run_id)
+        assert row is not None and row.status == "cancelled"
