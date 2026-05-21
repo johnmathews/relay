@@ -10,16 +10,23 @@ All scripted, no pi.
 """
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
 
 from relay_v2.config import Settings
 from relay_v2.core import RelayCore, _RunState
+from relay_v2.db import init_db
+from relay_v2.db.models import Event, Run
 from relay_v2.orchestrator.lifecycle import (
     close_iter,
     create_run,
     open_iter,
     set_run_status,
 )
+from tests.orchestrator.scripted_harness import ScriptedHarness
 
 
 def _settings(tmp_path: Path) -> Settings:
@@ -97,3 +104,120 @@ async def _seed_awaiting_parent(
             core._runs[cid] = _RunState()
         child_ids.append(cid)
     return parent_id, child_ids
+
+
+def test_cascade_cancel_runtime_signals_in_flight_children(
+    tmp_path: Path,
+) -> None:
+    """Two running children with in-memory _RunState: cascade sets each
+    cancel_event but does NOT pre-write the DB (let the _run task's
+    CancelledError branch own that)."""
+    settings = _settings(tmp_path)
+
+    async def scenario() -> tuple[str, list[str]]:
+        core = RelayCore(settings, harness=ScriptedHarness([]))
+        init_db(settings).dispose()
+        try:
+            parent_id, child_ids = await _seed_awaiting_parent(
+                core, tmp_path, n_children=2,
+            )
+            await core._cascade_cancel_runtime(
+                parent_id, summary="parent cancelled"
+            )
+            return parent_id, child_ids
+        finally:
+            await core._engine.dispose()
+
+    parent_id, child_ids = asyncio.run(scenario())
+    engine = create_engine(settings.db_url)
+    try:
+        with Session(engine) as s:
+            for cid in child_ids:
+                child = s.get(Run, cid)
+                assert child is not None
+                assert child.status == "running", (
+                    f"in-flight child {cid} should NOT be DB-finalised "
+                    f"by the cascade; got {child.status}"
+                )
+                kinds = [
+                    e.kind for e in s.scalars(
+                        select(Event).where(Event.run_id == cid)
+                    )
+                ]
+                assert "run_ended" not in kinds
+    finally:
+        engine.dispose()
+
+
+def test_cascade_cancel_runtime_db_finalises_orphan_children(
+    tmp_path: Path,
+) -> None:
+    """Children with no in-memory state get DB-finalised by the cascade
+    (the queued-but-not-started case, plus the lost-_RunState case)."""
+    settings = _settings(tmp_path)
+
+    async def scenario() -> tuple[str, list[str]]:
+        core = RelayCore(settings, harness=ScriptedHarness([]))
+        init_db(settings).dispose()
+        try:
+            parent_id, child_ids = await _seed_awaiting_parent(
+                core, tmp_path, n_children=2,
+                install_in_memory_state=False,
+            )
+            await core._cascade_cancel_runtime(
+                parent_id, summary="parent cancelled"
+            )
+            return parent_id, child_ids
+        finally:
+            await core._engine.dispose()
+
+    parent_id, child_ids = asyncio.run(scenario())
+    engine = create_engine(settings.db_url)
+    try:
+        with Session(engine) as s:
+            for cid in child_ids:
+                child = s.get(Run, cid)
+                assert child is not None
+                assert child.status == "cancelled"
+                assert child.ended_at is not None
+                ended = list(
+                    s.scalars(
+                        select(Event).where(
+                            Event.run_id == cid,
+                            Event.kind == "run_ended",
+                        )
+                    )
+                )
+                assert len(ended) == 1
+                assert ended[0].payload["summary"] == "parent cancelled"
+    finally:
+        engine.dispose()
+
+
+def test_cascade_cancel_runtime_signals_in_memory_state(
+    tmp_path: Path,
+) -> None:
+    """White-box: confirm the cancel_event is actually set on each
+    in-memory child state."""
+    settings = _settings(tmp_path)
+
+    cancel_events_set: list[bool] = []
+
+    async def scenario() -> None:
+        core = RelayCore(settings, harness=ScriptedHarness([]))
+        init_db(settings).dispose()
+        try:
+            parent_id, child_ids = await _seed_awaiting_parent(
+                core, tmp_path, n_children=3,
+            )
+            await core._cascade_cancel_runtime(
+                parent_id, summary="parent cancelled"
+            )
+            for cid in child_ids:
+                state = core._runs[cid]
+                cancel_events_set.append(state.cancel_event.is_set())
+        finally:
+            await core._engine.dispose()
+
+    asyncio.run(scenario())
+    assert cancel_events_set == [True, True, True]

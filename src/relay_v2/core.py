@@ -246,6 +246,65 @@ class RelayCore:
                 {"status": "cancelled", "summary": summary},
             )
 
+    async def _cascade_cancel_runtime(
+        self, parent_run_id: str, *, summary: str,
+        _visited: set[str] | None = None,
+    ) -> None:
+        """Runtime cancel-cascade: signal in-flight descendants and
+        DB-finalise the rest (9d).
+
+        Sibling of :meth:`_cascade_cancel_descendants` (the DB-only
+        startup variant, ADR-34) — kept distinct because at runtime we
+        must NOT pre-finalise a row whose ``_run`` task is alive (that
+        would race the task's own CancelledError finalisation and
+        double-emit ``run_ended``). Per-descendant strategy:
+
+        - ``self._runs[id]`` exists and ``not settled.is_set()``: set
+          ``cancel_event`` + cancel the harness session. The ``_run``
+          task's CancelledError branch owns the DB write.
+        - otherwise (no in-memory state, or state already settled):
+          write ``set_run_status(cancelled, ended=True)`` + ``run_ended``
+          via the same path as :meth:`_cascade_cancel_descendants`.
+
+        Depth-first: a grandchild settles before its parent, so the
+        intermediate parent observes a fully-cancelled subtree.
+        """
+        terminal = ("done", "failed", "cancelled")
+        visited = _visited if _visited is not None else set()
+        async with self._sm() as s:
+            children = list(
+                await s.scalars(
+                    select(Run).where(Run.parent_run_id == parent_run_id)
+                )
+            )
+        for child in children:
+            if child.id in visited:
+                continue
+            if child.status in terminal:
+                continue
+            visited.add(child.id)
+            # Recurse first so grandchildren settle before the child.
+            await self._cascade_cancel_runtime(
+                child.id, summary=summary, _visited=visited
+            )
+            state = self._runs.get(child.id)
+            if state is not None and not state.settled.is_set():
+                # In-flight: signal and let _run finalise.
+                state.cancel_event.set()
+                session = state.session_handle.session
+                if session is not None:
+                    await session.cancel()
+            else:
+                # DB-only: queued, lost state, or already settled.
+                await set_run_status(
+                    self._sm, child.id, "cancelled", ended=True
+                )
+                await self._store.append(
+                    child.id,
+                    "run_ended",
+                    {"status": "cancelled", "summary": summary},
+                )
+
     async def _fanout_depth(self, run_id: str) -> int:
         """Walk the parent_run_id chain and return the depth (0 = root).
 
