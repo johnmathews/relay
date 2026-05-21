@@ -23,6 +23,35 @@ def test_skill_source_dir_resolves_to_real_tree() -> None:
     assert (src / "references" / "sentinels.md").is_file()
 
 
+def test_default_harness_is_pi() -> None:
+    """The no-argument call resolves to the pi variant directory (ADR-33)."""
+    src = mod.skill_source_dir()
+    assert src.name == "pi"
+    assert src.parent.name == mod.SKILL_NAME
+
+
+def test_explicit_harness_pi_matches_default() -> None:
+    assert mod.skill_source_dir(harness="pi") == mod.skill_source_dir()
+
+
+def test_unknown_harness_errors_with_available_variants() -> None:
+    with pytest.raises(FileNotFoundError, match=r"pi") as exc:
+        mod.skill_source_dir(harness="claude-code")
+    assert "claude-code" in str(exc.value)
+
+
+def test_install_includes_parent_readme(tmp_path: Path) -> None:
+    """The variant-selector README at skills/<name>/README.md is copied
+    into the install target alongside the variant contents."""
+    target, _ = mod.install_skill(project=tmp_path, force=False)
+    parent_readme = mod.skill_source_dir().parent / "README.md"
+    if not parent_readme.is_file():
+        pytest.skip("variant-selector README not bundled in this build")
+    installed = target / "README.md"
+    assert installed.is_file()
+    assert installed.read_bytes() == parent_readme.read_bytes()
+
+
 def test_install_to_project_copies_full_tree(tmp_path: Path) -> None:
     target, backup = mod.install_skill(project=tmp_path, force=False)
     assert backup is None
@@ -93,3 +122,23 @@ def test_parser_wires_install_skill_flags() -> None:
     assert ns.command == "install-skill"
     assert ns.project == "/tmp/x"
     assert ns.force is True
+    # --harness defaults to pi when omitted (ADR-33).
+    assert ns.harness == "pi"
+
+
+def test_parser_accepts_explicit_harness_flag() -> None:
+    ns = build_parser().parse_args(["install-skill", "--harness", "pi"])
+    assert ns.harness == "pi"
+
+
+def test_main_unknown_harness_exits_nonzero(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    parser = build_parser()
+    ns = parser.parse_args(
+        ["install-skill", "--project", str(tmp_path), "--harness", "claude-code"]
+    )
+    assert mod.main(ns) == 1
+    out = capsys.readouterr().out
+    assert "claude-code" in out
+    assert "pi" in out

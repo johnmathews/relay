@@ -34,23 +34,49 @@ __all__ = ["SKILL_NAME", "skill_source_dir", "install_skill", "main"]
 SKILL_NAME = "engineering-team"
 
 
-def skill_source_dir() -> Path:
-    """Locate the bundled skill tree (the ``pi`` variant directory).
+def _bundle_root() -> tuple[Path, Path]:
+    """Return ``(packaged_root, source_root)`` for the bundled skills/<name> dir.
 
-    Packaged (wheel, force-include) location is preferred; the repo-root
-    source layout is the fallback for editable/source installs. Raises
-    :class:`FileNotFoundError` if neither exists (the skill must always
-    ship with the package).
+    The two candidates correspond to the wheel-installed location and the
+    repo-root editable layout respectively. Either may not exist depending
+    on install mode; resolvers below pick whichever is present.
     """
     pkg_root = Path(__file__).resolve().parent.parent  # …/relay_v2
-    packaged = pkg_root / "skills" / SKILL_NAME / "pi"
-    if packaged.is_dir():
-        return packaged
     # parents: [0]=cli [1]=relay_v2 [2]=src [3]=<repo root>
     repo_root = Path(__file__).resolve().parents[3]
-    source = repo_root / "skills" / SKILL_NAME / "pi"
+    return pkg_root / "skills" / SKILL_NAME, repo_root / "skills" / SKILL_NAME
+
+
+def _available_variants() -> list[str]:
+    """Discover the harness variants shipped with this build, for error messages."""
+    for base in _bundle_root():
+        if base.is_dir():
+            return sorted(p.name for p in base.iterdir() if p.is_dir())
+    return []
+
+
+def skill_source_dir(harness: str = "pi") -> Path:
+    """Locate the bundled skill variant tree.
+
+    ``harness`` selects the per-harness subdirectory (today only ``pi``).
+    Packaged (wheel, force-include) location is preferred; the repo-root
+    source layout is the fallback for editable/source installs. Raises
+    :class:`FileNotFoundError` if the named variant is not present,
+    listing the available variants when the bundle itself exists.
+    """
+    packaged_root, source_root = _bundle_root()
+    packaged = packaged_root / harness
+    if packaged.is_dir():
+        return packaged
+    source = source_root / harness
     if source.is_dir():
         return source
+    variants = _available_variants()
+    if variants:
+        raise FileNotFoundError(
+            f"skill variant {SKILL_NAME}/{harness!r} not found. "
+            f"Available variants: {variants}"
+        )
     raise FileNotFoundError(
         f"bundled skill {SKILL_NAME!r} not found "
         f"(looked in {packaged} and {source})"
@@ -63,14 +89,20 @@ def _target_dir(project: Path | None) -> Path:
 
 
 def install_skill(
-    *, project: Path | None = None, force: bool = False
+    *, project: Path | None = None, force: bool = False, harness: str = "pi"
 ) -> tuple[Path, Path | None]:
-    """Copy the bundled skill to the target skills directory.
+    """Copy the bundled skill variant to the target skills directory.
 
     Returns ``(target_dir, backup_dir_or_None)``. Raises
-    :class:`FileExistsError` if the target exists and ``force`` is False.
+    :class:`FileExistsError` if the target exists and ``force`` is False,
+    or :class:`FileNotFoundError` if the named variant is not bundled.
+    The variant-selector README (``skills/<name>/README.md``, one level
+    above the variant dir) is also copied into the target so humans
+    inspecting the install can see the variant model — agents never load
+    it.
     """
-    src = skill_source_dir()
+    src = skill_source_dir(harness=harness)
+    parent_readme = src.parent / "README.md"  # variant-selector (optional)
     target = _target_dir(project)
     backup: Path | None = None
 
@@ -86,6 +118,8 @@ def install_skill(
 
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(src, target)
+    if parent_readme.is_file():
+        shutil.copy2(parent_readme, target / "README.md")
     return target, backup
 
 
@@ -93,12 +127,14 @@ def main(args: argparse.Namespace) -> int:
     """Entry point for the ``install-skill`` subcommand."""
     project = Path(args.project).expanduser().resolve() if args.project else None
     try:
-        target, backup = install_skill(project=project, force=args.force)
+        target, backup = install_skill(
+            project=project, force=args.force, harness=args.harness
+        )
     except (FileExistsError, FileNotFoundError) as exc:
         print(f"relay install-skill: {exc}")
         return 1
 
     if backup is not None:
         print(f"Backed up existing skill → {backup}")
-    print(f"Installed {SKILL_NAME} skill → {target}")
+    print(f"Installed {SKILL_NAME} skill ({args.harness} variant) → {target}")
     return 0
