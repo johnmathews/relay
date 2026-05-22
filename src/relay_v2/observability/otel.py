@@ -48,6 +48,7 @@ __all__ = [
     "Instrumentation",
     "RunSpan",
     "IterSpan",
+    "IterSpanContext",
     "NoopInstrumentation",
     "OtelInstrumentation",
     "NOOP",
@@ -56,12 +57,20 @@ __all__ = [
     "build_instrumentation",
 ]
 
+# Opaque carrier for an iter's OTel context. The rest of the codebase
+# (loop, RelayCore) round-trips this value without inspecting its real
+# type; only this module knows it is opentelemetry.context.Context.
+IterSpanContext = Any
+
 
 # ── protocols ──────────────────────────────────────────────────────────
 
 
 class IterSpan(Protocol):
     """Per-iter span handle. Tool spans hang off it."""
+
+    @property
+    def context(self) -> IterSpanContext: ...
 
     def record_tool_call(
         self,
@@ -99,6 +108,8 @@ class Instrumentation(Protocol):
 
 
 class _NoopIterSpan:
+    context: IterSpanContext = None  # literal class attribute — no provider, no network
+
     def record_tool_call(self, **_: Any) -> None:
         pass
 
@@ -200,6 +211,11 @@ class _OtelIterSpan:
         self._tracer = tracer
         self._span = span
         self._ctx = ctx  # this iter is the current span → parent of tools
+
+    @property
+    def context(self) -> IterSpanContext:
+        """The OTel Context with this iter span active. Opaque to callers."""
+        return self._ctx
 
     def record_tool_call(
         self,

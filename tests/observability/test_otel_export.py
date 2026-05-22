@@ -34,6 +34,7 @@ from relay_v2.observability import (
     build_instrumentation,
 )
 from relay_v2.observability import otel as otel_mod
+from relay_v2.observability.otel import NOOP_ITER_SPAN, NOOP_RUN_SPAN
 from tests.orchestrator.scripted_harness import EventScript, ScriptedHarness
 
 DONE = "All done.\n\n[[engteam:done]]"
@@ -256,3 +257,45 @@ def test_langfuse_endpoint_and_auth_header(
     )
     expected = base64.b64encode(b"pk-lf-abc:sk-lf-xyz").decode()
     assert captured["headers"]["Authorization"] == f"Basic {expected}"
+
+
+# ── Task 1: IterSpanContext carrier ────────────────────────────────────────
+
+
+def test_noop_iter_span_context_is_none() -> None:
+    """NOOP path: IterSpan.context is None — class attribute, no provider
+    constructed (ADR-29 risk surface)."""
+    with NOOP.run_span("r1") as run_span:
+        with run_span.iter_span(seq=1, phase=None) as iter_span:
+            assert iter_span.context is None
+
+
+def test_otel_iter_span_context_carries_trace_identity() -> None:
+    """OTel path: iter_span.context is non-None and a new span constructed
+    with it as parent has parent.span_id == the iter span's span_id."""
+    exporter = InMemorySpanExporter()
+    otel = OtelInstrumentation(SimpleSpanProcessor(exporter))
+
+    captured_ctx = None
+    iter_span_id = None
+
+    with otel.run_span("r-ctx-test") as run_span:
+        with run_span.iter_span(seq=1, phase=None) as iter_span:
+            captured_ctx = iter_span.context
+            # Peek at the internal span to record its span_id for assertion.
+            # _OtelIterSpan stores the span as self._span.
+            iter_span_id = iter_span._span.get_span_context().span_id  # type: ignore[union-attr]
+
+    # iter_span.context must be non-None on the OTel path.
+    assert captured_ctx is not None
+
+    # Build a child span using the captured context; it must parent to the iter.
+    tracer = otel._tracer  # type: ignore[attr-defined]
+    child = tracer.start_span("test.child", context=captured_ctx)
+    child.end()
+
+    finished = {s.name: s for s in exporter.get_finished_spans()}
+    assert "test.child" in finished
+    child_span = finished["test.child"]
+    assert child_span.parent is not None
+    assert child_span.parent.span_id == iter_span_id
