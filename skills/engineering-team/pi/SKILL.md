@@ -26,15 +26,16 @@ skill is split into a thin router (this file) plus per-phase docs in
 
 > **v2 / single-session note.** This is the relay-v2 port of the
 > engineering-team skill (spec.md §12, ADR-14). In v1 the lead engineer
-> dispatched Task-tool subagents per role. relay-v2's MVP runs **one long
-> session per phase** — the "Engineer N" / "Product Owner" roles below
-> are *analysis lenses you work yourself in sequence*, not agents you
-> spawn. For coarse-grained parallelism across whole investigations,
-> relay grew the `fanout` closing sentinel (Phase 9b; see
-> `references/fanout.md`): one iter dispatches N parallel child runs and
-> the parent resumes with a synthesizer iter once they all settle. Use
-> it when two or more genuinely independent investigations merge cleanly
-> into a single decision; the in-iter lens work below stays sequential.
+> dispatched Task-tool subagents per role. relay-v2 runs
+> **one long session per phase** — the "Engineer N" / "Product Owner"
+> roles below are *analysis lenses you work yourself in sequence*, not
+> agents you spawn. For coarse-grained parallelism across whole
+> investigations, relay grew the `fanout` closing sentinel (Phase 9b;
+> see `references/fanout.md`): one iter dispatches N parallel child
+> runs and the parent resumes with a synthesizer iter once they all
+> settle. Use it when two or more genuinely independent investigations
+> merge cleanly into a single decision; the in-iter lens work below
+> stays sequential.
 
 ## Required reading on every iter
 

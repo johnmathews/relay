@@ -31,6 +31,7 @@ REFERENCES = [
     "references/worktree.md",
     "references/discussion.md",
     "references/general-guidelines.md",
+    "references/fanout.md",
 ]
 
 
@@ -97,8 +98,14 @@ def test_worktree_is_relay_provisioned_not_skill_created() -> None:
 
 
 def test_single_session_adaptation_applied() -> None:
-    """spec §12 / plan risk: no subagent dispatch in MVP."""
-    assert "no subagent dispatch" in _read("SKILL.md")
+    """spec §12: each phase is one long session; coarse-grained
+    parallelism arrived with the Phase-9b ``fanout`` closing sentinel
+    (`references/fanout.md`). The in-iter lens / unit work stays
+    sequential; the v1 ``Launch subagents in parallel`` per-lens pattern
+    is still forbidden."""
+    skill_md = _read("SKILL.md")
+    assert "one long session per phase" in skill_md
+    assert "references/fanout.md" in skill_md
     for rel in ["SKILL.md", *PHASE_DOCS, *REFERENCES]:
         assert "Launch subagents in parallel" not in _read(rel), (
             f"{rel} still has the v1 parallel-subagent dispatch instruction"
