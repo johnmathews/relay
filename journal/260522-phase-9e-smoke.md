@@ -113,7 +113,7 @@ back to one row. Screenshot:
 Covered under (2) and (3). The router never bounced or 404'd; the
 Children pane → child → Parent chip → parent path was clean.
 
-## Incidental observation — not a 9e bug
+## Incidental observation — root-caused and fixed in the same PR
 
 The first time I opened the run-detail view immediately after start, the
 SSE stream errored in the browser console with:
@@ -121,25 +121,34 @@ SSE stream errored in the browser console with:
 > EventSource's response has a MIME type ("text/plain") that is not
 > "text/event-stream". Aborting the connection.
 
-The `/api/events/<id>` endpoint directly via `curl` returns
-`text/event-stream; charset=utf-8` correctly, so this is the Vite dev
-proxy mishandling something — likely the
-"run finished before the EventSource opened" edge case (run 1 finished
-in 15 seconds; pi was unexpectedly fast for this trivial echo prompt).
-The UI showed stale "running" status and "No events yet" until I
-reloaded the page, at which point the now-terminal run took the REST
-replay path (`/api/runs/<id>/events`) and the timeline filled in
-correctly.
+Initial hypothesis was a Vite dev-proxy bug; closer reading of
+`src/relay_v2/api/events.py:198-201` showed the real cause is a
+**backend** defect: when a terminal run has nothing at/after
+`Last-Event-ID`, the handler returns `Response(status_code=204)` —
+FastAPI's bare `Response(204)` defaults to `Content-Type: text/plain`.
+Browsers' `EventSource` validates the response Content-Type *before* the
+status code, so the 204 + text/plain combination triggers a MIME-abort
+instead of a clean end-of-stream (per EventSource spec, 204 should close
+without retry).
 
-**This is not a Phase 9e regression** — the events store and SSE
-contract were unchanged in this phase except for the new
-INVALIDATING_KINDS entries (`subagent_dispatch`, `subagent_return`,
-`child_runs_resolved`), which only affect the cache invalidation path,
-not the EventSource open/MIME-type handling. The same proxy bug would
-manifest for any pre-9e short-running run. Worth investigating
-separately (probably a `vite.config.ts` proxy setting or the
-`changeOrigin` handling of the SSE 200 response with chunked body); not
-a blocker for the 9e PR.
+Manifests only when a short-running run's wrapper reconnects onto the
+empty tail — invisible in the test suite (which had asserted
+`status_code == 204` but never the content-type) and invisible in
+prior phases because runs typically take long enough that the
+reconnect path is taken with `Last-Event-ID` BELOW the tail (which
+takes the streaming 200 + text/event-stream branch). Real pi being
+unexpectedly fast on the smoke's echo prompt is what made the empty-tail
+reconnect path reachable.
+
+**Fix landed in the same PR** (Plan Task 15, commit appended after this
+journal entry): the 204 now carries `media_type="text/event-stream"`
+explicitly, the existing `test_route_404_and_204_and_stream` test was
+strengthened with a `content-type` assertion (which would have caught
+this latent defect from Phase 3), and `docs/api.md` was updated to
+document the load-bearing MIME on the 204 path.
+
+This is a pre-existing latent defect from Phase 3, not a 9e regression.
+Closed in the same PR because it was discovered here.
 
 ## What's covered by this entry vs. what remains exercised by tests
 

@@ -195,10 +195,22 @@ async def stream_events(run_id: str, request: Request) -> Response:
 
     # 204 ONLY when a finished run has nothing at/after Last-Event-ID
     # (ADR-23). A finished run WITH events streams history then EOF.
+    #
+    # The ``media_type="text/event-stream"`` is load-bearing on this 204:
+    # browsers' ``EventSource`` validate the response Content-Type BEFORE
+    # the status code, and FastAPI's bare ``Response(204)`` defaults to
+    # ``text/plain`` — which makes the browser abort the connection with
+    # ``MIME type ("text/plain") that is not "text/event-stream"`` instead
+    # of treating the 204 as a clean end-of-stream. Declaring the SSE
+    # mime here keeps the MIME check happy; the empty body honours the
+    # ``204`` semantics (Phase 9e smoke, 2026-05-22).
     if run.status in _TERMINAL:
         tail = await core.list_events(run_id, after_seq=last, limit=1)
         if not tail:
-            return Response(status_code=status.HTTP_204_NO_CONTENT)
+            return Response(
+                status_code=status.HTTP_204_NO_CONTENT,
+                media_type="text/event-stream",
+            )
 
     headers = {
         "Cache-Control": "no-cache",
