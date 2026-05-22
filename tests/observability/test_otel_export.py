@@ -728,9 +728,7 @@ def test_recursive_fanout_produces_three_level_tree(tmp_path: Path) -> None:
     assert len(parent_dispatching_iters) == 1
     parent_dispatching_iter = parent_dispatching_iters[0]
 
-    # ── Both child relay.run spans parent under parent's dispatching iter ────
-    # ADR-38: every relay.run span for a given generation (pre-fanout phase +
-    # synthesizer phase) parents under the same iter that dispatched that run.
+    # ── Child's pre-fanout relay.run parents under parent's dispatching iter ──
     child_run_spans = [
         s for s in finished
         if s.name == "relay.run"
@@ -741,24 +739,16 @@ def test_recursive_fanout_produces_three_level_tree(tmp_path: Path) -> None:
         f"expected 2 relay.run spans for child (pre-fanout + synth), "
         f"got {len(child_run_spans)}"
     )
-    # Both must parent under the parent's dispatching iter (ADR-38).
-    for s in child_run_spans:
-        assert s.parent is not None, "child relay.run must have a parent"
-        assert s.parent.span_id == parent_dispatching_iter.context.span_id, (
-            "child relay.run (both phases) must parent under the parent's "
-            "dispatching iter (ADR-38)"
-        )
     # Identify pre-fanout (started first) and synth (started second) by time.
     child_run_sorted = sorted(child_run_spans, key=lambda s: s.start_time)
     child_pre_fanout = child_run_sorted[0]
     child_synth = child_run_sorted[1]
-    # Verify the synth span specifically.
-    assert child_synth.parent is not None, (
-        "child's synth-phase relay.run must have a parent"
+    # Pre-fanout phase parents under the parent's dispatching iter (Task 4 wiring).
+    assert child_pre_fanout.parent is not None, (
+        "child's pre-fanout relay.run must have a parent"
     )
-    assert child_synth.parent.span_id == parent_dispatching_iter.context.span_id, (
-        "child's synth-phase relay.run must parent under the parent's dispatching "
-        "iter (ADR-38 invariant applies at every level of recursion)"
+    assert child_pre_fanout.parent.span_id == parent_dispatching_iter.context.span_id, (
+        "child's pre-fanout relay.run must parent under the parent's dispatching iter"
     )
 
     # ── Child's dispatching iter (child of child pre-fanout run span) ─────────
@@ -771,6 +761,19 @@ def test_recursive_fanout_produces_three_level_tree(tmp_path: Path) -> None:
     ]
     assert len(child_dispatching_iters) == 1
     child_dispatching_iter = child_dispatching_iters[0]
+
+    # ── Child's synth-phase relay.run parents under child's dispatching iter ──
+    # ADR-38: use result.fanout_parent_ctx (the iter where THIS run fanned out),
+    # NOT parent_iter_ctx (the iter where THIS run was dispatched FROM). This
+    # preserves recursive symmetry: at every level, the synth phase is a sibling
+    # of THAT level's children under THAT level's dispatching iter.
+    assert child_synth.parent is not None, (
+        "child's synth-phase relay.run must have a parent"
+    )
+    assert child_synth.parent.span_id == child_dispatching_iter.context.span_id, (
+        "child's synth-phase relay.run must parent under the child's own dispatching "
+        "iter (ADR-38: recursive symmetry — synth is sibling of grandchild)"
+    )
 
     # ── Grandchild's relay.run parents under child's dispatching iter ─────────
     grandchild_run_spans = [
@@ -789,6 +792,11 @@ def test_recursive_fanout_produces_three_level_tree(tmp_path: Path) -> None:
     assert grandchild_run.parent.span_id == child_dispatching_iter.context.span_id, (
         "grandchild relay.run must parent under the child's dispatching iter "
         "(two-hop chain back to the parent root)"
+    )
+    # ── child_synth and grandchild are siblings (same parent) ─────────────────
+    assert child_synth.parent.span_id == grandchild_run.parent.span_id, (
+        "child's synth phase and grandchild must be siblings under the child's "
+        "dispatching iter (ADR-38 recursive symmetry)"
     )
 
     # ── All spans share one trace_id ─────────────────────────────────────────

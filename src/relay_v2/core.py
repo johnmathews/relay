@@ -635,28 +635,24 @@ class RelayCore:
                 phase_file.read_text().strip()
                 if phase_file.exists() else None
             )
-            # Preserve the OTel context that dispatched THIS run so the
-            # synthesizer-phase relay.run span parents under the same iter as
-            # the run itself (one connected fanout-join sub-tree in the trace).
-            # ADR-38: the synth-phase span always parents under the iter that
-            # dispatched THIS generation, NOT the iter that THIS run used to
-            # dispatch its own children.
+            # Preserve the dispatching iter's OTel context from the old
+            # _RunState so the synthesizer-phase relay.run span parents under
+            # the same iter as the children (one connected fanout-join sub-tree
+            # in the trace).  The conditional handles the impossible-but-safe
+            # case where result is None — falls back to None (root span),
+            # matching the pre-Task-4b default.  No try/except: an unexpected
+            # exception here should propagate so the bug is visible.
             #
-            # For a root-level parent (parent_iter_ctx is None), fall back to
-            # result.fanout_parent_ctx — the parent dispatching iter span is
-            # the same object in that case (root has no outer parent_iter_ctx).
-            # The double conditional handles the impossible-but-safe case where
-            # result is None — falls back to None (root span). No try/except:
-            # an unexpected exception here should propagate so the bug is visible.
+            # ADR-38: use result.fanout_parent_ctx (the iter where THIS run
+            # fanned out), NOT parent_iter_ctx (the iter where THIS run was
+            # dispatched FROM). This preserves recursive symmetry: at every
+            # level, the synth phase is a sibling of THAT level's children
+            # under THAT level's dispatching iter.
             old_state = self._runs.get(parent_run_id)
             preserved_ctx = (
-                old_state.parent_iter_ctx
-                if old_state is not None and old_state.parent_iter_ctx is not None
-                else (
-                    old_state.result.fanout_parent_ctx
-                    if old_state is not None and old_state.result is not None
-                    else None
-                )
+                old_state.result.fanout_parent_ctx
+                if old_state is not None and old_state.result is not None
+                else None
             )
             self._runs[parent_run_id] = _RunState()
             # ADR-38: synth-phase run-span parents under the same dispatching
