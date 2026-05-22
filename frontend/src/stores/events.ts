@@ -83,6 +83,10 @@ const INVALIDATING_KINDS = new Set([
   'subagent_dispatch',
   'subagent_return',
   'child_runs_resolved',
+  // 14c — dashboard PUT writes the file in-place; the artifact-content
+  // cache key must drop so a re-open of the editor (or any pane reading
+  // the same artifact) sees the post-save bytes. ADR-40.
+  'artifact_edited',
 ])
 
 /** A normalized event in the unified (live ⨮ replayed) list. */
@@ -216,6 +220,12 @@ export const useEventsStore = defineStore('run-events', () => {
         invalidateFn(['runs', 'detail', openRunId])
         invalidateFn(['runs'])
         invalidateFn(['runs', 'children', openRunId])
+        // 14c — drop the artifacts-content cache so a paused editor's
+        // loaded baseline refetches after an `artifact_edited` event
+        // (or any sibling cache reader sees the post-save bytes). Broad
+        // prefix is fine — the only consumers are the editor and the
+        // artifacts pane; both refetch on focus/select via Colada.
+        invalidateFn(['artifacts', openRunId])
       }
       if (onLifecycleFn) onLifecycleFn()
     })

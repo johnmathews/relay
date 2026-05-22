@@ -342,7 +342,33 @@ export interface paths {
          *     413).
          */
         get: operations["get_artifact_api_runs__run_id__artifacts__file_path__get"];
-        put?: never;
+        /**
+         * Put Artifact
+         * @description Write text content to a sandboxed artifact during a paused review
+         *     (spec §6.2, §7; ADR-40). Thin adapter over
+         *     :meth:`relay_v2.core.RelayCore.write_artifact`.
+         *
+         *     Body: ``{"content": str, "editor"?: str}``. The endpoint is the
+         *     **single write entry point** on the run artifacts dir; it requires
+         *     the run to be ``paused`` AND the requested path to equal the latest
+         *     paused iter's ``signal_args.review_path`` (set by 14b). On success
+         *     the event store gains one ``artifact_edited`` event with the
+         *     pre/post SHA-256 hashes and sizes — the audit trail per ADR-10.
+         *
+         *     Status mapping:
+         *
+         *     - 200 — write succeeded; body is ``{path, size, sha256}``.
+         *     - 400 — sandbox violation (absolute, ``..``, NUL in path, symlink
+         *       escape).
+         *     - 404 — unknown run.
+         *     - 409 — run not paused / no review_path / path mismatch /
+         *       missing intermediate directory.
+         *     - 413 — body exceeds ``MAX_FILE_BYTES``.
+         *     - 415 — body is not valid JSON, ``content`` is not a string, the
+         *       ``editor`` field is not a string, or the content carries a NUL
+         *       byte (binary).
+         */
+        put: operations["put_artifact_api_runs__run_id__artifacts__file_path__put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -1324,6 +1350,38 @@ export interface operations {
         };
     };
     get_artifact_api_runs__run_id__artifacts__file_path__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+                file_path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_artifact_api_runs__run_id__artifacts__file_path__put: {
         parameters: {
             query?: never;
             header?: never;

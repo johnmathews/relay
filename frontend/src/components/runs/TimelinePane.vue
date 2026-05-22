@@ -88,6 +88,7 @@ interface Row {
     | 'boundary'
     | 'pause'
     | 'usage'
+    | 'artifact_edited'
     | 'generic'
   /** The originating event (newest of a merged pair for tools). */
   event: StreamEvent
@@ -155,6 +156,15 @@ const rows = computed<Row[]>(() => {
         key: `e${ev.seq}`,
         kind: ev.kind,
         type: 'usage',
+        event: ev,
+      })
+    } else if (ev.kind === 'artifact_edited') {
+      // 14c — ADR-40. One-line row: path · sha-before → sha-after ·
+      // editor. No "view diff" link in v1 (proposal §OQ-6 → 14e).
+      out.push({
+        key: `e${ev.seq}`,
+        kind: ev.kind,
+        type: 'artifact_edited',
         event: ev,
       })
     } else if (
@@ -242,6 +252,15 @@ function asNum(v: unknown): number | undefined {
 function asStr(v: unknown, fallback: string): string {
   return typeof v === 'string' ? v : fallback
 }
+
+/** Shorten a sha256 hex string to the first 4 chars + ellipsis for the
+ *  inline `artifact_edited` row. `null` (pre-edit hash on a create) →
+ *  the literal "∅" so the row reads `∅ → 9b1e…`. */
+function shortSha(v: unknown): string {
+  if (v == null) return '∅'
+  if (typeof v !== 'string' || v === '') return '?'
+  return `${v.slice(0, 4)}…`
+}
 </script>
 
 <template>
@@ -321,6 +340,23 @@ function asStr(v: unknown, fallback: string): string {
           v-else-if="row.type === 'usage'"
           :event="row.event"
         />
+
+        <div
+          v-else-if="row.type === 'artifact_edited'"
+          class="timeline__edit"
+          data-testid="artifact-edited-row"
+        >
+          <span class="timeline__edit-glyph">✎</span>
+          <code class="timeline__edit-path">{{ asStr(row.event.payload.path, '?') }}</code>
+          <span class="timeline__edit-sha">
+            {{ shortSha(row.event.payload.sha256_before) }}
+            →
+            {{ shortSha(row.event.payload.sha256_after) }}
+          </span>
+          <span class="timeline__edit-editor">·
+            {{ asStr(row.event.payload.editor, 'dashboard') }}
+          </span>
+        </div>
 
         <div
           v-else
@@ -410,5 +446,36 @@ function asStr(v: unknown, fallback: string): string {
   font-size: 0.8em;
   color: var(--color-text-dim);
   word-break: break-all;
+}
+
+.timeline__edit {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.85em;
+  color: var(--color-text-muted, #888);
+  border-left: 2px solid var(--color-border-subtle, #e0e0e0);
+}
+
+.timeline__edit-glyph {
+  font-size: 1em;
+  color: #e0b341;
+}
+
+.timeline__edit-path {
+  font-family: var(--font-mono);
+  color: var(--color-text);
+}
+
+.timeline__edit-sha {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-dim);
+}
+
+.timeline__edit-editor {
+  font-size: 0.92em;
+  color: var(--color-text-dim);
 }
 </style>

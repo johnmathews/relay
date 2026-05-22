@@ -98,6 +98,7 @@ export const KNOWN_EVENT_TYPES = [
   'child_runs_resolved', // 9a
   'pause_requested',
   'pause_resolved',
+  'artifact_edited', // ADR-40 (14a/14c)
   'error',
 ] as const
 

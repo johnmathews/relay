@@ -84,6 +84,59 @@ describe('TimelinePane', () => {
     expect(w.find('.usage-row').text()).toContain('3')
   })
 
+  it('renders artifact_edited as a one-line row (14c — ADR-40)', () => {
+    const events: StreamEvent[] = [
+      {
+        seq: 1,
+        kind: 'artifact_edited',
+        payload: {
+          path: 'improvement-plan.md',
+          size_before: 11,
+          size_after: 14,
+          sha256_before: 'a3f25c…',
+          sha256_after: '9b1e2d…',
+          editor: 'dashboard',
+        },
+      },
+    ]
+    const w = mount(TimelinePane, { props: { events } })
+    const row = w.find('[data-testid="artifact-edited-row"]')
+    expect(row.exists()).toBe(true)
+    const text = row.text()
+    expect(text).toContain('improvement-plan.md')
+    // Short sha rendering: first 4 chars + ellipsis.
+    expect(text).toContain('a3f2…')
+    expect(text).toContain('9b1e…')
+    expect(text).toContain('dashboard')
+    // Row uses its own data-kind, not the generic fallback.
+    expect(w.find('[data-kind="artifact_edited"]').exists()).toBe(true)
+  })
+
+  it('artifact_edited with null sha256_before renders ∅ → after (create)', () => {
+    const events: StreamEvent[] = [
+      {
+        seq: 1,
+        kind: 'artifact_edited',
+        payload: {
+          path: 'discussions/notes.md',
+          size_before: 0,
+          size_after: 25,
+          sha256_before: null,
+          sha256_after: 'deadbe…',
+          editor: 'dashboard',
+        },
+      },
+    ]
+    const w = mount(TimelinePane, { props: { events } })
+    const row = w.find('[data-testid="artifact-edited-row"]')
+    expect(row.exists()).toBe(true)
+    const text = row.text()
+    expect(text).toContain('discussions/notes.md')
+    expect(text).toContain('∅')
+    // shortSha truncates to first 4 chars + ellipsis.
+    expect(text).toContain('dead…')
+  })
+
   it('signal row has the distinctive card + a linkable anchor id', () => {
     const w = mount(TimelinePane, { props: { events: MIXED } })
     const sig = w.find('[data-testid="signal-card"]')

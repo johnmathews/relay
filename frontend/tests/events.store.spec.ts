@@ -186,11 +186,15 @@ describe('events store — replay vs live orchestration', () => {
     expect(invalidate).not.toHaveBeenCalled() // still armed, not fired
     await Promise.resolve() // let the trailing microtask run
 
-    // Exactly one coalesced flush: 3 invalidate keys + 1 lifecycle ping.
-    expect(invalidate).toHaveBeenCalledTimes(3)
+    // Exactly one coalesced flush: 4 invalidate keys + 1 lifecycle ping
+    // (14c added the artifacts prefix so `artifact_edited` drops the
+    // editor's loaded baseline; the broadened set fires for every
+    // lifecycle event, not just artifact_edited).
+    expect(invalidate).toHaveBeenCalledTimes(4)
     expect(invalidate).toHaveBeenCalledWith(['runs', 'detail', 'run-5'])
     expect(invalidate).toHaveBeenCalledWith(['runs'])
     expect(invalidate).toHaveBeenCalledWith(['runs', 'children', 'run-5'])
+    expect(invalidate).toHaveBeenCalledWith(['artifacts', 'run-5'])
     expect(onLifecycle).toHaveBeenCalledTimes(1)
   })
 
@@ -285,6 +289,40 @@ describe('events store — replay vs live orchestration', () => {
     )
     expect(store.events.map((e) => e.kind)).toContain('child_runs_resolved')
     expect(store.lastSeq).toBe(7)
+  })
+
+  // 14c — `artifact_edited` (ADR-40) MUST be wired BOTH in the SSE
+  // wrapper's KNOWN_EVENT_TYPES (so the browser EventSource named-event
+  // listener fires) AND in INVALIDATING_KINDS (so the artifacts cache
+  // drops). This isolating case emits ONLY the kind under test so the
+  // assertion target cannot be a sibling kind — same shape as the Bug-2
+  // regression cases above.
+  it('delivers artifact_edited live and invalidates the artifacts cache', async () => {
+    const invalidate = vi.fn()
+    const store = useEventsStore()
+    await store.open('run-ae', 'paused', {
+      streamOptions: { eventSourceFactory: freshFactory() },
+      invalidate,
+    })
+    const es = FakeEventSource.instances[0]!
+    es.emit(
+      'artifact_edited',
+      JSON.stringify({
+        path: 'improvement-plan.md',
+        size_before: 11,
+        size_after: 14,
+        sha256_before: 'a3f2',
+        sha256_after: '9b1e',
+        editor: 'dashboard',
+      }),
+      '3',
+    )
+    expect(store.events.map((e) => e.kind)).toContain('artifact_edited')
+    expect(store.lastSeq).toBe(3)
+
+    await Promise.resolve()
+    const calls = invalidate.mock.calls.map((c) => c[0])
+    expect(calls).toContainEqual(['artifacts', 'run-ae'])
   })
 
   it('delivers harness_session_ended live (was silently dropped — Bug 2)', async () => {

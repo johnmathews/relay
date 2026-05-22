@@ -810,7 +810,19 @@ artifacts, managing prompts, and registering projects.
     ready for the richer data.
   - **Pause action** (when status=paused) — the agent's question is
     shown rendered; the answer textarea supports markdown; submit
-    → POST `/api/runs/:id/resume`.
+    → POST `/api/runs/:id/resume`. When the paused iter's
+    `signal_args.review_path` is present (14b), the answer form
+    renders an inline review pane above the question/answer block:
+    it fetches the named artifact via `GET /api/runs/:id/artifacts/{path}`,
+    shows a textarea (left) and the existing markdown/shiki/mermaid
+    preview pipeline (right), and exposes a Save button that fires
+    `PUT /api/runs/:id/artifacts/{path}` (ADR-40). The Resume button
+    remains operational and is disabled only while a Save is in
+    flight; the answer textarea is unaffected. The pane is absent
+    (and the existing minimal form renders unchanged) when the
+    paused iter does not declare a `review_path`. Each save lands an
+    `artifact_edited` event row in the timeline (path + pre/post
+    sha256 short hashes + editor).
   - **Cancel action** — always available while `status ∈ {running,
     awaiting_children}`. When `awaiting_children` with N children, the
     label reads "Cancel run and N children"; cancellation cascades

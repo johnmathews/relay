@@ -503,6 +503,76 @@ in `test_loop.py` asserting end-to-end persistence; 3 pi-e2e still
 gated), `ruff`/`mypy --strict` clean (**39** source files, no new
 modules), backend coverage 94%. Frontend test count unchanged at 161
 (no frontend file touched).
+**Phase 14c** (2026-05-23,
+[docs/plans/2026-05-22-pause-for-review-14c.md](docs/plans/2026-05-22-pause-for-review-14c.md))
+lights up the operator-facing half of the pause-for-review arc: when
+the paused iter's `signal_args.review_path` is present (14b),
+`PauseAnswerForm.vue` switches into a richer mode — a top review pane
+above the existing question/answer block fetches the named artifact
+via `useArtifactContentQuery`, renders a `<textarea>` (left) +
+`MarkdownRender` lazy markdown/shiki/mermaid preview (right), and
+exposes a **Save** button wired through the new
+`useArtifactWriteMutation` (a raw `fetch()`-backed Pinia Colada
+mutation against the 14a `PUT /api/runs/{id}/artifacts/{path}`
+endpoint — raw fetch because the hand-rolled backend route declares
+no Pydantic body model so the generated OpenAPI op carries
+`requestBody?: never` and openapi-fetch refuses a body field; ADR-40
+is unchanged). The Resume button keeps its label and shape and is
+disabled ONLY while a Save is in flight (proposal §"Tradeoffs"
+choice (a), OQ — locked); the answer textarea is unaffected. **OQ-3
+missing file** lands as a "Create at this path" banner + a Save
+button relabelled "Create" (Save enabled even when textarea is
+empty); **OQ-7 binary** lands as a "not editable inline" message +
+a `<a href={artifactRawUrl} download>Download</a>` link. 4xx errors
+from the PUT (404/409/413/415/400) surface inline via an `ApiError`
+mapper; the operator's textarea content is preserved across save
+failures. The `frontend/src/api/sse.ts::KNOWN_EVENT_TYPES` list +
+`frontend/src/stores/events.ts::INVALIDATING_KINDS` set both gain
+`'artifact_edited'` (the post-9g sweep's load-bearing dual-list
+contract — a kind in `INVALIDATING_KINDS` but not
+`KNOWN_EVENT_TYPES` is silently dropped by the browser EventSource);
+the store's coalesced invalidation flush broadens to add
+`['artifacts', runId]` so the editor's loaded baseline (and the
+artifacts pane's content cache) refreshes when a save lands.
+`TimelinePane.vue` renders each `artifact_edited` event as a small
+inline row (`✎ path · sha-before… → sha-after… · editor`); short-sha
+is the first 4 chars + ellipsis (mirroring how short run-ids render
+elsewhere); a `null` `sha256_before` (create path) renders as `∅`.
+No "view diff" link in v1 (proposal §OQ-6 → 14e). `frontend/src/
+views/RunDetailView.vue` computes `pauseReviewPath` (walks iters
+newest-first, mirroring `pauseQuestion`) and passes it to
+`PauseAnswerForm` as a prop — null when the paused iter didn't carry
+`review_path`, which makes the SFC's review pane absent and the form
+byte-for-byte the pre-14c minimal contract. `frontend/src/api/
+schema.d.ts` regenerated from the running backend's `/openapi.json`
+to include the 14a PUT op (the regenerated op carries
+`requestBody?: never` per above; the raw-fetch mutation is the
+contract-honest workaround). `spec.md` §9.1's pause-action bullet
+gains a paragraph naming the review-pane mode. 14c is FRONTEND ONLY
+— no backend file changed; no MCP, sentinel, or skill-template
+change (14d still pending); no diff view or
+`compose_resume_prompt` annotation (deferred to 14e per OQ-5/OQ-4).
+325 backend tests pass (unchanged from 14b — `uv run pytest` green;
+3 pi-e2e still gated), `ruff`/`mypy --strict` unchanged. 173
+frontend tests pass (161 + 12 new — 9 PauseAnswerForm review-pane
+cases in `tests/PauseAnswerForm.spec.ts` covering absent/render/
+save-PUT/saved-badge/resume-disable/404-create/415-binary/
+409-inline/discard, +2 TimelinePane cases in
+`tests/TimelinePane.spec.ts` for the populated edit row + the
+∅→after create-path render, +1 events-store isolating case in
+`tests/events.store.spec.ts` emitting ONLY `artifact_edited` and
+asserting both delivery + the artifacts-cache invalidation; the
+existing coalesced-flush test bumped from 3 → 4 invalidate calls
+because the artifacts prefix joined the flush set). One non-fatal
+vitest warning persists ("1 error — Unhandled Rejection: ApiError:
+not found") from the 404 case — Pinia Colada surfaces the query's
+rejected promise as an unhandled rejection before the SFC's lazy
+`loadError` computed first evaluates; the gate (`npm run check`)
+exits 0 and the existing `queries.spec.ts` 404 test stays clean
+because it reads `error.value` synchronously in the test body. ADR
+unchanged (the A1/B1 decisions are recorded in ADR-40 from 14a; no
+new ADR — 14c is the UX implementation of those locks). No new
+modules, no new event kinds, no new sentinel grammar.
 
 ## What relay v2 is
 

@@ -108,6 +108,28 @@ const pauseQuestion = computed(() => {
 })
 
 /**
+ * The reviewable artifact path declared on the paused iter (14c —
+ * ADR-40). `null` for any paused iter that didn't carry a `review_path`
+ * (every pre-14b run, and any 14b skill that omitted the attribute);
+ * PauseAnswerForm treats null as "render the existing minimal form".
+ * Walks iters newest-first like `pauseQuestion` so a resumed-then-
+ * paused-again run picks the latest pause.
+ */
+const pauseReviewPath = computed<string | null>(() => {
+  for (let i = iters.value.length - 1; i >= 0; i--) {
+    const it = iters.value[i]!
+    if (it.signal_kind === 'pause' && it.signal_args != null) {
+      const rp = it.signal_args.review_path
+      if (typeof rp === 'string' && rp !== '') return rp
+      // Found the latest pause iter; if it has no review_path, stop —
+      // we don't fall back to an older pause's value.
+      return null
+    }
+  }
+  return null
+})
+
+/**
  * The user-facing failure summary for a terminal failed/cancelled run.
  * Pulled from the last iter (the one that actually closed the run):
  *
@@ -317,6 +339,7 @@ onBeforeUnmount(() => {
           v-if="isPaused"
           :run-id="detail.id"
           :question="pauseQuestion"
+          :review-path="pauseReviewPath"
           @resumed="onResumed"
         />
 

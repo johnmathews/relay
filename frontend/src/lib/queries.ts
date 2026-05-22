@@ -935,6 +935,87 @@ export function useArtifactContentQuery(
   })
 }
 
+/** Arguments for the artifact-write mutation (14c — ADR-40). */
+export interface ArtifactWriteArgs {
+  /** The paused run id (the PUT path segment). */
+  runId: string
+  /** Sandbox-relative artifact path; must equal the paused iter's
+   *  `signal_args.review_path` or the server returns 409. */
+  path: string
+  /** New text content (UTF-8). NUL bytes → 415. >MAX_FILE_BYTES → 413. */
+  content: string
+  /** Optional editor tag for the audit event; server defaults to
+   *  "dashboard" when omitted. */
+  editor?: string
+}
+
+/** Shape of the 200 body returned by the artifact-write endpoint. */
+export interface ArtifactWriteResult {
+  path: string
+  size: number
+  sha256: string
+}
+
+/**
+ * `useMutation` for `PUT /api/runs/{run_id}/artifacts/{file_path}` (14a's
+ * endpoint, activated by 14b's `review_path` sentinel attribute — ADR-40).
+ * Writes `content` to the artifact in-place during a paused review and
+ * appends an `artifact_edited` event with pre/post SHA-256 hashes.
+ *
+ * Raw `fetch()` rather than the typed `api.PUT(...)`: the backend route
+ * hand-parses `request.json()` instead of declaring a Pydantic body
+ * model, so the generated OpenAPI op carries `requestBody?: never` and
+ * openapi-fetch refuses a body field. Going through `fetch` keeps the
+ * write path honest with the backend contract (the route is the single
+ * write entry point per ADR-40 §B1) without touching the backend.
+ *
+ * On 4xx we throw an {@link ApiError} carrying status + parsed body
+ * (404 unknown / 409 not-paused/no-review-path/path-mismatch / 413
+ * too-large / 415 binary / 400 sandbox), so {@link PauseAnswerForm}
+ * can surface the right inline message.
+ *
+ * On success we invalidate `keys.artifactContent(runId, path)` so the
+ * editor's loaded baseline (and any sibling cache reader) sees the
+ * post-save bytes.
+ */
+export function useArtifactWriteMutation(): UseMutationReturn<
+  ArtifactWriteResult,
+  ArtifactWriteArgs,
+  ApiError
+> {
+  const cache = useQueryCache()
+  return useMutation({
+    mutation: async ({
+      runId,
+      path,
+      content,
+      editor,
+    }: ArtifactWriteArgs) => {
+      const url = artifactRawUrl(runId, path)
+      const body: { content: string; editor?: string } = { content }
+      if (editor != null) body.editor = editor
+      const res = await fetch(url, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      let parsed: unknown = null
+      try {
+        parsed = await res.json()
+      } catch {
+        // Empty / non-JSON body — leave `parsed` as null.
+      }
+      if (!res.ok) throw new ApiError(res.status, parsed)
+      return parsed as ArtifactWriteResult
+    },
+    onSuccess: (_data, vars) => {
+      void cache.invalidateQueries({
+        key: keys.artifactContent(vars.runId, vars.path),
+      })
+    },
+  })
+}
+
 /**
  * Build the raw-content URL for an artifact (the binary-download
  * `href`). Mirrors the `GET /api/runs/{run_id}/artifacts/{file_path}`
