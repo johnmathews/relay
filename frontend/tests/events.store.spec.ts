@@ -263,4 +263,42 @@ describe('events store — replay vs live orchestration', () => {
     )
     expect(childrenInvalidations.length).toBeGreaterThanOrEqual(1)
   })
+
+  // Bug 2 regression: child_runs_resolved (9a) and harness_session_ended
+  // (ADR-39) were added to INVALIDATING_KINDS but not to the SSE
+  // wrapper's KNOWN_EVENT_TYPES — so the browser EventSource's named-
+  // event listeners were never registered for them, and live events
+  // arriving with `event: child_runs_resolved` / `event:
+  // harness_session_ended` were silently dropped by the browser. The
+  // backend taxonomy + the live timeline must agree: every kind that
+  // the backend can emit must reach the store via the wrapper.
+  it('delivers child_runs_resolved live (was silently dropped — Bug 2)', async () => {
+    const store = useEventsStore()
+    await store.open('run-cr', 'awaiting_children', {
+      streamOptions: { eventSourceFactory: freshFactory() },
+    })
+    const es = FakeEventSource.instances[0]!
+    es.emit(
+      'child_runs_resolved',
+      JSON.stringify({ children_count: 2, terminal_statuses: {} }),
+      '7',
+    )
+    expect(store.events.map((e) => e.kind)).toContain('child_runs_resolved')
+    expect(store.lastSeq).toBe(7)
+  })
+
+  it('delivers harness_session_ended live (was silently dropped — Bug 2)', async () => {
+    const store = useEventsStore()
+    await store.open('run-hse', 'running', {
+      streamOptions: { eventSourceFactory: freshFactory() },
+    })
+    const es = FakeEventSource.instances[0]!
+    es.emit(
+      'harness_session_ended',
+      JSON.stringify({ stop_reason: 'clean', messages: [], summary: null }),
+      '4',
+    )
+    expect(store.events.map((e) => e.kind)).toContain('harness_session_ended')
+    expect(store.lastSeq).toBe(4)
+  })
 })

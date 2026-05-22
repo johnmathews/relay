@@ -65,28 +65,37 @@ export interface RunEventStreamOptions {
 const DEFAULT_TERMINAL_EVENT = 'run_ended'
 const DEFAULT_RECONNECT_DELAY_MS = 1000
 
-// Relay event types are delivered as named SSE events. We listen on the
-// generic 'message' plus the known named events. Listening to a fixed
-// allowlist is robust and dependency-free.
+// Relay event types are delivered as **named** SSE events
+// (`event: <kind>` per ADR-23). The browser's EventSource only fires
+// listeners for names that were explicitly registered — there is no
+// "default" listener that catches unrecognised event names; an event
+// for an unknown name is silently dropped. So this list MUST stay in
+// sync with the backend `events.kind` taxonomy (spec §3.2). The Bug-2
+// regression in the 9f acceptance was exactly this: ADR-39's
+// `harness_session_ended` and 9a's `child_runs_resolved` were added to
+// the backend taxonomy + `INVALIDATING_KINDS` in the store, but the
+// listener list here was never updated, so live events of those kinds
+// never reached the timeline (they appeared only after a browser
+// refresh, which hit the REST replay path).
 //
-// These are the EXACT relay `events.kind` discriminator values the
-// backend emits (spec §3.2 event taxonomy; verified against
-// `src/relay_v2/events.py`, `core.py`, `orchestrator/loop.py`). W4
-// corrected this list from W1's placeholder names (`iter_start`,
-// `assistant_message`, `run_status`) which did not match the backend
-// and would have silently dropped every iter/text/signal event.
-const KNOWN_EVENT_TYPES = [
+// Verified against `src/relay_v2/events.py`,
+// `src/relay_v2/orchestrator/loop.py`, and `src/relay_v2/core.py` —
+// `grep -E "store(\\._store)?\\.append\\(.*,\\s*\"[a-z_]+\"" src/`
+// catalogs every kind the backend can emit.
+export const KNOWN_EVENT_TYPES = [
   'message',
   'run_started',
   'run_ended',
   'iter_started',
   'iter_ended',
+  'harness_session_ended', // ADR-39
   'assistant_text',
   'tool_use_start',
   'tool_use_end',
   'signal_emit',
   'subagent_dispatch',
   'subagent_return',
+  'child_runs_resolved', // 9a
   'pause_requested',
   'pause_resolved',
   'error',
