@@ -286,6 +286,60 @@ pass (266 + 10 new: +2 `list_children`, +2 `list_runs` default, +1 MCP,
 Manual smoke (live fanout → Children pane populates; Parent chip
 navigates; Cancel cascade label; toggle hides/shows children) is
 journal-attested per ADR-30.
+**Phase 9f** then closes the fanout-join arc (9a→9f) with OTel
+cross-run span parenting (`docs/plans/2026-05-22-fanout-join-9f.md`,
+ADR-38): child runs' `relay.run` spans, and a parent's synth-phase
+`relay.run` span, now hang under the iter where the parent fanned
+out — so the full fanout-join cycle renders as **one connected tree**
+in Langfuse instead of three disconnected `relay.run` roots
+(`parent → fanout iter` / `child A` / `child B` / `parent synth iter`).
+Mechanism: a new opaque `IterSpanContext = Any` carrier (defined +
+re-exported from `relay_v2.observability`) plus a new
+`Instrumentation.run_span(*, parent_iter_ctx=None)` kwarg — when set,
+the run span is started under that iter's OTel context via
+`trace.set_span_in_context(...)`. The plumbing chain: `loop` captures
+the live `iter_span.context` inside the **closing fanout iter** only
+(via the existing `_drive_iter` defaulted-span seam) → returned on
+`LoopResult.fanout_parent_ctx` → `_apply_result` threads it to
+`_dispatch_children`, which stashes the context on each child's
+`_RunState.parent_iter_ctx` in the **first pass** of the 9c
+create-all-then-enqueue split (so the invariant survives — every
+child row + dispatch event still exists before any child is enqueued)
+→ `_run` passes `parent_iter_ctx=state.parent_iter_ctx` into
+`otel.run_span(...)`. Synth-phase wiring (Task 4b — the recursive
+symmetry that ADR-38 §interpretive-subtlety captures):
+`_maybe_resume_parent` preserves `old_state.result.fanout_parent_ctx`
+across the `_RunState` overwrite at the parent's resume and stashes
+it on the fresh state's `parent_iter_ctx`, so the synth-phase
+`relay.run` parents under the iter where **THIS** run fanned out
+(making the synth phase a sibling of THAT level's children, NOT a
+sibling of THIS level's pre-fanout iters — the symmetric and
+recursive-fanout-safe choice). NOOP invariant: byte-for-byte
+unchanged — `_NoopIterSpan.context = None` is a class attribute that
+constructs no provider/exporter and makes no network call;
+`NoopInstrumentation.run_span` accepts and ignores the new kwarg.
+ADR-38 records that cross-run trace context lives in-memory only
+(threaded via `LoopResult` → `_RunState`, never persisted), uses an
+opaque carrier so the orchestrator never imports the OTel API
+directly (ADR-29's seam preserved), and that a restart loses the
+linkage — acceptable under ADR-34 (in-flight fanout across restart
+is a V1 non-goal; the 9a cascade-cancel helper finalises the tree).
+No new schema, no new event kinds, no new sentinel grammar, no new
+modules — source file count stays at **39**. 293 backend tests pass
+(276 + 17 new from 9f: span-parenting unit, dispatch-threading,
+synth-phase preserve, NOOP-kwarg, end-to-end InMemorySpanExporter
+trace-tree integration; 3 pi-e2e still gated), `ruff`/`mypy
+--strict` clean, backend coverage 94%. Acceptance: automated via
+`InMemorySpanExporter` (one connected tree per cycle, no orphan
+roots) + manual live-Langfuse-UI journal-attested per ADR-30.
+**Out-of-scope reminders**: skill-side fanout docs
+(`skills/engineering-team/pi/references/fanout.md` + phase-doc
+cross-links) remain a deliberate small follow-up PR (deferred from
+9e — UI-only, no contract change); the latent ADR-10 gap that
+`agent_end`/`SessionEnded` is never persisted as an `events` row on
+the sentinel-close path is still parked (ADR-29/30 — its own ADR +
+spec §6 change when opened). The fanout-join arc (9a→9f) is now
+fully shipped.
 
 ## What relay v2 is
 

@@ -15,12 +15,21 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+    InMemorySpanExporter,
+)
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
 
 from relay_v2.config import Settings
 from relay_v2.core import RelayCore
+from relay_v2.db import init_db, make_async_engine, make_async_sessionmaker
 from relay_v2.db.models import Event, Iter, Run
+from relay_v2.events import EventStore
+from relay_v2.observability import OtelInstrumentation
+from relay_v2.orchestrator.lifecycle import RunContext, create_run, register_project
+from relay_v2.orchestrator.loop import LoopResult, SessionHandle, run_loop
 from tests.orchestrator.scripted_harness import (
     HangScript,
     Script,
@@ -1068,3 +1077,167 @@ def test_cascade_handles_cycle_safely(tmp_path: Path) -> None:
     with _read(settings) as s:
         row = s.get(Run, run_id)
         assert row is not None and row.status == "cancelled"
+
+
+# ── ADR-38 / 9f Task 3 — fanout_parent_ctx on LoopResult ──────────────────
+
+FANOUT_BLOCK = (
+    "Dispatching.\n\n"
+    "[[engteam:fanout-start]]\n"
+    '{"children": [{"role": "a", "prompt": "A."}, {"role": "b", "prompt": "B."}],'
+    ' "join_prompt": "Merge."}\n'
+    "[[engteam:fanout-end]]\n\n"
+    "[[engteam:fanout]]"
+)
+DONE_BLOCK_9F = "All done.\n\n[[engteam:done]]"
+
+
+
+@pytest.mark.parametrize(
+    "block,expected_status",
+    [
+        # done → result.status == "done"
+        (DONE_BLOCK_9F, "done"),
+        # pause → result.status == "paused"
+        (
+            "I need a decision.\n\n"
+            "[[engteam:prompt-start]]\n"
+            "Proceed with the chosen option.\n"
+            "[[engteam:prompt-end]]\n\n"
+            '[[engteam:pause-for-input id="P2" question="Use A or B?"]]',
+            "paused",
+        ),
+        # failed (no signal) → result.status == "failed"
+        (
+            "Here is the contract:\n\n"
+            "```text\n"
+            "    [[engteam:handoff]]\n"
+            "```\n\n"
+            "That was just an example.",
+            "failed",
+        ),
+    ],
+)
+def test_loop_result_fanout_parent_ctx_default_none(
+    tmp_path: Path, block: str, expected_status: str
+) -> None:
+    """ADR-38 / 9f: every non-fanout LoopResult terminal path returns
+    a result with fanout_parent_ctx is None. Parameterised over done,
+    paused, and failed (no-signal)."""
+    settings = _settings(tmp_path)
+    harness = ScriptedHarness([TextScript(block)])
+
+    async def scenario(core: RelayCore) -> LoopResult:
+        pid = await core.register_project(tmp_path, "p")
+        run_id = await core.start_run(pid, "Go.")
+        result = await core.wait_for_run(run_id)
+        assert result.status == expected_status
+        return result
+
+    result = _run(scenario, settings, harness)
+    assert result.fanout_parent_ctx is None
+
+
+def test_loop_result_fanout_parent_ctx_default_none_cancelled(
+    tmp_path: Path,
+) -> None:
+    """ADR-38 / 9f: cancelled path (external cancel_event) also returns
+    fanout_parent_ctx is None."""
+    settings = _settings(tmp_path)
+    harness = ScriptedHarness([HangScript()])
+
+    async def scenario(core: RelayCore) -> LoopResult:
+        pid = await core.register_project(tmp_path, "p")
+        run_id = await core.start_run(pid, "Go.", iter_timeout=30)
+        await asyncio.wait_for(harness.blocked.wait(), timeout=5)
+        await core.cancel_run(run_id)
+        result = await core.wait_for_run(run_id)
+        assert result.status == "cancelled"
+        return result
+
+    result = _run(scenario, settings, harness)
+    assert result.fanout_parent_ctx is None
+
+
+def test_loop_captures_iter_context_on_fanout_terminal(
+    tmp_path: Path,
+) -> None:
+    """ADR-38 / 9f Task 3: run_loop captures iter_span.context on the fanout
+    branch and stores it as LoopResult.fanout_parent_ctx.
+
+    Drives run_loop directly (no RelayCore / supervisor / join watcher).
+    Two assertions:
+    1. result.fanout_parent_ctx is non-None after run_loop returns with
+       status == "awaiting_children".
+    2. A probe span opened with context=result.fanout_parent_ctx parents
+       under the dispatching iter span — the cross-run parenting invariant
+       (ADR-38).
+    """
+    async def scenario() -> LoopResult:
+        settings = _settings(tmp_path)
+        init_db(settings).dispose()
+        engine = make_async_engine(settings.async_db_url)
+        try:
+            sm = make_async_sessionmaker(engine)
+            store = EventStore(sm)
+            run_id = "test-fanout-ctx-01"
+            pid = await register_project(sm, tmp_path, "p")
+            run_dir = settings.data_dir / "runs" / run_id
+            run_dir.mkdir(parents=True, exist_ok=True)
+            await create_run(
+                sm, run_id=run_id, project_id=pid, prompt_body="Go.",
+                max_iters=4, iter_timeout=60,
+                worktree_path=None, branch=None,
+            )
+            ctx = RunContext(
+                run_id=run_id,
+                project_root=tmp_path,
+                worktree_path=None,
+                run_dir=run_dir,
+                max_iters=4,
+                iter_timeout=60,
+                start_seq=0,
+                phase=None,
+                body="Go.",
+            )
+            harness = ScriptedHarness([TextScript(FANOUT_BLOCK)])
+            exporter = InMemorySpanExporter()
+            otel = OtelInstrumentation(SimpleSpanProcessor(exporter))
+
+            with otel.run_span(run_id) as run_span:
+                result = await run_loop(
+                    ctx,
+                    harness=harness,
+                    store=store,
+                    cancel_event=asyncio.Event(),
+                    session_handle=SessionHandle(),
+                    otel_run=run_span,
+                )
+
+            # ── Assertion 1: fanout_parent_ctx is set ─────────────────────
+            assert result.status == "awaiting_children"
+            assert result.fanout_parent_ctx is not None
+
+            # ── Assertion 2: probe span parents under dispatching iter ─────
+            iter_spans = [
+                s for s in exporter.get_finished_spans()
+                if s.name == "relay.iter"
+            ]
+            probe = otel._tracer.start_span(  # type: ignore[attr-defined]
+                "probe", context=result.fanout_parent_ctx
+            )
+            probe.end()
+            probe_span = next(
+                s for s in exporter.get_finished_spans() if s.name == "probe"
+            )
+            assert probe_span.parent is not None
+            # The one relay.iter span (seq=1, the fanout iter) must be the
+            # probe's parent — that is the cross-run parenting invariant.
+            assert len(iter_spans) == 1
+            assert iter_spans[0].context.span_id == probe_span.parent.span_id
+            return result
+        finally:
+            await engine.dispose()
+
+    result = asyncio.run(scenario())
+    assert result.fanout_parent_ctx is not None

@@ -45,7 +45,11 @@ from relay_v2.db.models import Event, Iter, Project, Prompt, Run
 from relay_v2.events import EventStore
 from relay_v2.harness import Harness
 from relay_v2.harness.pi import PiHarness
-from relay_v2.observability import Instrumentation, build_instrumentation
+from relay_v2.observability import (
+    Instrumentation,
+    IterSpanContext,
+    build_instrumentation,
+)
 from relay_v2.orchestrator.lifecycle import (
     RunContext,
     compose_join_prompt,
@@ -73,6 +77,12 @@ class _RunState:
     session_handle: SessionHandle = field(default_factory=SessionHandle)
     settled: asyncio.Event = field(default_factory=asyncio.Event)
     result: LoopResult | None = None
+    # parent_iter_ctx — captured OTel Context of the dispatching iter span
+    # when this run was spawned by a fanout (set by _dispatch_children on
+    # child rows; set by _maybe_resume_parent on the parent's synthesizer-
+    # phase _RunState). None for top-level user-initiated runs, which are
+    # trace roots. ADR-38.
+    parent_iter_ctx: IterSpanContext | None = None
 
 
 class RelayCore:
@@ -330,6 +340,7 @@ class RelayCore:
         parent_worktree_path: Path | None,
         fanout_payload: dict[str, Any],
         iter_id: int | None,
+        parent_iter_ctx: IterSpanContext | None = None,
     ) -> None:
         """Create N child runs and enqueue them (spec.md §6, 9b).
 
@@ -412,6 +423,15 @@ class RelayCore:
                 },
             )
             self._runs[child_run_id] = _RunState()
+            # ADR-38 (9f Task 4): stash the fanout iter's OTel context on
+            # the child's _RunState BEFORE the enqueue pass so _run can
+            # read it from state.parent_iter_ctx and parent the child's
+            # relay.run span under the dispatching iter in the trace tree.
+            # Must happen in this first pass (create-all rows), not the
+            # second pass (enqueue), to preserve the 9c invariant: a fast
+            # harness must not let child A's _run read an un-set
+            # parent_iter_ctx before we get back to set it here.
+            self._runs[child_run_id].parent_iter_ctx = parent_iter_ctx
             contexts.append(
                 RunContext(
                     run_id=child_run_id,
@@ -615,7 +635,29 @@ class RelayCore:
                 phase_file.read_text().strip()
                 if phase_file.exists() else None
             )
+            # Preserve the dispatching iter's OTel context from the old
+            # _RunState so the synthesizer-phase relay.run span parents under
+            # the same iter as the children (one connected fanout-join sub-tree
+            # in the trace).  The conditional handles the impossible-but-safe
+            # case where result is None — falls back to None (root span),
+            # matching the pre-Task-4b default.  No try/except: an unexpected
+            # exception here should propagate so the bug is visible.
+            #
+            # ADR-38: use result.fanout_parent_ctx (the iter where THIS run
+            # fanned out), NOT parent_iter_ctx (the iter where THIS run was
+            # dispatched FROM). This preserves recursive symmetry: at every
+            # level, the synth phase is a sibling of THAT level's children
+            # under THAT level's dispatching iter.
+            old_state = self._runs.get(parent_run_id)
+            preserved_ctx = (
+                old_state.result.fanout_parent_ctx
+                if old_state is not None and old_state.result is not None
+                else None
+            )
             self._runs[parent_run_id] = _RunState()
+            # ADR-38: synth-phase run-span parents under the same dispatching
+            # iter as the children (one connected fanout-join sub-tree).
+            self._runs[parent_run_id].parent_iter_ctx = preserved_ctx
             await self._queue.put(
                 RunContext(
                     run_id=parent_run_id,
@@ -698,7 +740,18 @@ class RelayCore:
         # supervisor-cancelled run still closes its span — the `with`
         # records the exception, marks ERROR, and re-raises, never
         # altering loop control flow.
-        with self._otel.run_span(ctx.run_id) as run_span:
+        # ADR-38: pass the dispatching iter's OTel context so fanout-spawned
+        # runs are parented under the dispatching iter in the trace tree.
+        # state.parent_iter_ctx is None for top-level runs (correct — they
+        # are trace roots), the parent's dispatching iter context for fanout
+        # children (set by _dispatch_children), and the run's own dispatching
+        # iter context for synth-phase re-enqueues (set by
+        # _maybe_resume_parent, preserving recursive symmetry). The
+        # cancelled-before-start guard above must remain above this line so
+        # cascade-DB-finalised descendants never open a span.
+        with self._otel.run_span(
+            ctx.run_id, parent_iter_ctx=state.parent_iter_ctx
+        ) as run_span:
             try:
                 try:
                     result = await run_loop(
@@ -809,6 +862,7 @@ class RelayCore:
                 parent_worktree_path=ctx.worktree_path,
                 fanout_payload=result.fanout_payload or {},
                 iter_id=closing.id if closing else None,
+                parent_iter_ctx=result.fanout_parent_ctx,
             )
             return
         await set_run_status(

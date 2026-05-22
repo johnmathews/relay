@@ -48,6 +48,7 @@ __all__ = [
     "Instrumentation",
     "RunSpan",
     "IterSpan",
+    "IterSpanContext",
     "NoopInstrumentation",
     "OtelInstrumentation",
     "NOOP",
@@ -56,12 +57,20 @@ __all__ = [
     "build_instrumentation",
 ]
 
+# Opaque carrier for an iter's OTel context. The rest of the codebase
+# (loop, RelayCore) round-trips this value without inspecting its real
+# type; only this module knows it is opentelemetry.context.Context.
+IterSpanContext = Any
+
 
 # ── protocols ──────────────────────────────────────────────────────────
 
 
 class IterSpan(Protocol):
     """Per-iter span handle. Tool spans hang off it."""
+
+    @property
+    def context(self) -> IterSpanContext: ...
 
     def record_tool_call(
         self,
@@ -89,7 +98,7 @@ class RunSpan(Protocol):
 
 class Instrumentation(Protocol):
     def run_span(
-        self, run_id: str
+        self, run_id: str, *, parent_iter_ctx: IterSpanContext = None
     ) -> AbstractContextManager[RunSpan]: ...
 
     def shutdown(self) -> None: ...
@@ -99,6 +108,8 @@ class Instrumentation(Protocol):
 
 
 class _NoopIterSpan:
+    context: IterSpanContext = None  # literal class attribute — no provider, no network
+
     def record_tool_call(self, **_: Any) -> None:
         pass
 
@@ -122,7 +133,9 @@ class NoopInstrumentation:
     state, makes no network call (ADR-29 risk surface)."""
 
     @contextmanager
-    def run_span(self, run_id: str) -> Iterator[RunSpan]:
+    def run_span(
+        self, run_id: str, *, parent_iter_ctx: IterSpanContext = None
+    ) -> Iterator[RunSpan]:
         yield NOOP_RUN_SPAN
 
     def shutdown(self) -> None:
@@ -200,6 +213,11 @@ class _OtelIterSpan:
         self._tracer = tracer
         self._span = span
         self._ctx = ctx  # this iter is the current span → parent of tools
+
+    @property
+    def context(self) -> IterSpanContext:
+        """The OTel Context with this iter span active. Opaque to callers."""
+        return self._ctx
 
     def record_tool_call(
         self,
@@ -282,9 +300,13 @@ class OtelInstrumentation:
         self._tracer = self._provider.get_tracer("relay_v2.observability")
 
     @contextmanager
-    def run_span(self, run_id: str) -> Iterator[RunSpan]:
+    def run_span(
+        self, run_id: str, *, parent_iter_ctx: IterSpanContext = None
+    ) -> Iterator[RunSpan]:
         span = self._tracer.start_span(
-            "relay.run", attributes={"relay.run_id": run_id}
+            "relay.run",
+            context=parent_iter_ctx,
+            attributes={"relay.run_id": run_id},
         )
         ctx = set_span_in_context(span)
         try:
