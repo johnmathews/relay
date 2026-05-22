@@ -191,6 +191,7 @@ The `events.kind` column is a discriminator. Payloads are JSON.
 | `subagent_dispatch` | orchestrator spawns a subagent run | `{child_run_id, role, prompt}` |
 | `subagent_return` | subagent run finishes; emitted on the parent's stream by the join watcher (9c). | `{child_run_id, status, summary}` |
 | `child_runs_resolved` | after all children of an `awaiting_children` parent reach a terminal status; immediately before the parent's synthesizer iter is enqueued (9c). Optional but recommended for replay diffing — derivable from the preceding `subagent_return` events. | `{children_count, terminal_statuses}` (`terminal_statuses` is `dict[run_id, status]`) |
+| `harness_session_ended` | iter's harness session terminates (every close path) — appended **before** `iter_ended` (spec §6, ADR-39) | `{stop_reason, messages, summary}` — `stop_reason ∈ {clean, crash, timeout, cancelled}`; `messages` is `SessionEnded.messages` verbatim (ADR-18 opaque); `summary` populated only on the `done` close path, `null` otherwise |
 | `iter_ended` | iter N closes | `{seq, signal_kind, exit_reason}` |
 | `pause_requested` | pause signal handled | `{question}` |
 | `pause_resolved` | answer received | `{answer}` |
@@ -515,6 +516,20 @@ A child-completion watcher (ADR-36) is an in-process direct call from the
 child's `_run` task, lock-guarded by `RelayCore._enqueue_lock`. The watcher
 is a no-op when the parent is not `awaiting_children` (already resumed by
 a sibling, or cascade-cancelled).
+
+### 6.x Iter close-time persistence (ADR-39)
+
+Every iter close path (terminal signal, cancelled, timed-out,
+no-signal, crash) appends a `harness_session_ended` event to the
+events table **before** the paired `iter_ended` event. The payload
+carries `SessionEnded.stop_reason`, `SessionEnded.messages` verbatim
+(ADR-18 opaque-messages convention), and a `summary` populated only
+on the `signal.kind == "done"` close path. This closes the latent
+ADR-10 invariant gap parked since Phase 7: the OTel mirror sees
+usage via the ADR-29 Option-D harness lookahead, but until ADR-39
+the event store itself never received the close-time row.
+Consumers that derive from the event log alone (SSE replay, future
+analytics, audit) now have a complete record.
 
 ### 6.1 Runtime model (ADR-19, ADR-21)
 
