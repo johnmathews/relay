@@ -491,6 +491,17 @@ Skill workflow today reviews one file. Should `review_path` be a
 list? Lean: scalar in v1 (matches today's use). Plural is additive
 later (`review_paths` array attribute, or repeat the attribute).
 
+> **Resolved 2026-05-23 — opened in 14f**
+> (`docs/plans/2026-05-23-pause-for-review-14f.md`). Shape: **repeat
+> the attribute** (`review_path="a.md" review_path="b.md"`). Storage
+> becomes `signal_args.review_paths: list[str]` replacing the scalar
+> `review_path` key (with a read-side fallback during the migration
+> window). The 14a write-endpoint coupling check generalises from
+> exact-match to set-membership. Dashboard renders tabs when N > 1
+> and is byte-identical when N == 1. ADR-41 records the storage-shape
+> change. The engteam Phase-2 template is **not** modified by 14f —
+> plural is opt-in for future skills / use-cases.
+
 **OQ-3 — What if the path doesn't exist when the dashboard mounts?**
 The agent wrote the file before emitting the sentinel; missing means
 the agent lied or the file was deleted out-of-band. Lean: the editor
@@ -506,12 +517,34 @@ sketched above. The agent may want per-file evidence. Cap at first
 N (say 10) with a `... (M more)` line if there are many — though for
 single-user, single-file pauses this never triggers.
 
+> **Status 2026-05-23 — remains deferred (not opened in 14e/14f).**
+> ADR-40 deferred the `compose_resume_prompt` annotation because the
+> agent's `next_prompt` already says "re-read the file in full", and
+> the on-disk edit is picked up transparently via that re-read (the
+> load-bearing ADR-20 flow). The 14d live-acceptance journal has not
+> yet been written, so we have no live evidence that the agent ever
+> *fails* to notice an edit. **Reopens iff 14d's journal records a
+> real-world miss** (e.g. the agent quoted the pre-edit content, or
+> proceeded without acknowledging the change). At that point the
+> annotation is a contract change to `compose_resume_prompt` and
+> wants its own sub-phase + ADR-41-or-later.
+
 **OQ-5 — Diff view in the editor (v1 or v2)?**
 The Phase-4 pipeline already includes `diff2html`. Showing a diff
 between server-current and dirty-buffer in the editor is feasible
 but adds UX surface (three states: saved-clean / dirty / saved-after-
 edit). Lean: **defer to a follow-up**. v1 ships textarea + render-
 preview; v2 adds diff if it proves valuable.
+
+> **Resolved 2026-05-23 — opened in 14e**
+> (`docs/plans/2026-05-23-pause-for-review-14e.md`). Single-user MVP
+> (ADR-12) collapses "dirty-vs-server-current" and "dirty-vs-loaded-
+> baseline" to one comparison — there is no other writer. Shape:
+> right pane gains a `[Preview | Diff]` toggle, Diff disabled while
+> the textarea is clean (== loaded baseline); baseline updates to
+> the just-saved content on a successful Save. No new dep — reuses
+> the artifacts-pane's lazy `diff2html` entry (ADR-26 budget
+> preserved).
 
 **OQ-6 — Should `artifact_edited` events surface in the run timeline
 (`TimelinePane.vue`)?**
@@ -520,6 +553,16 @@ Lean: yes, as a small inline row (similar to UsageRow's
 opens the artifact at the recorded hash. v1: the row exists; the
 "view diff" link is a stretch goal. The minimum is that the event
 is in the timeline so SSE/replay show it.
+
+> **Resolved 2026-05-23 — opened in 14e, reframed.** 14c already
+> ships the inline row. The follow-up adds a **click-target** that
+> navigates to the artifacts pane at the file's *current* on-disk
+> state — **not a diff**. ADR-40 §B1 deliberately does not preserve
+> before-content in the event store, so a historical diff is not
+> reconstructible without breaking B1 (B3 is the contract change
+> required, rejected here as premature). Hashes (`sha256_before` →
+> `sha256_after`) stay inline as row metadata. The original lean's
+> "view diff" wording is honestly named as a missing capability.
 
 **OQ-7 — File-type policy.**
 Lean: text only (same rule as GET — 415 for binary). The Phase-2
@@ -637,16 +680,52 @@ Langfuse-UI gate.
 - Live engteam run shows the new editor end-to-end.
 - Journal entry recording the same.
 
-### 14e (deferred / optional)
+### 14e + 14f — 2026-05-23 follow-up (opened, scoped, locked)
 
-If 14a–14d ship cleanly and the workflow proves valuable:
+Split into two sub-phases following 14a–14d cadence. 14e is the
+"audit polish" bundle (no grammar change); 14f is the only contract-
+changing piece. OQ-4 stays deferred (see annotation above).
 
-- Diff view (OQ-5)
-- `review_paths` plural (OQ-2)
-- "view diff" links on `artifact_edited` timeline rows (OQ-6 stretch)
-- OTel span attribute carrying `artifact_edited` count per pause
+**14e** (`docs/plans/2026-05-23-pause-for-review-14e.md`) — ~1.5–2
+days:
 
-None of these are blockers; all are purely additive.
+- **Diff toggle in editor (OQ-5).** Right pane gains a
+  `[ Preview | Diff ]` switch; Diff disabled while textarea is clean.
+  Baseline = loaded content, updates on Save. No new dep.
+- **Timeline row → artifact navigation (OQ-6, reframed).** Each
+  `artifact_edited` row becomes a click-target that opens the
+  artifacts pane at the file's *current* state. Hashes stay inline.
+  Honestly named: *navigation*, not a historical diff (B1 audit gap
+  preserved).
+- **OTel scalar attr.** `relay.pause.artifacts_edited_count: int` on
+  the **resumed iter's** `relay.iter` span (count of `artifact_edited`
+  events with `iter_id == paused_iter_id`). Single attribute, low
+  cardinality. NOOP `Instrumentation` ignores it.
+- **Fanout-docs phase-2 cross-link.** A small janitor edit closing
+  the deferred 9e follow-up:
+  `skills/engineering-team/pi/phases/phase-2-planning.md` gains a
+  blockquote pointing at `../references/fanout.md` as the criterion-
+  and-grammar source when the plan identifies parallel units (the
+  reference doc + the phase-1/phase-3 cross-links already exist as
+  of 2026-05-22).
+
+No new ADR; no grammar change; no event-kind; no MCP change.
+
+**14f** (`docs/plans/2026-05-23-pause-for-review-14f.md`) — ~1.5–2
+days:
+
+- **Plural `review_path` (OQ-2).** Repeated attribute on the pause
+  line; `signal_args.review_paths: list[str]` replaces the scalar
+  `review_path` key; 14a write-endpoint coupling check generalises
+  from exact-match to set-membership; dashboard renders tabs when
+  N > 1, byte-identical when N == 1. Read-side fallback to the old
+  scalar key handles a paused-iter migration window.
+- **ADR-41 records the storage-shape change**, the repeated-attribute
+  grammar, and the membership coupling.
+
+These follow-ups were the entire ADR-40 §"OQ" carry-over minus
+OQ-4 (parked). The pause-for-review arc reaches its full scope at
+14f; OQ-4 lands in a later sub-phase iff 14d evidence warrants it.
 
 ## Effort estimate
 
