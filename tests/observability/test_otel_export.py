@@ -502,3 +502,336 @@ def test_synthesizer_phase_runspan_is_parented_under_dispatching_iter(
         == synth_run.context.trace_id
         == dispatching_iter.context.trace_id
     ), "all spans in the fanout-join cycle must share the same trace_id"
+
+
+# ── Task 5: end-to-end OTel trace-tree integration tests ─────────────────────
+
+
+def _git_init(tmp_path: Path) -> None:
+    """Initialise a bare git repo so child-run workspace provisioning works."""
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=tmp_path,
+                   check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path,
+                   check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "--allow-empty", "-m", "init"],
+        cwd=tmp_path, check=True,
+    )
+
+
+def _run_fanout_full(
+    tmp_path: Path,
+    harness: ScriptedHarness,
+    otel: object,
+) -> tuple[str, list[str]]:
+    """Drive parent → 2 children → synthesizer to completion; return
+    (parent_id, [child_id_a, child_id_b])."""
+    settings = _settings(tmp_path)
+
+    async def scenario(core: RelayCore) -> tuple[str, list[str]]:
+        pid = await core.register_project(tmp_path, "p")
+        parent_id = await core.start_run(pid, "Investigate.")
+        first = await core.wait_for_run(parent_id)
+        assert first.status == "awaiting_children", first.status
+        children = await core.list_children(parent_id)
+        assert len(children) == 2
+        child_ids = [c.id for c in children]
+        for cid in child_ids:
+            await core.wait_for_run(cid)
+        second = await core.wait_for_run(parent_id)
+        assert second.status == "done", second.status
+        return parent_id, child_ids
+
+    return _run(scenario, settings, harness, otel)
+
+
+def test_fanout_produces_connected_trace_tree(tmp_path: Path) -> None:
+    """End-to-end: one root span, every child parented under the dispatching
+    iter, synth-phase run-span parented under the dispatching iter, synth iter
+    nested under the synth run-span, and all spans share one trace_id.
+
+    Task 5 covers the *whole tree shape*; Task 4b's narrower test covers only
+    synth-phase parentage specifically.  ADR-38.
+    """
+    _git_init(tmp_path)
+    harness = ScriptedHarness([
+        TextScript(_FANOUT_TWO),
+        TextScript(_CHILD_DONE),
+        TextScript(_CHILD_DONE),
+        TextScript(_SYNTH_DONE),
+    ])
+    exporter = InMemorySpanExporter()
+    otel = OtelInstrumentation(SimpleSpanProcessor(exporter))
+
+    parent_id, child_ids = _run_fanout_full(tmp_path, harness, otel)
+    finished = exporter.get_finished_spans()
+
+    # ── Exactly one root span (no parent) ────────────────────────────────────
+    root_spans = [s for s in finished if s.parent is None]
+    assert len(root_spans) == 1, (
+        f"expected exactly one root relay.run span (the pre-fanout phase), "
+        f"got {len(root_spans)}: {[s.name for s in root_spans]}"
+    )
+    pre_fanout_run = root_spans[0]
+    assert pre_fanout_run.name == "relay.run"
+    assert pre_fanout_run.attributes.get("relay.run_id") == parent_id
+
+    # ── Find the dispatching iter span ───────────────────────────────────────
+    dispatching_iters = [
+        s for s in finished
+        if s.name == "relay.iter"
+        and s.attributes.get("relay.run_id") == parent_id
+        and s.parent is not None
+        and s.parent.span_id == pre_fanout_run.context.span_id
+    ]
+    assert len(dispatching_iters) == 1, (
+        f"expected exactly one relay.iter child of the pre-fanout run span, "
+        f"got {len(dispatching_iters)}"
+    )
+    dispatching_iter = dispatching_iters[0]
+
+    # ── Each child's relay.run parents under the dispatching iter ────────────
+    for child_id in child_ids:
+        child_run_spans = [
+            s for s in finished
+            if s.name == "relay.run"
+            and s.attributes.get("relay.run_id") == child_id
+        ]
+        assert len(child_run_spans) == 1, (
+            f"expected 1 relay.run span for child {child_id}, "
+            f"got {len(child_run_spans)}"
+        )
+        child_run = child_run_spans[0]
+        assert child_run.parent is not None, (
+            f"child {child_id} relay.run must have a parent "
+            "(should be the dispatching iter)"
+        )
+        assert child_run.parent.span_id == dispatching_iter.context.span_id, (
+            f"child {child_id} relay.run parent.span_id "
+            f"{child_run.parent.span_id!r} != dispatching iter span_id "
+            f"{dispatching_iter.context.span_id!r}"
+        )
+
+    # ── Synth-phase relay.run also parents under the dispatching iter ─────────
+    parent_run_spans = [
+        s for s in finished
+        if s.name == "relay.run"
+        and s.attributes.get("relay.run_id") == parent_id
+    ]
+    assert len(parent_run_spans) == 2, (
+        f"expected 2 relay.run spans for parent run (pre-fanout + synth), "
+        f"got {len(parent_run_spans)}"
+    )
+    synth_run_spans = [
+        s for s in parent_run_spans if s.parent is not None
+    ]
+    assert len(synth_run_spans) == 1
+    synth_run = synth_run_spans[0]
+    assert synth_run.parent.span_id == dispatching_iter.context.span_id, (
+        "synth-phase relay.run must parent under the dispatching iter (ADR-38)"
+    )
+
+    # ── Synth iter is nested under the synth-phase relay.run ────────────────────
+    # (not parented directly under the dispatching iter)
+    synth_iters = [
+        s for s in finished
+        if s.name == "relay.iter"
+        and s.attributes.get("relay.run_id") == parent_id
+        and s.parent is not None
+        and s.parent.span_id == synth_run.context.span_id
+    ]
+    assert len(synth_iters) == 1, (
+        f"expected exactly one relay.iter parented under the synth-phase "
+        f"relay.run span, got {len(synth_iters)}"
+    )
+
+    # ── All spans share one trace_id ─────────────────────────────────────────
+    all_trace_ids = {s.context.trace_id for s in finished}
+    assert len(all_trace_ids) == 1, (
+        f"all spans must share one trace_id, found {len(all_trace_ids)} "
+        f"distinct trace_ids"
+    )
+
+
+def test_recursive_fanout_produces_three_level_tree(tmp_path: Path) -> None:
+    """parent → child (which itself fanouts one grandchild) → grandchild done
+    → child synthesizer done → parent synthesizer done.
+
+    Assert:
+    - grandchild's relay.run is parented under the child's dispatching iter
+    - child's relay.run (pre-fanout phase) is parented under the parent's
+      dispatching iter
+    - all spans share the same trace_id
+    """
+    _git_init(tmp_path)
+    # One child from parent, one grandchild from child.
+    fanout_one = (
+        "Dispatching one child.\n\n"
+        "[[engteam:fanout-start]]\n"
+        '{"children": [{"role": "worker", "prompt": "Do work."}],'
+        '"join_prompt": "Synthesize."}'
+        "\n[[engteam:fanout-end]]\n\n"
+        "[[engteam:fanout]]"
+    )
+    # Scripts in order: parent fanout, child fanout, grandchild done,
+    # child synthesizer done, parent synthesizer done.
+    harness = ScriptedHarness([
+        TextScript(fanout_one),   # parent → awaiting_children
+        TextScript(fanout_one),   # child → awaiting_children (fanouts grandchild)
+        TextScript(_CHILD_DONE),  # grandchild → done
+        TextScript(_SYNTH_DONE),  # child synthesizer → done
+        TextScript(_SYNTH_DONE),  # parent synthesizer → done
+    ])
+    exporter = InMemorySpanExporter()
+    otel = OtelInstrumentation(SimpleSpanProcessor(exporter))
+
+    settings = _settings(tmp_path)
+
+    async def scenario(core: RelayCore) -> tuple[str, str, str]:
+        pid = await core.register_project(tmp_path, "p")
+        parent_id = await core.start_run(pid, "Investigate recursively.")
+        # Parent settles into awaiting_children.
+        first = await core.wait_for_run(parent_id)
+        assert first.status == "awaiting_children", first.status
+        # One child of the parent.
+        parent_children = await core.list_children(parent_id)
+        assert len(parent_children) == 1
+        child_id = parent_children[0].id
+        # Child settles into awaiting_children (it also fanouts).
+        child_result = await core.wait_for_run(child_id)
+        assert child_result.status == "awaiting_children", child_result.status
+        # Grandchild.
+        child_children = await core.list_children(child_id)
+        assert len(child_children) == 1
+        grandchild_id = child_children[0].id
+        # Drain grandchild.
+        gc_result = await core.wait_for_run(grandchild_id)
+        assert gc_result.status == "done", gc_result.status
+        # Child synthesizer.
+        child_final = await core.wait_for_run(child_id)
+        assert child_final.status == "done", child_final.status
+        # Parent synthesizer.
+        parent_final = await core.wait_for_run(parent_id)
+        assert parent_final.status == "done", parent_final.status
+        return parent_id, child_id, grandchild_id
+
+    parent_id, child_id, grandchild_id = _run(scenario, settings, harness, otel)
+    finished = exporter.get_finished_spans()
+
+    # ── Exactly one root span (the parent's pre-fanout relay.run) ────────────
+    root_spans = [s for s in finished if s.parent is None]
+    assert len(root_spans) == 1, (
+        f"expected exactly one root span, got {len(root_spans)}"
+    )
+    parent_pre_fanout = root_spans[0]
+    assert parent_pre_fanout.attributes.get("relay.run_id") == parent_id
+
+    # ── Parent's dispatching iter (child of parent pre-fanout run span) ───────
+    parent_dispatching_iters = [
+        s for s in finished
+        if s.name == "relay.iter"
+        and s.attributes.get("relay.run_id") == parent_id
+        and s.parent is not None
+        and s.parent.span_id == parent_pre_fanout.context.span_id
+    ]
+    assert len(parent_dispatching_iters) == 1
+    parent_dispatching_iter = parent_dispatching_iters[0]
+
+    # ── Child's pre-fanout relay.run parents under parent's dispatching iter ──
+    child_run_spans = [
+        s for s in finished
+        if s.name == "relay.run"
+        and s.attributes.get("relay.run_id") == child_id
+    ]
+    # Child has a pre-fanout phase and a synth phase — 2 run spans.
+    assert len(child_run_spans) == 2, (
+        f"expected 2 relay.run spans for child (pre-fanout + synth), "
+        f"got {len(child_run_spans)}"
+    )
+    child_pre_fanout_spans = [
+        s for s in child_run_spans
+        if s.parent is not None
+        and s.parent.span_id == parent_dispatching_iter.context.span_id
+    ]
+    assert len(child_pre_fanout_spans) == 1, (
+        "child's pre-fanout relay.run must parent under parent's dispatching iter"
+    )
+    child_pre_fanout = child_pre_fanout_spans[0]
+
+    # ── Child's dispatching iter (child of child pre-fanout run span) ─────────
+    child_dispatching_iters = [
+        s for s in finished
+        if s.name == "relay.iter"
+        and s.attributes.get("relay.run_id") == child_id
+        and s.parent is not None
+        and s.parent.span_id == child_pre_fanout.context.span_id
+    ]
+    assert len(child_dispatching_iters) == 1
+    child_dispatching_iter = child_dispatching_iters[0]
+
+    # ── Grandchild's relay.run parents under child's dispatching iter ─────────
+    grandchild_run_spans = [
+        s for s in finished
+        if s.name == "relay.run"
+        and s.attributes.get("relay.run_id") == grandchild_id
+    ]
+    assert len(grandchild_run_spans) == 1, (
+        f"expected 1 relay.run span for grandchild, "
+        f"got {len(grandchild_run_spans)}"
+    )
+    grandchild_run = grandchild_run_spans[0]
+    assert grandchild_run.parent is not None, (
+        "grandchild relay.run must have a parent"
+    )
+    assert grandchild_run.parent.span_id == child_dispatching_iter.context.span_id, (
+        "grandchild relay.run must parent under the child's dispatching iter "
+        "(two-hop chain back to the parent root)"
+    )
+
+    # ── All spans share one trace_id ─────────────────────────────────────────
+    all_trace_ids = {s.context.trace_id for s in finished}
+    assert len(all_trace_ids) == 1, (
+        f"recursive fanout must share one trace_id across all three levels, "
+        f"found {len(all_trace_ids)} distinct trace_ids"
+    )
+
+
+def test_noop_path_makes_no_otel_calls_on_fanout(tmp_path: Path) -> None:
+    """Driving a full fanout-join scenario against NoopInstrumentation must not
+    construct any OTel SDK provider, exporter, or tracer.
+
+    Approach: assert that NoopInstrumentation has no ``_provider`` attribute
+    after the run (the OTel-backed ``OtelInstrumentation`` stores one in
+    ``self._provider``; the NOOP never does — ADR-29 risk surface).  Also
+    assert that NOOP's run_span/iter_span APIs all return None for context
+    (no span IDs, no trace IDs).
+    """
+    _git_init(tmp_path)
+    harness = ScriptedHarness([
+        TextScript(_FANOUT_TWO),
+        TextScript(_CHILD_DONE),
+        TextScript(_CHILD_DONE),
+        TextScript(_SYNTH_DONE),
+    ])
+
+    noop_inst = NoopInstrumentation()
+
+    # Drive the full fanout scenario against the NOOP instrumentation.
+    parent_id, child_ids = _run_fanout_full(tmp_path, harness, noop_inst)
+    assert isinstance(parent_id, str)
+    assert len(child_ids) == 2
+
+    # NOOP must never acquire a _provider attribute (that's the OTel SDK seam).
+    assert not hasattr(noop_inst, "_provider"), (
+        "NoopInstrumentation must not have a _provider attribute after running "
+        "a fanout — this would mean the OTel SDK was initialised on the NOOP "
+        "path (ADR-29 risk surface)"
+    )
+
+    # Context carrier must always be None on the NOOP path (no span IDs).
+    with noop_inst.run_span("check") as rs:
+        with rs.iter_span(seq=1, phase=None) as its:
+            assert its.context is None, (
+                "NOOP iter_span.context must be None (no OTel span constructed)"
+            )
