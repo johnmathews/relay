@@ -15,12 +15,18 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+    InMemorySpanExporter,
+)
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
 
 from relay_v2.config import Settings
 from relay_v2.core import RelayCore
 from relay_v2.db.models import Event, Iter, Run
+from relay_v2.orchestrator.loop import LoopResult
+from relay_v2.observability import OtelInstrumentation
 from tests.orchestrator.scripted_harness import (
     HangScript,
     Script,
@@ -1068,3 +1074,204 @@ def test_cascade_handles_cycle_safely(tmp_path: Path) -> None:
     with _read(settings) as s:
         row = s.get(Run, run_id)
         assert row is not None and row.status == "cancelled"
+
+
+# ── ADR-38 / 9f Task 3 — fanout_parent_ctx on LoopResult ──────────────────
+
+FANOUT_BLOCK = (
+    "Dispatching.\n\n"
+    "[[engteam:fanout-start]]\n"
+    '{"children": [{"role": "a", "prompt": "A."}, {"role": "b", "prompt": "B."}],'
+    ' "join_prompt": "Merge."}\n'
+    "[[engteam:fanout-end]]\n\n"
+    "[[engteam:fanout]]"
+)
+DONE_BLOCK_9F = "All done.\n\n[[engteam:done]]"
+
+
+def _run_with_otel[T](
+    coro: Callable[[RelayCore], Awaitable[T]],
+    settings: Settings,
+    harness: ScriptedHarness,
+    otel: object,
+) -> T:
+    async def _main() -> T:
+        core = RelayCore(settings, harness=harness, otel=otel)  # type: ignore[arg-type]
+        await core.start()
+        try:
+            return await coro(core)
+        finally:
+            await core.aclose()
+
+    return asyncio.run(_main())
+
+
+@pytest.mark.parametrize(
+    "block,expected_status",
+    [
+        # done → result.status == "done"
+        (DONE_BLOCK_9F, "done"),
+        # pause → result.status == "paused"
+        (
+            "I need a decision.\n\n"
+            "[[engteam:prompt-start]]\n"
+            "Proceed with the chosen option.\n"
+            "[[engteam:prompt-end]]\n\n"
+            '[[engteam:pause-for-input id="P2" question="Use A or B?"]]',
+            "paused",
+        ),
+        # failed (no signal) → result.status == "failed"
+        (
+            "Here is the contract:\n\n"
+            "```text\n"
+            "    [[engteam:handoff]]\n"
+            "```\n\n"
+            "That was just an example.",
+            "failed",
+        ),
+    ],
+)
+def test_loop_result_fanout_parent_ctx_default_none(
+    tmp_path: Path, block: str, expected_status: str
+) -> None:
+    """ADR-38 / 9f: every non-fanout LoopResult terminal path returns
+    a result with fanout_parent_ctx is None. Parameterised over done,
+    paused, and failed (no-signal)."""
+    settings = _settings(tmp_path)
+    harness = ScriptedHarness([TextScript(block)])
+
+    async def scenario(core: RelayCore) -> LoopResult:
+        pid = await core.register_project(tmp_path, "p")
+        run_id = await core.start_run(pid, "Go.")
+        result = await core.wait_for_run(run_id)
+        assert result.status == expected_status
+        return result
+
+    result = _run(scenario, settings, harness)
+    assert result.fanout_parent_ctx is None
+
+
+def test_loop_result_fanout_parent_ctx_default_none_cancelled(
+    tmp_path: Path,
+) -> None:
+    """ADR-38 / 9f: cancelled path (external cancel_event) also returns
+    fanout_parent_ctx is None."""
+    settings = _settings(tmp_path)
+    harness = ScriptedHarness([HangScript()])
+
+    async def scenario(core: RelayCore) -> LoopResult:
+        pid = await core.register_project(tmp_path, "p")
+        run_id = await core.start_run(pid, "Go.", iter_timeout=30)
+        await asyncio.wait_for(harness.blocked.wait(), timeout=5)
+        await core.cancel_run(run_id)
+        result = await core.wait_for_run(run_id)
+        assert result.status == "cancelled"
+        return result
+
+    result = _run(scenario, settings, harness)
+    assert result.fanout_parent_ctx is None
+
+
+def test_loop_captures_iter_context_on_fanout_terminal(
+    tmp_path: Path,
+) -> None:
+    """ADR-38 / 9f Task 3: on the fanout terminal path run_loop captures
+    iter_span.context INSIDE the iter's with block (before the return)
+    and stores it as LoopResult.fanout_parent_ctx.
+
+    Two assertions:
+    1. result.fanout_parent_ctx is non-None after the loop produces a
+       fanout terminal.
+    2. A downstream run_span opened with parent_iter_ctx=result.fanout_parent_ctx
+       produces a span whose parent.span_id equals the dispatching iter
+       span's span_id — the cross-run parenting invariant (ADR-38).
+
+    The cross-parenting assertion is made INSIDE the scenario coroutine
+    (before core.aclose() shuts down the TracerProvider) so newly-started
+    spans are still exported by the SimpleSpanProcessor.
+    """
+    settings = _settings(tmp_path)
+    # Parent fanout + 2 children done + synthesizer done.
+    harness = ScriptedHarness(
+        [
+            TextScript(FANOUT_BLOCK),
+            TextScript(DONE_BLOCK_9F),
+            TextScript(DONE_BLOCK_9F),
+            TextScript(DONE_BLOCK_9F),
+        ]
+    )
+    exporter = InMemorySpanExporter()
+    otel = OtelInstrumentation(SimpleSpanProcessor(exporter))
+
+    # Collect assertions from inside the coroutine so the provider is live.
+    probe: dict[str, object] = {}
+
+    async def scenario(core: RelayCore) -> LoopResult:
+        pid = await core.register_project(tmp_path, "p")
+        run_id = await core.start_run(pid, "Go.")
+        # First settle: the loop returns awaiting_children (fanout terminal).
+        result = await core.wait_for_run(run_id)
+        assert result.status == "awaiting_children"
+
+        # ── Assertion 1: fanout_parent_ctx is non-None ────────────────
+        assert result.fanout_parent_ctx is not None
+        probe["fanout_parent_ctx_is_non_none"] = True
+
+        # ── Assertion 2: cross-run span parenting (provider still live) ─
+        # The iter spans from the fanout phase are already finished.
+        iter_spans_before = [
+            s for s in exporter.get_finished_spans()
+            if s.name == "relay.iter"
+        ]
+        # Create a test child span using the captured context; it must
+        # parent to the dispatching fanout iter span.
+        tracer = otel._tracer  # type: ignore[attr-defined]
+        child = tracer.start_span(
+            "test.fanout_ctx_child",
+            context=result.fanout_parent_ctx,
+        )
+        child.end()
+
+        all_finished = exporter.get_finished_spans()
+        child_span = next(
+            s for s in all_finished if s.name == "test.fanout_ctx_child"
+        )
+        assert child_span.parent is not None
+
+        # The fanout iter span is the iter whose span_id equals the
+        # child's parent.span_id — must be iter seq=1 (the fanout iter).
+        fanout_iter = next(
+            s for s in iter_spans_before
+            if s.context.span_id == child_span.parent.span_id
+        )
+        probe["fanout_iter_seq"] = fanout_iter.attributes["relay.iter_seq"]
+        probe["cross_parenting_ok"] = True
+
+        # Drain children + synthesizer before aclose().
+        from sqlalchemy.orm import Session as SyncSession
+        from relay_v2.db.models import Run as RunModel
+        engine = create_engine(settings.db_url)
+        try:
+            with SyncSession(engine) as s:
+                children = list(
+                    s.scalars(
+                        select(RunModel).where(
+                            RunModel.parent_run_id == run_id
+                        )
+                    )
+                )
+        finally:
+            engine.dispose()
+        for c in children:
+            await core.wait_for_run(c.id)
+        await core.wait_for_run(run_id)
+        return result
+
+    result = _run_with_otel(scenario, settings, harness, otel)
+
+    # Verify the in-coroutine assertions ran (not short-circuited).
+    assert probe.get("fanout_parent_ctx_is_non_none") is True
+    assert probe.get("cross_parenting_ok") is True
+    assert probe["fanout_iter_seq"] == 1  # fanout was always iter 1
+    # Outer assertion: the returned LoopResult carries the captured ctx.
+    assert result.fanout_parent_ctx is not None

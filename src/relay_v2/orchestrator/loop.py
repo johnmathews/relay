@@ -43,6 +43,7 @@ from relay_v2.observability import (
     NOOP_ITER_SPAN,
     NOOP_RUN_SPAN,
     IterSpan,
+    IterSpanContext,
     RunSpan,
 )
 from relay_v2.orchestrator.lifecycle import (
@@ -71,6 +72,12 @@ class LoopResult:
     next_prompt: str | None = None
     pause_id: str | None = None
     fanout_payload: dict[str, Any] | None = None
+    # ADR-38: opaque OTel context captured from the dispatching iter span.
+    # Populated ONLY on the signal.kind=="fanout" branch — all other
+    # terminals leave this None. Task 4 threads it through _dispatch_children
+    # → _RunState.parent_iter_ctx so each child run-span parents under the
+    # fanout iter for cross-run trace continuity.
+    fanout_parent_ctx: IterSpanContext | None = None
 
 
 @dataclass
@@ -375,10 +382,19 @@ async def run_loop(
                     pause_id=signal.args.get("id", ""),
                 )
             if signal.kind == "fanout":
+                # ADR-38: capture the iter span context HERE, inside the
+                # iter's `with` block, before it closes. This is the only
+                # terminal branch that sets fanout_parent_ctx; all other
+                # branches leave it None (the dataclass default). Task 4
+                # passes this context to _dispatch_children so each child
+                # run-span parents under this dispatching iter span for
+                # cross-run trace continuity.
+                parent_ctx = iter_span.context
                 return LoopResult(
                     "awaiting_children",
                     reason="signal",
                     fanout_payload=signal.args.get("payload"),
+                    fanout_parent_ctx=parent_ctx,
                 )
             # handoff — carry the compressed prompt; context stays fresh.
             body = signal.args["next_prompt"]
