@@ -461,7 +461,7 @@ def test_synthesizer_phase_runspan_is_parented_under_dispatching_iter(
     )
     assert len(synth_spans) == 1, (
         "expected exactly one non-root relay.run span for the synth phase "
-        "(Task 4b not yet implemented — synth-phase span is still a root)"
+        "(ADR-38: synth-phase relay.run must parent under the dispatching iter)"
     )
     pre_fanout_run = pre_fanout_spans[0]
     synth_run = synth_spans[0]

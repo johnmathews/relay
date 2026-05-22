@@ -309,7 +309,6 @@ async def test_dispatch_children_stashes_parent_iter_ctx_on_child_state(
 
     # Parent was opened with no parent_iter_ctx (it is a root run).
     parent_calls = [(rid, ctx) for rid, ctx in otel.calls if rid == parent_id]
-    assert len(parent_calls) >= 1
     # The first (fanout) parent run_span call must have parent_iter_ctx=None.
     assert parent_calls[0][1] is None
 
@@ -320,6 +319,21 @@ async def test_dispatch_children_stashes_parent_iter_ctx_on_child_state(
         assert ctx is not None, "child run_span must have a parent_iter_ctx"
     # Both children share the same ctx object (dispatched from the same iter).
     assert child_ctxs[0] is child_ctxs[1]
+
+    # Task 4b: the synthesizer-phase parent run_span call must also carry
+    # the dispatching iter's ctx, so it parents under the same iter as
+    # the children (one connected fanout-join sub-tree per ADR-38).
+    assert len(parent_calls) == 2, (
+        f"expected exactly 2 parent run_span calls (pre-fanout + synth), "
+        f"got {len(parent_calls)}"
+    )
+    synth_ctx = parent_calls[1][1]
+    assert synth_ctx is not None, (
+        "synthesizer-phase run_span must carry parent_iter_ctx (Task 4b)"
+    )
+    assert synth_ctx is child_ctxs[0], (
+        "synthesizer-phase ctx must equal children's dispatching-iter ctx"
+    )
 
 
 async def test_non_fanout_runs_pass_none_parent_iter_ctx(
