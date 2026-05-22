@@ -22,6 +22,7 @@
 import { computed, ref } from 'vue'
 import ToolCallCard from './ToolCallCard.vue'
 import SignalCard from './SignalCard.vue'
+import UsageRow from './UsageRow.vue'
 import type { StreamEvent } from '@/stores/events'
 
 const props = defineProps<{
@@ -78,7 +79,7 @@ const OVERSCAN = 8
 interface Row {
   /** Stable key. */
   key: string
-  /** 'tool' | 'signal' | 'message' | 'boundary' | 'pause' | 'generic'. */
+  /** 'tool' | 'signal' | 'message' | 'boundary' | 'pause' | 'usage' | 'generic'. */
   kind: Row['type'] extends never ? never : string
   type:
     | 'tool'
@@ -86,6 +87,7 @@ interface Row {
     | 'message'
     | 'boundary'
     | 'pause'
+    | 'usage'
     | 'generic'
   /** The originating event (newest of a merged pair for tools). */
   event: StreamEvent
@@ -146,6 +148,13 @@ const rows = computed<Row[]>(() => {
         key: `e${ev.seq}`,
         kind: ev.kind,
         type: 'pause',
+        event: ev,
+      })
+    } else if (ev.kind === 'harness_session_ended') {
+      out.push({
+        key: `e${ev.seq}`,
+        kind: ev.kind,
+        type: 'usage',
         event: ev,
       })
     } else if (
@@ -307,6 +316,11 @@ function asStr(v: unknown, fallback: string): string {
           <span class="timeline__btag">{{ row.kind }}</span>
           <code class="timeline__bmeta">{{ generic(row.event) }}</code>
         </div>
+
+        <UsageRow
+          v-else-if="row.type === 'usage'"
+          :event="row.event"
+        />
 
         <div
           v-else

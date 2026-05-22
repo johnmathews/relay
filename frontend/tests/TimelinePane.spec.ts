@@ -53,6 +53,37 @@ describe('TimelinePane', () => {
     expect(w.find('[data-kind="some_future_kind"]').exists()).toBe(true)
   })
 
+  it('renders harness_session_ended as a UsageRow (ADR-39)', () => {
+    const events: StreamEvent[] = [
+      { seq: 1, kind: 'iter_started', payload: { seq: 1, phase: null } },
+      {
+        seq: 2,
+        kind: 'harness_session_ended',
+        payload: {
+          stop_reason: 'clean',
+          summary: 'ok',
+          messages: [
+            { usage: { input_tokens: 5, output_tokens: 3 } },
+          ],
+        },
+      },
+      {
+        seq: 3,
+        kind: 'iter_ended',
+        payload: { seq: 1, signal_kind: 'done', exit_reason: 'signal' },
+      },
+    ]
+    const w = mount(TimelinePane, { props: { events } })
+    // UsageRow renders the stop_reason badge text + token totals.
+    expect(w.text()).toContain('clean')
+    // Row uses the 'usage' data-kind branch, not the generic fallback.
+    expect(w.find('[data-kind="harness_session_ended"]').exists()).toBe(true)
+    // The .usage-row class is unique to UsageRow.vue.
+    expect(w.find('.usage-row').exists()).toBe(true)
+    expect(w.find('.usage-row').text()).toContain('5')
+    expect(w.find('.usage-row').text()).toContain('3')
+  })
+
   it('signal row has the distinctive card + a linkable anchor id', () => {
     const w = mount(TimelinePane, { props: { events: MIXED } })
     const sig = w.find('[data-testid="signal-card"]')
