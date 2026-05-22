@@ -573,6 +573,41 @@ because it reads `error.value` synchronously in the test body. ADR
 unchanged (the A1/B1 decisions are recorded in ADR-40 from 14a; no
 new ADR — 14c is the UX implementation of those locks). No new
 modules, no new event kinds, no new sentinel grammar.
+**Phase 14d** (2026-05-23,
+[docs/plans/2026-05-22-pause-for-review-14d.md](docs/plans/2026-05-22-pause-for-review-14d.md),
+[skills/engineering-team/pi/phases/phase-2-planning.md](skills/engineering-team/pi/phases/phase-2-planning.md),
+[journal/260523-14d-live-acceptance.md](journal/260523-14d-live-acceptance.md))
+activates pause-for-review for the **primary caller**, closing the
+14a → 14d arc. One template change — the Phase-2 Step-4 closing
+sentinel now emits `review_path="improvement-plan.md"` on the same
+line as the existing `id`/`question` attributes (single-line is
+load-bearing — the parser is line-anchored per
+`sentinels.py:_PAUSE_RE.match(line)` + `_REVIEW_PATH_RE.search(line)`,
+so attribute formatting that wraps across lines silently drops the
+attribute). One new paragraph in the Step-4 "Notes:" block names the
+attribute, points at `references/sentinels.md` §"Reviewable pauses",
+clarifies the `$RELAY_RUN_DIR`-relative semantics + the single-line
+parser constraint, and notes that omitting it keeps pre-14b
+behaviour. The Step-5 handoff template is byte-identical (handoffs
+don't take `review_path` — unattended path; no human review moment).
+The load-bearing "Re-read it in full — the user may have edited it"
+instruction inside the `prompt-start`/`prompt-end` body is preserved
+verbatim — that's the ADR-20 mechanism by which the resumed iter
+picks up the operator's edits (fresh context per iter means the agent
+only sees the edit because it re-reads from disk). No backend,
+frontend, MCP, sentinel-parser, ADR, or test file touched — 14d is
+SKILL-TEMPLATE + JOURNAL ONLY. The automated gate is unchanged
+(325 backend, 173 frontend, ruff/mypy strict clean — template-text
+change, expected); the live `PI_INTEGRATION=1` engteam end-to-end
+acceptance is journal-attested per ADR-30 (operator-driven, the
+mirror of 9f's Langfuse-UI gate) — the journal entry above documents
+the protocol and leaves the attestation section pending the
+operator's live run. The pause-for-review arc (14a → 14d) is now
+fully shipped; 14e is the parking lot for the diff view (proposal
+§OQ-5), per-edit annotation in `compose_resume_prompt` (§OQ-4,
+deferred ADR-40 carry-over), plural `review_paths` (§OQ-2), and the
+optional OTel span attribute carrying per-pause `artifact_edited`
+count.
 
 ## What relay v2 is
 

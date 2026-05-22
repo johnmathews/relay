@@ -227,7 +227,7 @@ have edited it. Then begin Phase 3 (development) by emitting
 `~/.claude/skills/engineering-team/phases/phase-3-development.md`.
 [[engteam:prompt-end]]
 
-[[engteam:pause-for-input id="P1" question="Approve plan in $RELAY_RUN_DIR/improvement-plan.md and proceed to Phase 3 (development)?"]]
+[[engteam:pause-for-input id="P1" question="Approve plan in $RELAY_RUN_DIR/improvement-plan.md and proceed to Phase 3 (development)?" review_path="improvement-plan.md"]]
 `````
 
 Notes:
@@ -240,6 +240,18 @@ Notes:
 - The `~/.claude/skills/engineering-team/...` path is the default
   `relay install-skill` target. If the skill was installed with
   `--project`, substitute that project's `.claude/skills/...` path.
+- The `review_path="improvement-plan.md"` attribute (sentinel grammar
+  from sub-phase 14b) tells relay's dashboard which file the operator
+  should review inline. The dashboard renders a textarea + markdown
+  preview alongside the answer textarea; each Save lands an
+  `artifact_edited` event in the run's event store (ADR-40) before
+  the operator clicks Resume. The attribute is **relative to
+  `$RELAY_RUN_DIR`** — `..`, absolute paths, empty strings, and NUL
+  bytes are rejected at parse time. All sentinel attributes must
+  appear on the same line as the verb (line-anchored parser); see
+  `../references/sentinels.md` § "Reviewable pauses" for the full
+  grammar. Omitting the attribute keeps the pre-14b behaviour (no
+  inline editor; the operator opens the file in their own tool).
 
 If the user edits the plan, re-read it in full before starting Phase 3 — don't assume
 the edits were cosmetic. If the user changes priorities, ordering, or scope, the
