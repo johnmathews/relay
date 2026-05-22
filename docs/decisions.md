@@ -2374,3 +2374,158 @@ ADR-36 (synth-phase `_RunState` swap, the point at which the
 preserved context is re-applied), ADR-37 (`_enqueue_lock`
 serialiser covering watcher and dispatch),
 `docs/plans/2026-05-22-fanout-join-9f.md`.
+
+## ADR-39 — Persist `harness_session_ended` events on every iter close (ADR-10 invariant fix)
+
+**Status:** accepted (2026-05-22).
+
+**Context.** Phase 7 introduced the OTel mirror, and to keep
+`gen_ai.usage.*` attributes accurate on terminal-sentinel iters
+(`[[engteam:done]]` / `[[engteam:handoff]]` / `[[engteam:pause-for-input]]`
+/ `[[engteam:fanout]]`), the pi harness gained an Option-D one-event
+`AssistantText` lookahead so `agent_end` (carrier of
+`SessionEnded.messages` per ADR-18) is consumed in-stream before the
+orchestrator breaks on the sentinel detection (ADR-29). The trade-off
+recorded in the ADR-29 implementation comment of `harness/pi.py`:
+*"external event order is unchanged and the event store is unaffected
+(the orchestrator still breaks before `SessionEnded` is yielded — no
+`agent_end` row, ADR-10 contract intact)"*. The "ADR-10 contract intact"
+clause is the parked debt — the OTel mirror sees the data, but the event
+store does not. ADR-10's invariant is "event store is the single source
+of truth — every observable action is an append-only events row"; a
+session ending is observable, and the row was never written. The Phase
+9a–9f arc deliberately left this open because the in-flight OTel work
+got the data where it needed to go (Langfuse), and closing the event-
+store gap is its own contract change touching spec.md §3.2 (taxonomy)
+and §6 (orchestrator close path). This ADR records that close.
+
+**Decision — new event kind `harness_session_ended`.** A relay-domain
+event kind (not `agent_end` — that's pi vocabulary, and ADR-04
+prohibits harness terms leaking above the boundary) appended to the
+events table on every iter-close path immediately before `iter_ended`.
+The payload is:
+
+```json
+{
+  "stop_reason": "clean" | "crash" | "timeout" | "cancelled",
+  "messages": [...],
+  "summary": "..."
+}
+```
+
+- `stop_reason`: verbatim from `SessionEnded.stop_reason` (captured by
+  `PiSession.wait()` which returns the in-stream-consumed
+  `_final` on clean terminals, or the synthesised one on cancel /
+  crash / timeout).
+- `messages`: verbatim from `SessionEnded.messages` — the ADR-18
+  opaque-passthrough convention is preserved. Each message carries its
+  per-message usage block (input/output/cache-read tokens) which is
+  what Langfuse and the dashboard usage row both need.
+- `summary`: populated **only** on the `signal.kind == "done"` close
+  path, from `signal.args.get("summary")`. `null` on every other
+  close path. Redundant with `run_ended.summary` on the *final* iter
+  of a `done` run; retained because the iter-level event is the
+  natural place for the iter's summary and consumers shouldn't have
+  to walk forward to `run_ended` to find it.
+
+**Decision — emit on every iter-close path, not just the
+terminal-sentinel path.** Cancelled / timed-out / no-signal /
+crash iters all have `outcome.stop_reason` and `outcome.messages`
+populated by `_drive_iter`'s finally block. ADR-10's invariant is
+universal; restricting persistence to the clean-close path would
+leave four observable-action gaps. The cost is one extra event row
+per iter (already small relative to per-iter `assistant_text` /
+`tool_use_*` traffic).
+
+**Decision — append in `loop._finish_iter`, not in
+`EventStore.store_harness_event`.** Two reasons:
+
+1. The harness `SessionEnded` HarnessEvent is never yielded to the
+   loop by `PiSession.events()` (it is consumed in-stream by Option
+   D — ADR-29). So `store_harness_event(ev)` never receives one.
+2. The cancelled/timeout paths don't have a `SessionEnded` until
+   `session.wait()` is awaited in the finally — which `loop._drive_iter`
+   already does. Putting the append in `_finish_iter` keeps the
+   producer (loop) and persistence (events table) on one side of the
+   harness boundary and leaves `store_harness_event` purely a
+   harness-event router.
+
+The `EventStore.store_harness_event` docstring is updated to reflect
+this:`SessionEnded` is still not mapped there — it is the loop's job to
+write `harness_session_ended` from the `session.wait()` result.
+
+**Decision — event ordering: `harness_session_ended` BEFORE
+`iter_ended`.** Both events describe the same close moment. The
+session-end is a more granular fact ("the harness session terminated
+with stop_reason X and these messages"); `iter_ended` is the
+orchestrator-level fact ("the iter closed with this signal and
+exit_reason"). Putting `harness_session_ended` first preserves the
+intuition that the iter row is the *summary*, and that anything
+inside the iter (including its terminal session) precedes the iter
+close. Consumers tailing the stream see usage land before the iter
+boundary, which matches how a real session ends in time.
+
+**Decision — frontend timeline gets a small usage row.** A new
+`UsageRow.vue` SFC renders `harness_session_ended` events as a single
+metadata line: stop_reason badge + summed input/output/cache-read
+tokens across `payload.messages`. The kind is added to
+`INVALIDATING_KINDS` in `stores/events.ts` so Colada caches refresh
+when one arrives.
+
+**Rejected — extend `iter_ended` payload with `messages`/usage.**
+Bundles a potentially-large payload into a row whose existing
+`{seq, signal_kind, exit_reason}` consumers expect to be small. SSE
+frame sizes grow on every iter, replay pagination effectiveness drops,
+and the semantic mixing (lifecycle + data) leaks ADR-18's opaque-
+messages convention into the iter-close row. Separating preserves the
+small-row invariant for `iter_ended`.
+
+**Rejected — name it `agent_end`.** Matches pi's raw event name and
+spec's existing `agent_end_no_signal` exit_reason vocabulary, but
+imports pi vocabulary into the relay event taxonomy. ADR-04 keeps
+pi-specific terms inside `harness/`. `harness_session_ended` reads as
+"a harness session has ended" — agnostic across the harness Protocol,
+which is the point of the abstraction.
+
+**Rejected — emit only on the clean terminal-sentinel close path.**
+The literal reading of the original deferral note. Leaves four
+observable-action gaps (cancel / timeout / no-signal / crash) where
+`session.wait()` data is silently discarded. ADR-10's invariant is
+either universal or it is not load-bearing.
+
+**Rejected — derive usage from existing `assistant_text` rows on
+read.** Per-message usage lives only in `SessionEnded.messages`, never
+in the streaming `text_delta` deltas (ADR-18 — text is captured live;
+usage is the close-time roll-up). A read-time derivation would need to
+re-parse and re-attribute, which is precisely the problem ADR-10
+forbids — the event store should *contain* the truth, not require
+reconstruction.
+
+**Consequences.**
+
+- Per-iter event count goes up by exactly one. SSE replay payload size
+  grows by `len(messages)` per iter for token-usage carrying messages;
+  bounded by pi's existing per-iter message count. Replay pagination
+  in `api/events.py::sse_event_stream._replay` (`_REPLAY_PAGE = 500`)
+  is unaffected — the page is row-count-bounded, not byte-bounded.
+- `tests/orchestrator/test_loop.py`'s event-count and per-seq
+  assertions need re-baselining (+1 per iter, ordering preserved).
+- `tests/api/test_sse.py` Last-Event-ID dedupe assertions need
+  re-baselining for the same reason — no behaviour change in the
+  cutover dedupe itself, just the seq numbers.
+- ADR-29 (Option-D lookahead) remains in place verbatim. The OTel
+  mirror still consumes `out.messages` from `_drive_iter`'s finally
+  block; it does NOT read the new event row. Two consumers of the
+  same in-memory data is fine — the event row is for replay
+  (consumers that arrive later) and the in-memory mirror is for OTel
+  (real-time export).
+- Frontend Timeline gains a new row type. Existing rows render
+  unchanged.
+
+**Related:** ADR-04 (harness isolation — preserved; the new event
+kind is relay-domain), ADR-10 (event store as source of truth — the
+invariant this ADR closes the gap on), ADR-18 (opaque-messages
+convention — payload preserves it verbatim), ADR-29 (Option-D
+lookahead — left in place; this ADR's persistence is independent of
+the lookahead),
+`docs/plans/2026-05-22-harness-session-ended-persistence.md`.
