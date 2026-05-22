@@ -186,10 +186,11 @@ describe('events store — replay vs live orchestration', () => {
     expect(invalidate).not.toHaveBeenCalled() // still armed, not fired
     await Promise.resolve() // let the trailing microtask run
 
-    // Exactly one coalesced flush: 2 invalidate keys + 1 lifecycle ping.
-    expect(invalidate).toHaveBeenCalledTimes(2)
+    // Exactly one coalesced flush: 3 invalidate keys + 1 lifecycle ping.
+    expect(invalidate).toHaveBeenCalledTimes(3)
     expect(invalidate).toHaveBeenCalledWith(['runs', 'detail', 'run-5'])
     expect(invalidate).toHaveBeenCalledWith(['runs'])
+    expect(invalidate).toHaveBeenCalledWith(['runs', 'children', 'run-5'])
     expect(onLifecycle).toHaveBeenCalledTimes(1)
   })
 
@@ -206,5 +207,60 @@ describe('events store — replay vs live orchestration', () => {
     es.emit('tool_use_end', '{}', '3')
     await Promise.resolve()
     expect(invalidate).not.toHaveBeenCalled()
+  })
+
+  it('invalidates runChildren key on subagent_dispatch', async () => {
+    const invalidate = vi.fn()
+    const store = useEventsStore()
+    await store.open('run-1', 'awaiting_children', {
+      invalidate,
+      streamOptions: { eventSourceFactory: freshFactory() },
+    })
+    const es = FakeEventSource.instances[0]!
+
+    es.emit(
+      'subagent_dispatch',
+      JSON.stringify({ child_run_id: 'child-a', role: 'explorer', prompt: 'x' }),
+      '1',
+    )
+
+    // Coalesced — flush the microtask queue.
+    await Promise.resolve()
+    await Promise.resolve()
+
+    // The arming fires three keys: ['runs', 'detail', runId], ['runs'],
+    // and (new in 9e) ['runs', 'children', runId].
+    const calls = invalidate.mock.calls.map((c) => c[0])
+    expect(calls).toContainEqual(['runs', 'children', 'run-1'])
+  })
+
+  it('also invalidates on subagent_return and child_runs_resolved', async () => {
+    const invalidate = vi.fn()
+    const store = useEventsStore()
+    await store.open('run-1', 'awaiting_children', {
+      invalidate,
+      streamOptions: { eventSourceFactory: freshFactory() },
+    })
+    const es = FakeEventSource.instances[0]!
+
+    es.emit(
+      'subagent_return',
+      JSON.stringify({ child_run_id: 'child-a', status: 'done', summary: 's' }),
+      '1',
+    )
+    es.emit(
+      'child_runs_resolved',
+      JSON.stringify({ children_count: 1, terminal_statuses: { 'child-a': 'done' } }),
+      '2',
+    )
+
+    await Promise.resolve()
+    await Promise.resolve()
+
+    const calls = invalidate.mock.calls.map((c) => c[0])
+    const childrenInvalidations = calls.filter(
+      (k) => Array.isArray(k) && k[0] === 'runs' && k[1] === 'children',
+    )
+    expect(childrenInvalidations.length).toBeGreaterThanOrEqual(1)
   })
 })

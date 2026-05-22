@@ -1025,11 +1025,40 @@ class RelayCore:
             run_id, kind, payload, iter_id=iter_id
         )
 
-    async def list_runs(self, project_id: int | None = None) -> list[Run]:
+    async def list_runs(
+        self,
+        project_id: int | None = None,
+        *,
+        include_children: bool = False,
+    ) -> list[Run]:
+        """List runs for a project (or all if ``project_id`` is None).
+
+        By default returns only top-level runs (``parent_run_id IS NULL``);
+        pass ``include_children=True`` to include child runs dispatched via
+        fanout. The dashboard Run lists (spec.md §9.1, 9e) default-hide children
+        so the list stays readable when fanout is in use.
+        """
         async with self._sm() as s:
             stmt = select(Run).order_by(Run.started_at.desc())
             if project_id is not None:
                 stmt = stmt.where(Run.project_id == project_id)
+            if not include_children:
+                stmt = stmt.where(Run.parent_run_id.is_(None))
+            return list(await s.scalars(stmt))
+
+    async def list_children(self, parent_run_id: str) -> list[Run]:
+        """Direct children of ``parent_run_id``, ordered by started_at asc.
+
+        Returns ``[]`` for a parent that never fanned out. Does NOT walk
+        grandchildren — the dashboard pane (spec.md §9.1, 9e) renders one row
+        per direct child only. A nested-tree view is a future enhancement.
+        """
+        async with self._sm() as s:
+            stmt = (
+                select(Run)
+                .where(Run.parent_run_id == parent_run_id)
+                .order_by(Run.started_at.asc())
+            )
             return list(await s.scalars(stmt))
 
     async def get_run(self, run_id: str) -> Run | None:

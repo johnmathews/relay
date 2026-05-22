@@ -64,3 +64,4 @@ credentials.json
 .claude/
 .engineering-team/
 .worktrees/
+.playwright-mcp/

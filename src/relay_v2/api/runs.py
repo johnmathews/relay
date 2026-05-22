@@ -66,8 +66,9 @@ async def list_runs(
     status: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    include_children: bool = False,
 ) -> list[RunOut]:
-    rows = await core.list_runs(project_id)
+    rows = await core.list_runs(project_id, include_children=include_children)
     if status is not None:
         rows = [r for r in rows if r.status == status]
     rows = rows[offset : offset + limit]
@@ -87,6 +88,27 @@ async def get_run(
     detail = RunDetailOut.model_validate(run)
     detail.iters = [IterOut.model_validate(i) for i in iters]
     return detail
+
+
+@router.get(
+    "/runs/{run_id}/children",
+    response_model=list[RunOut],
+)
+async def list_run_children(
+    run_id: str, core: CoreDep
+) -> list[RunOut]:
+    """Direct children of a run (spec.md §7, 9e).
+
+    Returns the rows where ``parent_run_id == run_id``, ordered by
+    ``started_at`` ascending. Returns ``[]`` for a parent that never
+    fanned out. 404 if ``run_id`` itself is unknown.
+    """
+    if await core.get_run(run_id) is None:
+        raise HTTPException(
+            status_code=404, detail=f"unknown run {run_id}"
+        )
+    children = await core.list_children(run_id)
+    return [RunOut.model_validate(r) for r in children]
 
 
 @router.post("/runs/{run_id}/cancel", response_model=RunOut)

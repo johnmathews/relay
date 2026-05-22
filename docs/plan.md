@@ -563,6 +563,30 @@ phase by design (per ADR-15, it is the primary control plane).
 
 Not part of the MVP plan, but architecturally enabled:
 
+### Phase 9a–9f — fanout-join (post-MVP) — **in progress**
+
+Out-of-band from the original sketch: the **post-MVP** orchestrator
+gained parallel-iter fanout/join via the proposal at
+`docs/proposals/parallel-iters-fanout-join.md`. The slot was previously
+projected as "subagent dispatch" (Phase 13 below); the fanout-join
+arc absorbed it and was tracked as sub-phases of 9 to keep the work
+visibly sequential against Phases 0–8.
+
+- **9a** (PR #2, 4ebb1f8 / ADR-34) — schema + events: `awaiting_children`
+  status, `child_runs_resolved` kind, cascade-cancel helper.
+- **9b** (PR #3, 381c147 / ADR-35) — fanout dispatch: sentinel parser,
+  child-run creation, concurrency semaphore, depth bound.
+- **9c** (PR #4, 37b8cb7 / ADR-36) — join watcher + synthesizer iter.
+- **9d** (PR #5, 4a910b4 / ADR-37) — runtime cancel-cascade.
+- **9e** (PR #6, in review) — dashboard "Children" pane + Parent chip +
+  Show-child-runs toggle + Cancel cascade copy.
+- **9f** — OTel span parenting across runs (next).
+
+Below entries ("Phase 9 — remote access" onward) are pre-existing
+post-MVP sketches and were NOT renumbered when the fanout-join arc
+took the 9a-9f sub-numbering; "remote access" is functionally Phase
+10-ish now.
+
 ### Phase 9 — remote access (1 week)
 
 - Containerize for deployment to a VPS

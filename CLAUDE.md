@@ -248,8 +248,44 @@ cancelled-before-start guard rationale. 266 backend tests pass
 3 cascade-helper + 5 cancel_run branches + 1 cancelled-before-start
 guard + 1 deep-tree integration; 3 pi-e2e still gated),
 `ruff`/`mypy --strict` clean (**39** source files, no new modules),
-backend coverage 94%. No frontend changes in 9d. 9e lands the
-dashboard "Children" pane; 9f OTel span parenting across runs.
+backend coverage 94%. No frontend changes in 9d. 9f will land OTel
+span parenting across runs.
+**Phase 9e** lands the dashboard "Children" pane
+(`docs/plans/2026-05-21-fanout-join-9e.md`). Four user-visible pieces:
+(1) **Children pane** in `RunDetailView` — rendered only for parent
+runs (`parent_run_id == null` + at least one child); each row shows
+`status · short-id · role · branch · summary` fetched from the new
+`GET /api/runs/{id}/children` endpoint via a `useRunChildrenQuery`
+Pinia Colada hook; revalidates whenever the events store receives
+`subagent_dispatch`, `subagent_return`, or `child_runs_resolved` (all
+three added to `INVALIDATING_KINDS`) via a new
+`['runs','children',runId]` invalidation key. (2) **Parent chip** in
+the run-detail header — `ParentRunChip.vue` renders a link back to the
+parent's detail view whenever `parent_run_id != null`. (3) **Cancel
+button cascade copy** — the predicate expands to `status ∈ {running,
+awaiting_children}`; for a parent in `awaiting_children` the label
+reads "Cancel run and N children" (N from the children query length);
+the API call is unchanged. (4) **"Show child runs" toggle** in the
+Project view Runs pane — child runs are hidden by default (the default
+`GET /api/runs` excludes them via `include_children=false`); the toggle
+sets `RunListFilters.includeChildren = true` and re-fetches. Backend
+additions: `RelayCore.list_children(run_id)` returning all direct
+children ordered by `created_at`; `RelayCore.list_runs(...,
+include_children: bool = False)` filtering out rows where
+`parent_run_id IS NOT NULL` by default; `GET /api/runs/{id}/children`
+REST route (thin `list_children` adapter); `?include_children=` query
+param on `GET /api/runs`; MCP `relay__list_runs` passes
+`include_children=True` so MCP callers see the full tree. New frontend
+SFCs: `ChildrenPane.vue`, `ParentRunChip.vue`. No new ADR, no new
+schema, no new event kinds, no new sentinel grammar. 276 backend tests
+pass (266 + 10 new: +2 `list_children`, +2 `list_runs` default, +1 MCP,
++3 children-route, +2 `include_children` API; 3 pi-e2e still gated),
+`ruff`/`mypy --strict` clean (**39** source files), backend coverage
+94%; 155 frontend tests pass (142 + 13 new: +2 `ParentRunChip`, +5
+`ChildrenPane`, +2 events store, +4 `RunDetailView`, +1 `ProjectView`).
+Manual smoke (live fanout → Children pane populates; Parent chip
+navigates; Cancel cascade label; toggle hides/shows children) is
+journal-attested per ADR-30.
 
 ## What relay v2 is
 

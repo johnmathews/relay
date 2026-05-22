@@ -64,9 +64,12 @@ const TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled'])
 
 /**
  * Relay event kinds (spec §3.2) whose arrival should refresh the
- * Colada-cached run detail / run lists. Pure within-iter chatter
- * (`assistant_text`, `tool_use_*`) does NOT change the run/iter rows, so
- * it is intentionally excluded — only lifecycle transitions invalidate.
+ * Colada-cached run detail / run lists / children list. Pure within-iter
+ * chatter (`assistant_text`, `tool_use_*`) does NOT change the run/iter
+ * rows, so it is intentionally excluded — only lifecycle transitions
+ * invalidate. Fanout lifecycle events (`subagent_dispatch`,
+ * `subagent_return`, `child_runs_resolved`) are included so the Children
+ * pane (spec.md §9.1, 9e) refetches in lockstep.
  */
 const INVALIDATING_KINDS = new Set([
   'run_started',
@@ -76,6 +79,9 @@ const INVALIDATING_KINDS = new Set([
   'pause_requested',
   'pause_resolved',
   'run_ended',
+  'subagent_dispatch',
+  'subagent_return',
+  'child_runs_resolved',
 ])
 
 /** A normalized event in the unified (live ⨮ replayed) list. */
@@ -208,6 +214,7 @@ export const useEventsStore = defineStore('run-events', () => {
       if (invalidateFn) {
         invalidateFn(['runs', 'detail', openRunId])
         invalidateFn(['runs'])
+        invalidateFn(['runs', 'children', openRunId])
       }
       if (onLifecycleFn) onLifecycleFn()
     })

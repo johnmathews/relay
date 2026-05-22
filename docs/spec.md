@@ -596,8 +596,9 @@ OpenAPI auto-generated. Routes:
 ```
 # Runs ─────────────────────────────────────────────────────────────────
 POST   /api/runs                  start a run        body: {project_id, prompt_body|prompt_id, max_iters?, iter_timeout?}
-GET    /api/runs?project_id=N     list runs          query: status, limit, offset
+GET    /api/runs?project_id=N     list runs          query: status, limit, offset, include_children (default false — child runs hidden)
 GET    /api/runs/:id              get run detail     includes iters[], current status
+GET    /api/runs/:id/children     list direct child runs  returns list[Run] ordered by created_at
 POST   /api/runs/:id/cancel       cancel a run
 POST   /api/runs/:id/resume       resume a paused run  body: {answer}
 GET    /api/runs/:id/events       paginated events for replay
@@ -707,7 +708,8 @@ artifacts, managing prompts, and registering projects.
 - **Project view** (`/projects/:id`):
   - **Runs pane** — list of runs (active + recent) with status badges
     (running / done / failed / paused). Click a run to enter its
-    detail view.
+    detail view. Child runs are hidden by default; a "Show child runs"
+    toggle reveals them (9e).
   - **Prompts pane** — list of saved prompts for this project. CRUD
     actions: create, edit (bumps version), delete, view version
     history. Click a prompt to render it.
@@ -728,13 +730,21 @@ artifacts, managing prompts, and registering projects.
      detail view.
 - **Run detail view** (`/runs/:id`):
   - Header: status, prompt name + version, started_at, iter count,
-    current phase, action buttons (pause-response / cancel).
+    current phase, action buttons (pause-response / cancel). When
+    `parent_run_id != null` a **Parent chip** links back to the parent
+    run's detail view.
   - **Timeline pane** — chronological event feed. Each event row is
     collapsible. Tool calls show args + result inline (highlighted).
     `signal_emit` events stand out (banner color, anchor link). Live
     updates via SSE.
   - **Iters pane** — list of iters with seq, phase, signal_kind. Click
     to filter the timeline.
+  - **Children pane** — shown only when the run has `parent_run_id == null`
+    and at least one child run exists (i.e. parent runs only). Each row
+    shows `status · short-id · role · branch · summary`. The pane
+    revalidates on `subagent_dispatch`, `subagent_return`, and
+    `child_runs_resolved` events via `['runs','children',runId]` Colada
+    invalidation triggered from the events store.
   - **Artifacts pane** — the run's `.relay/runs/<id>/` directory
     browsed inline via the `GET /api/runs/:id/artifacts[/*]` endpoints
     (ADR-25 — a second sandboxed root reusing the §7 audited resolver).
@@ -752,7 +762,10 @@ artifacts, managing prompts, and registering projects.
   - **Pause action** (when status=paused) — the agent's question is
     shown rendered; the answer textarea supports markdown; submit
     → POST `/api/runs/:id/resume`.
-  - **Cancel action** — always available while status=running.
+  - **Cancel action** — always available while `status ∈ {running,
+    awaiting_children}`. When `awaiting_children` with N children, the
+    label reads "Cancel run and N children"; cancellation cascades
+    through descendants (ADR-37, 9d).
 
 ### 9.2 State management
 

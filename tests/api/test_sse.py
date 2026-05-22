@@ -324,11 +324,18 @@ def test_route_404_and_204_and_stream(tmp_path: Path) -> None:
                 assert r.status_code == 404
 
                 # 204: finished run, Last-Event-ID at the tail.
+                # Content-Type MUST be text/event-stream even on 204 —
+                # browsers' EventSource validates the MIME type before
+                # the status code, so a bare text/plain 204 makes them
+                # abort the connection with a MIME-mismatch error
+                # instead of treating it as a clean end-of-stream
+                # (Phase 9e smoke 2026-05-22).
                 r = await client.get(
                     f"/api/events/{run_id}",
                     headers={"Last-Event-ID": str(last_seq)},
                 )
                 assert r.status_code == 204
+                assert "text/event-stream" in r.headers["content-type"]
 
                 # Stream: finished run, no Last-Event-ID → history+EOF.
                 r = await client.get(f"/api/events/{run_id}")

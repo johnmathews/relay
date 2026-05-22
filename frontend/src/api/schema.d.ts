@@ -56,6 +56,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/children": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Run Children
+         * @description Direct children of a run (spec.md §7, 9e).
+         *
+         *     Returns the rows where ``parent_run_id == run_id``, ordered by
+         *     ``started_at`` ascending. Returns ``[]`` for a parent that never
+         *     fanned out. 404 if ``run_id`` itself is unknown.
+         */
+        get: operations["list_run_children_api_runs__run_id__children_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/cancel": {
         parameters: {
             query?: never;
@@ -608,6 +632,7 @@ export interface operations {
                 status?: string | null;
                 limit?: number;
                 offset?: number;
+                include_children?: boolean;
             };
             header?: never;
             path?: never;
@@ -686,6 +711,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunDetailOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_run_children_api_runs__run_id__children_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunOut"][];
                 };
             };
             /** @description Validation Error */

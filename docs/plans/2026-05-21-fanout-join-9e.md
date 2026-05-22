@@ -1868,6 +1868,94 @@ Once approved, squash-merge into `main`. Pattern mirrors PRs #2–#5.
 
 ---
 
+### Task 15 — Smoke-discovered SSE MIME-type fix on the 204 path
+
+**~10 min — added 2026-05-22 after the manual smoke (journal entry `journal/260522-phase-9e-smoke.md`).**
+
+**Files:**
+- Modify: `src/relay_v2/api/events.py`
+- Modify: `tests/api/test_sse.py`
+- Modify: `docs/api.md`
+
+**Background.** The manual smoke surfaced a pre-existing latent defect in `GET /api/events/{run_id}`. For a terminal run with nothing at/after `Last-Event-ID`, the handler returns `Response(status_code=204)` — FastAPI's bare 204 defaults to `Content-Type: text/plain`. Browsers' `EventSource` validates the MIME type *before* the status code, so a 204 with `text/plain` aborts the connection with `MIME type ("text/plain") that is not "text/event-stream"` instead of treating the 204 as a clean end-of-stream (per the EventSource spec).
+
+Manifests only when a run finishes before the SSE wrapper reconnects on the empty tail — invisible until pi was unexpectedly fast on the smoke. Not a 9e regression (this code is from Phase 3) but discovered by 9e's smoke, so closed in the same PR.
+
+- [ ] **Step 1: Strengthen the existing 204 assertion**
+
+In `tests/api/test_sse.py::test_route_404_and_204_and_stream` (~line 327), append after the status-code assertion:
+
+```python
+                assert r.status_code == 204
+                assert "text/event-stream" in r.headers["content-type"]
+```
+
+Plus a 2-3 line comment explaining why the MIME type matters on 204.
+
+- [ ] **Step 2: Run the test, watch it fail**
+
+```
+uv run pytest tests/api/test_sse.py::test_route_404_and_204_and_stream -v
+```
+
+Expect FAIL: the 204 currently has `content-type: text/plain` per FastAPI default.
+
+- [ ] **Step 3: Apply the one-line fix**
+
+In `src/relay_v2/api/events.py` around line 200, change:
+
+```python
+return Response(status_code=status.HTTP_204_NO_CONTENT)
+```
+
+to:
+
+```python
+return Response(
+    status_code=status.HTTP_204_NO_CONTENT,
+    media_type="text/event-stream",
+)
+```
+
+With a load-bearing comment above explaining the EventSource MIME-check ordering.
+
+- [ ] **Step 4: Re-run the test + full suite**
+
+```
+uv run pytest tests/api/test_sse.py::test_route_404_and_204_and_stream -v
+uv run pytest -q
+```
+
+Expect PASS + 278 total (277 + nothing-new — the existing 204 test gets a strengthened assertion, not a new test).
+
+- [ ] **Step 5: Update `docs/api.md`**
+
+In the SSE connect-flow paragraph (~line 56), append a sentence noting the 204 carries `Content-Type: text/event-stream` (not the FastAPI default) and why — keep it terse.
+
+- [ ] **Step 6: Commit (on the same `phase-9e-dashboard-children` PR)**
+
+```bash
+git add src/relay_v2/api/events.py tests/api/test_sse.py docs/api.md
+git commit -m "$(cat <<'EOF'
+Phase 9e: SSE 204 carries text/event-stream mime
+
+Browsers' EventSource validates Content-Type before status code, so
+a bare FastAPI Response(204) (which defaults to text/plain) makes the
+client abort with a MIME mismatch instead of treating the 204 as a
+clean end-of-stream. Surfaces on the wrapper's reconnect path for a
+short-running run whose tail is empty — exposed by the Phase 9e
+manual smoke (journal/260522-phase-9e-smoke.md).
+
+Pre-existing defect from Phase 3; closed in the same PR as 9e since
+that's when it was found.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+EOF
+)"
+```
+
+---
+
 ## Verification commands (per phasing precedent)
 
 Run after each backend-touching task:

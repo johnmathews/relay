@@ -18,7 +18,7 @@ Claude Desktop) can drive relay runs through it.
 
 | Tool | Signature | RelayCore call |
 |---|---|---|
-| `relay__list_runs` | `(project_root?: str) -> list[Run]` | `list_runs` (path → `project_id`) |
+| `relay__list_runs` | `(project_root?: str) -> list[Run]` | `list_runs(..., include_children=True)` (path → `project_id`) |
 | `relay__get_run` | `(run_id: str) -> Run` (with iters) | `get_run` + `list_iters` |
 | `relay__start_run` | `(project_root: str, prompt: str, max_iters?: int) -> Run` | `start_run` (path → `project_id`) |
 | `relay__cancel_run` | `(run_id: str) -> Run` | `cancel_run` |
@@ -30,6 +30,14 @@ Claude Desktop) can drive relay runs through it.
 match, then `Path.resolve()`-normalised match. An unknown root, unknown
 run, or a not-paused run for `pause_response`, is returned as a tool
 error (mirrors the REST 404/409 intent without HTTP status codes).
+
+**Child runs.** `relay__list_runs` always passes `include_children=True`
+internally so a Claude-Code-driven user sees the full run tree — both
+top-level runs and any child runs dispatched via fanout (spec §6, 9e).
+The REST `GET /api/runs` endpoint defaults to top-level-only (the
+dashboard's "Show child runs" toggle re-enables children); the MCP
+surface always shows the tree because programmatic clients are the ones
+that benefit most from full visibility.
 
 ### `tail_events` is a snapshot, not a stream
 

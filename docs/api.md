@@ -34,8 +34,9 @@ models in `relay_v2.api.schemas` (response models use
 | Method | Path | RelayCore method | Notes |
 |---|---|---|---|
 | POST | `/runs` | `start_run` (+`get_prompt` to resolve `prompt_id`) | body `{project_id, prompt_body \| prompt_id, max_iters?, iter_timeout?}` — exactly one prompt source; 201 |
-| GET | `/runs` | `list_runs` | query `project_id?, status?, limit=50, offset=0` (status filter + pagination applied in the handler — presentation only) |
+| GET | `/runs` | `list_runs` | query `project_id?, status?, limit=50, offset=0` (status filter + pagination applied in the handler — presentation only); query also accepts `include_children=false` (default — top-level runs only; pass `true` to include child runs from fanout, 9e) |
 | GET | `/runs/{run_id}` | `get_run` + `list_iters` | includes `iters[]` + current status; 404 if absent |
+| GET | `/runs/{run_id}/children` | `list_children` | direct children of a parent run (no recursion); `[]` when no fanout; 404 if `run_id` unknown (9e) |
 | POST | `/runs/{run_id}/cancel` | `cancel_run` | returns the updated run |
 | POST | `/runs/{run_id}/resume` | `resume_run` | body `{answer}`; not-paused / already-running → 409; unknown run or deleted project → 404 |
 | GET | `/runs/{run_id}/events` | `list_events` | paginated replay; query `after_seq=0, limit=100, offset=0` |
@@ -55,8 +56,13 @@ across reconnects. `run_ended` closes the stream immediately. For a
 **finished** run (`done`/`failed`/`cancelled`; `paused` is *not*
 finished — it can resume) it streams paginated history then EOF, and
 returns a real `204` only when there are no events at/after
-`Last-Event-ID`. Headers include `X-Accel-Buffering: no` so an nginx
-reverse proxy does not buffer the stream. The broadcaster is a passive
+`Last-Event-ID`. The `204` carries `Content-Type: text/event-stream`
+(not the FastAPI default `text/plain`) so browsers' `EventSource`
+treats it as a clean end-of-stream instead of aborting with a MIME
+mismatch — load-bearing for short-running runs whose reconnect lands
+on the empty tail (Phase 9e smoke fix, 2026-05-22). Headers include
+`X-Accel-Buffering: no` so an nginx reverse proxy does not buffer
+the stream. The broadcaster is a passive
 post-commit observer on `EventStore.append` (ADR-10 — SSE never writes
 events, never assigns seq); a slow subscriber hits a bounded queue and
 gets a clean close (it reconnects and replay backfills).

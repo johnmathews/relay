@@ -26,6 +26,12 @@ const {
   deleteProjectMutate: vi.fn(),
 }))
 
+// Stores the most-recently registered filter getter from useRunsQuery so
+// tests can re-evaluate it after reactive state changes (e.g. toggling
+// the showChildren checkbox). Must be module-level (not vi.hoisted) so
+// that the mock factory closure and the test body share the same binding.
+let _runsFiltersGetter: (() => unknown) | null = null
+
 vi.mock('@/lib/queries', () => ({
   // Defined inside the factory (hoisted before top-level bindings).
   ApiError: class ApiError extends Error {
@@ -39,7 +45,13 @@ vi.mock('@/lib/queries', () => ({
     }
   },
   useProjectQuery: () => ({ data: projectData }),
-  useRunsQuery: () => ({ data: runsData }),
+  useRunsQuery: (filters: unknown) => {
+    _runsFiltersGetter =
+      typeof filters === 'function'
+        ? (filters as () => unknown)
+        : () => filters
+    return { data: runsData }
+  },
   usePromptsQuery: () => ({ data: promptsData }),
   usePromptVersionsQuery: () => ({ data: versionsData }),
   useCreatePromptMutation: () => ({
@@ -123,6 +135,7 @@ describe('ProjectView', () => {
     updatePromptMutate.mockReset()
     deletePromptMutate.mockReset()
     deleteProjectMutate.mockReset()
+    _runsFiltersGetter = null
     projectData.value = {
       id: 7,
       name: 'Alpha',
@@ -350,6 +363,43 @@ describe('ProjectView', () => {
     await flushPromises()
     expect(deleteProjectMutate).toHaveBeenCalledWith(7)
     expect(push).toHaveBeenCalledWith('/')
+  })
+
+  it('hides child runs by default and shows them when the toggle is checked', async () => {
+    runsData.value = [
+      {
+        id: 'parent-1',
+        status: 'completed',
+        prompt_id: null,
+        started_at: '2026-05-21T10:00:00Z',
+      } as unknown as Run,
+    ]
+    const w = mountView()
+    await flushPromises()
+
+    // One run visible.
+    expect(w.findAll('[data-testid^="run-row-"]')).toHaveLength(1)
+
+    // The runs query was called without includeChildren (i.e. falsy).
+    expect(
+      (_runsFiltersGetter?.() as Record<string, unknown> | undefined)
+        ?.includeChildren,
+    ).toBeFalsy()
+
+    // The toggle checkbox exists in the Runs pane.
+    const checkbox = w.find('[data-testid="show-children-toggle"]')
+    expect(checkbox.exists()).toBe(true)
+
+    // Enable the toggle (setValue on a checkbox sets the checked state).
+    await checkbox.setValue(true)
+    await w.vm.$nextTick()
+
+    // The filter getter now reflects includeChildren: true (the ref
+    // inside the component has been updated by the checkbox v-model).
+    expect(
+      (_runsFiltersGetter?.() as Record<string, unknown> | undefined)
+        ?.includeChildren,
+    ).toBe(true)
   })
 
   it('Files pane mounts FileTree + FileViewer with the project source', async () => {
