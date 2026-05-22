@@ -340,6 +340,36 @@ cross-links) remain a deliberate small follow-up PR (deferred from
 the sentinel-close path is still parked (ADR-29/30 — its own ADR +
 spec §6 change when opened). The fanout-join arc (9a→9f) is now
 fully shipped.
+**Phase 9g** then closes the latent ADR-10 invariant gap that
+`SessionEnded` was captured by the Option-D harness lookahead and
+surfaced to OTel (ADR-29) but never written to the events table. A
+new event kind `harness_session_ended` is appended in
+`loop._finish_iter` on every iter-close path (signal / cancelled /
+timeout / no-signal / crash) BEFORE the paired `iter_ended` event,
+with payload `{stop_reason, messages, summary}` — `messages`
+verbatim per ADR-18, `summary` populated only on the `done` close
+path (the current sentinel grammar carries no summary in
+`signal.args` for `done`, so this is `null` in practice today; the
+plumbing is in place for a future grammar change). The OTel mirror
+still reads from `out.messages` in-memory in the loop's finally
+block (ADR-29 lookahead preserved); the new event row is for replay
+consumers (SSE, audit, future analytics). Frontend gains a small
+`UsageRow.vue` rendering stop_reason + summed token counts inline
+in the timeline; `INVALIDATING_KINDS` in `stores/events.ts`
+includes the new kind so Colada caches refresh. New ADR-39 records
+the contract change; `spec.md` §3.2 gains the taxonomy row and §6
+the close-time persistence paragraph. No schema change, no harness
+change (ADR-04 preserved), no MCP change. 294 backend tests pass
+(293 + 2 new from 9g: 1 `test_loop_emits_harness_session_ended_on_done_close`
++ 1 `test_sse_replay_includes_harness_session_ended`; 3 pi-e2e still
+gated; one pre-existing unrelated skill-structure test remains
+failing and is tracked separately), `ruff`/`mypy --strict` clean
+(**39** source files), backend coverage 94%; 158 frontend tests
+pass (155 + 3 new: 2 `UsageRow` + 1 `TimelinePane`). Note that the
+prevailing orchestrator-test pattern reads back the *kinds present*
+(set membership) rather than exact kinds lists or event counts —
+so the planned widespread re-baseline never materialised; only two
+new tests cover the new event directly.
 
 ## What relay v2 is
 
