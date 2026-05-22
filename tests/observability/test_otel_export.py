@@ -34,7 +34,6 @@ from relay_v2.observability import (
     build_instrumentation,
 )
 from relay_v2.observability import otel as otel_mod
-from relay_v2.observability.otel import NOOP_ITER_SPAN, NOOP_RUN_SPAN
 from tests.orchestrator.scripted_harness import EventScript, ScriptedHarness
 
 DONE = "All done.\n\n[[engteam:done]]"
@@ -297,5 +296,7 @@ def test_otel_iter_span_context_carries_trace_identity() -> None:
     finished = {s.name: s for s in exporter.get_finished_spans()}
     assert "test.child" in finished
     child_span = finished["test.child"]
+    iter_span_finished = finished["relay.iter"]
     assert child_span.parent is not None
     assert child_span.parent.span_id == iter_span_id
+    assert child_span.context.trace_id == iter_span_finished.context.trace_id
