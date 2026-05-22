@@ -242,12 +242,22 @@ Include the final coverage percentage in the report alongside the Phase 1 baseli
 ### Implementation
 
 Implement the work units yourself, in dependency order, within this one
-session (relay-v2 MVP is single-session — there is no subagent dispatch;
-see `../references/team-structure.md`). Units with hard dependencies must
-run in order; independent units are still done sequentially here, just
+session (the in-iter model is single-session — see
+`../references/team-structure.md`). Units with hard dependencies must run
+in order; independent units are still done sequentially here, just
 without inter-unit dependencies forcing the order. Do NOT create nested
 worktrees for "parallel" units — the single relay-provisioned worktree
 is the only workspace.
+
+> **Coarse-grained parallelism via fanout.** When the plan lists 2+ work
+> units with no inter-dependencies AND each unit's changes are large
+> enough that wall-clock matters, you may close this iter with
+> `[[engteam:fanout]]` and let each unit run as its own child run on a
+> child branch. Each child does its own TDD cycle in its own worktree;
+> the synthesizer iter merges the results. Read
+> `../references/fanout.md` for the grammar; this is appropriate when
+> the merge is genuinely clean (no overlapping diffs on the same files),
+> not as a default.
 
 For each work unit:
 - Re-read the specific work unit from the improvement plan

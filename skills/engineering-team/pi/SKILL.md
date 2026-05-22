@@ -27,12 +27,14 @@ skill is split into a thin router (this file) plus per-phase docs in
 > **v2 / single-session note.** This is the relay-v2 port of the
 > engineering-team skill (spec.md §12, ADR-14). In v1 the lead engineer
 > dispatched Task-tool subagents per role. relay-v2's MVP runs **one long
-> session per phase, no subagent dispatch** — the "Engineer N" / "Product
-> Owner" roles below are *analysis lenses you work yourself in sequence*,
-> not agents you spawn. Subagent dispatch is a deliberate post-MVP relay
-> feature (a `subagent_dispatch` signal the orchestrator does not yet
-> handle); the skill is authored for single-session operation today and
-> will regain parallel-role dispatch when relay grows it.
+> session per phase** — the "Engineer N" / "Product Owner" roles below
+> are *analysis lenses you work yourself in sequence*, not agents you
+> spawn. For coarse-grained parallelism across whole investigations,
+> relay grew the `fanout` closing sentinel (Phase 9b; see
+> `references/fanout.md`): one iter dispatches N parallel child runs and
+> the parent resumes with a synthesizer iter once they all settle. Use
+> it when two or more genuinely independent investigations merge cleanly
+> into a single decision; the in-iter lens work below stays sequential.
 
 ## Required reading on every iter
 
@@ -100,8 +102,8 @@ emitting any sentinel. The driver (`relay`) parses these markers from
 assistant text and uses them to decide whether to continue, stop, or pause
 the loop. Skipping or misformatting sentinels causes the run to abort.
 
-The seven verbs at a glance: `phase-start`, `unit-start`, `unit-done`,
-`unit-abandoned`, `handoff`, `done`, `pause-for-input`.
+The eight verbs at a glance: `phase-start`, `unit-start`, `unit-done`,
+`unit-abandoned`, `handoff`, `done`, `pause-for-input`, `fanout`.
 
 ## Cross-cutting references
 
@@ -113,6 +115,8 @@ Load these on demand when their topic becomes relevant:
 - `references/worktree.md` — working-directory invariants: relay
   provisions the per-run worktree, the skill does not.
 - `references/discussion.md` — Discussion workflow details.
+- `references/fanout.md` — the `fanout` closing sentinel: when to dispatch
+  parallel child runs and how the synthesizer iter resumes.
 - `references/general-guidelines.md` — cross-cutting rules and the triage
   entry point for urgent reports.
 

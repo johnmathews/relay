@@ -94,9 +94,15 @@ multiple subsystems, broad evaluation scope, browser UI to verify.
   deliberate pass.
 
 When in doubt, go standard — over-investigating is cheaper than missing
-something important. Work the lenses in sequence (relay-v2 MVP is
-single-session; there is no parallel dispatch — see
-`../references/team-structure.md`):
+something important. Work the lenses in sequence within this iter (the
+in-iter model is single-session — see `../references/team-structure.md`).
+
+> **Coarse-grained parallelism.** If the evaluation cleanly decomposes
+> into 2+ genuinely independent lenses whose findings merge into one
+> report (e.g. frontend audit + backend audit → unified fix list), close
+> this iter with `[[engteam:fanout]]` instead and let each lens run as
+> its own child run. See `../references/fanout.md` for the grammar and
+> when it fits.
 
 **Engineer 1 lens — Codebase structure, quality, and problem-space research:**
 

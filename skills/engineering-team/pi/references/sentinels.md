@@ -17,7 +17,7 @@ the form:
 
     [[engteam:<verb> <key="value" ...>]]
 
-The seven verbs:
+The eight verbs:
 
 - `phase-start` — entering a new phase. Required attrs: `phase="<name>"` where
   name is one of `evaluation`, `planning`, `development`, `wrap-up`.
@@ -30,6 +30,11 @@ The seven verbs:
 - `done` — closing sentinel, plan exhausted. No attrs.
 - `pause-for-input` — closing sentinel, user input required. Required attrs:
   `id="P<n>"`, `question="<one-line summary>"`.
+- `fanout` — closing sentinel, dispatch N parallel child runs and resume
+  this run after they all settle. No attrs on the verb line; the payload
+  is a JSON block between `[[engteam:fanout-start]]` and
+  `[[engteam:fanout-end]]` immediately preceding the verb. See
+  `fanout.md` for the full grammar and when to use it.
 
 ## When to emit phase-start
 
@@ -45,9 +50,9 @@ phase doc to load on the next iter.
 
 ## Closing sentinels
 
-`handoff`, `done`, and `pause-for-input` are the three closing sentinels.
-Exactly one must appear at the end of every iter; the driver bails with exit 1
-if more than one appears or none appear.
+`handoff`, `done`, `pause-for-input`, and `fanout` are the four closing
+sentinels. Exactly one must appear at the end of every iter; the driver
+bails with exit 1 if more than one appears or none appear.
 
 `handoff` and `pause-for-input` require a marker-bracketed next-session prompt
 (see "Prompt markers" below) immediately before them — the driver extracts
@@ -56,6 +61,11 @@ no LLM-side reformatting; the body is taken verbatim.
 
 `done` does not need a prompt body. Emitting prompt markers before `done`
 is a contract violation; the driver exits 1.
+
+`fanout` uses a different marker pair (`fanout-start` / `fanout-end`)
+containing a JSON payload instead of `prompt-start` / `prompt-end`. The
+two pairs are mutually exclusive within an iter; see `fanout.md` for the
+grammar, when to use it, and worked examples.
 
 ## Prompt markers
 
