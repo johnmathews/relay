@@ -63,7 +63,7 @@ describe('TimelinePane', () => {
           stop_reason: 'clean',
           summary: 'ok',
           messages: [
-            { usage: { input_tokens: 5, output_tokens: 3 } },
+            { role: 'assistant', usage: { input: 5, output: 3 } },
           ],
         },
       },
