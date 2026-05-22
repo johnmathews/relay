@@ -234,6 +234,12 @@ that does not need an editable artifact — your `next_prompt` already
 tells the resumed session to re-read any files it needs, and the rest
 of the workflow is unchanged.
 
+**All attributes must appear on the same line as the `pause-for-input`
+verb.** The parser is line-anchored — a sentinel wrapped across two
+lines (verb on one line, `review_path="..."` on the next) silently
+drops the attribute, leaving the dashboard in its pre-14b minimal
+form. Keep the sentinel on a single line even if it gets long.
+
 Example:
 
     [[engteam:prompt-start]]
@@ -242,8 +248,7 @@ Example:
     Phase 3.
     [[engteam:prompt-end]]
 
-    [[engteam:pause-for-input id="P1" question="Approve plan?"
-                              review_path="improvement-plan.md"]]
+    [[engteam:pause-for-input id="P1" question="Approve plan?" review_path="improvement-plan.md"]]
 
 The orchestrator stores `review_path` in the paused iter's `signal_args`
 alongside `id`, `question`, and `next_prompt`. The file does **not**
