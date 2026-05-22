@@ -192,6 +192,7 @@ The `events.kind` column is a discriminator. Payloads are JSON.
 | `subagent_return` | subagent run finishes; emitted on the parent's stream by the join watcher (9c). | `{child_run_id, status, summary}` |
 | `child_runs_resolved` | after all children of an `awaiting_children` parent reach a terminal status; immediately before the parent's synthesizer iter is enqueued (9c). Optional but recommended for replay diffing — derivable from the preceding `subagent_return` events. | `{children_count, terminal_statuses}` (`terminal_statuses` is `dict[run_id, status]`) |
 | `harness_session_ended` | iter's harness session terminates (every close path) — appended **before** `iter_ended` (spec §6, ADR-39) | `{stop_reason, messages, summary}` — `stop_reason ∈ {clean, crash, timeout, cancelled}`; `messages` is `SessionEnded.messages` verbatim (ADR-18 opaque); `summary` populated only on the `done` close path, `null` otherwise |
+| `artifact_edited` | dashboard (or other REST client) writes content to a run's artifact during a `paused` review (§6.2, §7; ADR-40). Iter-scoped to the **paused iter** so replay can group edits under the pause that motivated them. Never terminal — `runs.status` stays `paused`. | `{path, size_before, size_after, sha256_before, sha256_after, editor}` — `path` relative to the run artifacts dir; hashes are hex SHA-256 strings (`sha256_before` is `null` on create); `editor` is a free-form identifier for the writer (default `"dashboard"`). The edited content lives on disk, not in the payload — ADR-40 §B1 names this audit gap; the hashes give an integrity check. |
 | `iter_ended` | iter N closes | `{seq, signal_kind, exit_reason}` |
 | `pause_requested` | pause signal handled | `{question}` |
 | `pause_resolved` | answer received | `{answer}` |
@@ -635,12 +636,22 @@ GET    /api/projects/:id/files    list files         query: path=<relative> (def
 GET    /api/projects/:id/files/* get a file's content  text only; 415 for binary
                                                      path is the URL-encoded relative path
 
-# Run artifacts browser (read-only, sandboxed; ADR-25) ────────────────
+# Run artifacts browser (read-only listing/read; single write entry — ADR-25, ADR-40) ─
 GET    /api/runs/:id/artifacts    list artifact files  query: path=<relative> (default: run artifacts root)
                                                      returns: {entries: [{name, is_dir, size, modified}], path}
 GET    /api/runs/:id/artifacts/*  get an artifact's content  text only; 415 for binary
-                                                     sandbox root = <data_dir>/runs/<run_id>/ (spec §3.3),
+                                                     sandbox root = <project_root>/.relay/runs/<run_id>/ (spec §3.3),
                                                      reuses the §7 file-browser audited resolver (ADR-25)
+PUT    /api/runs/:id/artifacts/*  write text content to a sandboxed artifact (pause-for-review, §6.2, ADR-40)
+                                                     body: {content: str, editor?: str}
+                                                     returns 200 {path, size, sha256}; 400 sandbox violation,
+                                                     404 unknown run, 409 not paused / no review_path /
+                                                     path mismatch / missing parent dir, 413 oversize,
+                                                     415 binary or malformed body. Single write entry on the
+                                                     artifacts dir; coupled to runs.status == 'paused' AND
+                                                     iters.signal_args.review_path (set by 14b). Every
+                                                     successful write appends one `artifact_edited` event
+                                                     (§3.2) iter-scoped to the paused iter.
 
 # Prompts ─────────────────────────────────────────────────────────────
 GET    /api/prompts?project_id=N  list prompts (latest version of each)
@@ -655,6 +666,19 @@ The file browser is **read-only and sandboxed** to the project root.
 Paths are normalized; `..` traversal is rejected with 400. Binary files
 return 415 (frontend offers a download instead). Markdown and code are
 returned verbatim — rendering happens client-side.
+
+`PUT /api/runs/:id/artifacts/*` is the **single write entry point** on
+the run artifacts dir (ADR-40). It is strictly coupled to `runs.status
+== 'paused'` AND the latest paused iter's
+`iters.signal_args.review_path` — writes are only permitted during a
+declared pause review. The event store records every write as an
+`artifact_edited` event (§3.2) with content hashes; the file content
+itself lives on disk (the artifacts dir is the authoritative artifact
+store per ADR-25, not the event store). Replay can verify *that* an
+edit happened and the integrity hashes; the content at replay time may
+differ if the file was edited again or removed out of band. Until 14b
+populates `signal_args.review_path`, every real-world caller of this
+endpoint will see 409 — that is the documented interim state.
 
 The `GET /api/events/:run_id` SSE feed is a passive post-commit tail of
 the event store (ADR-10 — it never writes). Its exact replay/cutover/

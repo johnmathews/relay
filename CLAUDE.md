@@ -412,6 +412,57 @@ backend tests pass (296 + 2 new from Bug 1: `test_project_data_dir.py`;
 3 pi-e2e still gated), `ruff`/`mypy --strict` clean, backend coverage
 94%; 161 frontend tests pass (158 + 3 new: 1 `UsageRow` real-payload
 + 2 `events.store` isolating cases).
+**Phase 14a** (2026-05-22,
+[docs/proposals/pause-for-review.md](docs/proposals/pause-for-review.md),
+[docs/plans/2026-05-22-pause-for-review-14a.md](docs/plans/2026-05-22-pause-for-review-14a.md))
+opens the **pause-for-review** arc by landing the backend half: a new
+`PauseReviewError` exception + `RelayCore.write_artifact(run_id,
+rel_path, content, *, editor)` method (paired with a module-private
+`_normalise_review_path` helper) and a new
+`PUT /api/runs/:id/artifacts/{path:path}` REST route that is the
+**single write entry point** on the run artifacts dir. The endpoint
+appends a new event kind `artifact_edited` (iter-scoped to the paused
+iter, payload `{path, size_before, size_after, sha256_before,
+sha256_after, editor}` — content stays on disk per ADR-25, hashes
+give an integrity check per ADR-40 §B1) and is **strictly coupled**
+to `run.status == 'paused'` AND a matching `signal_args["review_path"]`
+on the latest paused iter (OQ-1 strict-coupling decision: writes only
+during a declared review moment; not a general write API). The route
+reuses the ADR-25 `resolve_within_sandbox` resolver verbatim for
+sandbox checks (traversal/absolute/NUL/symlink-escape → 400), maps
+`PauseReviewError.code` to HTTP status (`unknown_run → 404`,
+`too_large → 413`, `binary → 415`, every other code → 409 —
+`not_paused`, `no_review_path`, `path_mismatch`, `missing_parent_dir`),
+and writes atomically via a tempfile-in-same-dir + `Path.replace`
+rename so a crash mid-write leaves the original file intact. 14a does
+NOT auto-create intermediate dirs — a nested `review_path` like
+`discussions/notes.md` is only accepted if `discussions/` already
+exists (proposal §OQ-3). The 14a release ships an endpoint that
+returns 409 for every real-world caller until 14b lands (no production
+path writes `review_path` into `signal_args` yet); this is the
+documented interim state, and the test suite synthesises the
+post-14b world by seeding `signal_args["review_path"]` directly via
+the sessionmaker. New ADR-40 records A1 (sentinel-attribute opt-in
+over implicit dashboard inference), B1 (in-place write + hash-bearing
+event over versioned snapshots / event-payload content), OQ-1 strict
+coupling, the sandbox-resolver reuse, the atomic write pattern, and
+the `PauseReviewError`-code-driven HTTP mapping; `spec.md` §3.2 gains
+the taxonomy row and §7 the PUT route + a note paragraph. The
+`core.py → api/files.py` imports for the sandbox helpers
+(`BINARY_SNIFF_BYTES`, `MAX_FILE_BYTES`, `resolve_within_sandbox`)
+are **lazy inside `write_artifact`** to avoid a circular import
+(`api/files → api/deps → core`); a future cleanup may lift those
+names into a shared utility module. 14a is BACKEND ONLY — no
+frontend changes (`KNOWN_EVENT_TYPES` / `INVALIDATING_KINDS` /
+`PauseAnswerForm.vue` / `TimelinePane.vue` are 14c), no sentinel
+parser change (14b), no `compose_resume_prompt` annotation (deferred
+per OQ-4), no MCP tool, no skill template change (14d). 313 backend
+tests pass (298 + 15 new in `test_artifacts_write.py`: 2 happy-paths
++ 1 normalisation + 4 precondition 409s + 1 unknown-run 404 + 2
+sandbox 400s + 2 body 415s + 1 oversize 413 + 1 atomic-write + 1
+editor-field; 3 pi-e2e still gated), `ruff`/`mypy --strict` clean
+(**39** source files, no new modules), backend coverage 94%. No
+frontend changes — frontend test count unchanged at 161.
 
 ## What relay v2 is
 

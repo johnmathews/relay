@@ -26,11 +26,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
 import secrets
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from sqlalchemy import func, select
@@ -67,9 +68,31 @@ from relay_v2.orchestrator.loop import LoopResult, SessionHandle, run_loop
 from relay_v2.orchestrator.preamble import build_preamble, compose_prompt
 from relay_v2.sse import Broadcaster
 
-__all__ = ["RelayCore"]
+__all__ = ["PauseReviewError", "RelayCore"]
 
 logger = logging.getLogger(__name__)
+
+
+class PauseReviewError(Exception):
+    """Raised when :meth:`RelayCore.write_artifact`'s preconditions are
+    not met (run not paused, no ``review_path``, path mismatch, oversize,
+    binary, missing parent dir, unknown run). The ``code`` attribute lets
+    the REST adapter map to the right HTTP status without string-matching
+    the message (ADR-40)."""
+
+    def __init__(self, code: str, detail: str) -> None:
+        super().__init__(detail)
+        self.code = code
+        self.detail = detail
+
+
+def _normalise_review_path(p: str) -> str:
+    """Canonicalise a ``review_path`` for the ``signal_args`` vs
+    request-path equality check: strip leading ``./``, collapse ``/./``,
+    but do **not** resolve symlinks (that is the sandbox resolver's
+    job). Two paths are considered equal iff their normalised forms
+    match (ADR-40)."""
+    return str(PurePosixPath(p))
 
 
 @dataclass
@@ -900,6 +923,166 @@ class RelayCore:
             return (
                 project_data_dir(Path(project.root_path)) / "runs" / run_id
             )
+
+    async def write_artifact(
+        self,
+        run_id: str,
+        rel_path: str,
+        content: str,
+        *,
+        editor: str = "dashboard",
+    ) -> dict[str, Any]:
+        """Write text content to a sandboxed artifact during a paused
+        review (spec §6.2, §7; ADR-40).
+
+        Preconditions (raised as :class:`PauseReviewError` with a ``code``
+        the REST adapter maps to an HTTP status):
+
+        - ``unknown_run`` — no row for ``run_id``.
+        - ``not_paused`` — ``run.status != "paused"``.
+        - ``no_review_path`` — paused iter has no ``review_path`` in
+          ``signal_args``.
+        - ``path_mismatch`` — normalised ``rel_path`` differs from the
+          paused iter's normalised ``review_path``.
+        - ``too_large`` — encoded body exceeds the GET-side limit
+          (``MAX_FILE_BYTES``).
+        - ``binary`` — body contains a NUL byte in its sniff window.
+        - ``missing_parent_dir`` — ``rel_path`` lies in a subdirectory
+          that does not yet exist on disk (14a does not create
+          intermediate dirs).
+
+        Sandbox violations (absolute / ``..`` / NUL in path / symlink
+        escape) propagate as :class:`SandboxViolation` from
+        :func:`resolve_within_sandbox` for the route to map to 400.
+
+        On success: writes the file atomically (tempfile-in-same-dir then
+        ``Path.replace``), appends an ``artifact_edited`` event
+        iter-scoped to the paused iter, and returns
+        ``{"path", "size", "sha256"}`` for the response.
+        """
+        # Local import to avoid a circular import at module load:
+        # ``relay_v2.api.files`` imports ``relay_v2.api.deps`` which
+        # imports ``RelayCore`` from this module.
+        from relay_v2.api.files import (
+            BINARY_SNIFF_BYTES,
+            MAX_FILE_BYTES,
+            resolve_within_sandbox,
+        )
+
+        async with self._sm() as s:
+            run = await s.get(Run, run_id)
+            if run is None:
+                raise PauseReviewError(
+                    "unknown_run", f"unknown run {run_id}"
+                )
+            if run.status != "paused":
+                raise PauseReviewError(
+                    "not_paused",
+                    f"run {run_id} is not paused "
+                    f"(status={run.status!r}); "
+                    "writes only allowed during a declared pause review",
+                )
+
+        paused = await latest_paused_iter(self._sm, run_id)
+        if (
+            paused is None
+            or paused.signal_args is None
+            or "review_path" not in paused.signal_args
+        ):
+            raise PauseReviewError(
+                "no_review_path",
+                f"run {run_id}'s paused iter has no review_path; "
+                "no edit target was declared",
+            )
+        expected = _normalise_review_path(
+            str(paused.signal_args["review_path"])
+        )
+        requested = _normalise_review_path(rel_path)
+        if expected != requested:
+            raise PauseReviewError(
+                "path_mismatch",
+                f"requested path {requested!r} does not match the "
+                f"paused iter's review_path {expected!r}",
+            )
+
+        body_bytes = content.encode("utf-8")
+        if len(body_bytes) > MAX_FILE_BYTES:
+            raise PauseReviewError(
+                "too_large",
+                f"content too large: {len(body_bytes)} bytes "
+                f"> {MAX_FILE_BYTES} limit",
+            )
+        if "\x00" in content[:BINARY_SNIFF_BYTES]:
+            raise PauseReviewError(
+                "binary",
+                "content is not text (NUL byte in the first "
+                f"{BINARY_SNIFF_BYTES} characters)",
+            )
+
+        artifacts_root = await self.get_run_artifacts_dir(run_id)
+        if artifacts_root is None:
+            raise PauseReviewError(
+                "unknown_run", f"unknown run {run_id}"
+            )
+        # The artifacts dir is provisioned at start_run; be defensive in
+        # case a test seeded the row but never materialised the dir.
+        artifacts_root.mkdir(parents=True, exist_ok=True)
+        target = resolve_within_sandbox(artifacts_root, rel_path)
+
+        # 14a does not auto-create intermediate dirs. A review_path like
+        # ``discussions/notes.md`` is only accepted if ``discussions/``
+        # already exists on disk (the agent should have created it).
+        if not target.parent.exists():
+            raise PauseReviewError(
+                "missing_parent_dir",
+                f"parent directory for {rel_path!r} does not exist; "
+                "14a does not create intermediate directories",
+            )
+
+        if target.exists():
+            pre_bytes = target.read_bytes()
+            sha256_before: str | None = hashlib.sha256(
+                pre_bytes
+            ).hexdigest()
+            size_before = len(pre_bytes)
+        else:
+            sha256_before = None
+            size_before = 0
+
+        # Atomic write: temp file in the same dir, then ``replace``
+        # (POSIX-atomic rename on the same filesystem). A mid-write
+        # crash leaves the original file intact.
+        tmp = target.parent / f".{target.name}.tmp.{secrets.token_hex(4)}"
+        try:
+            tmp.write_text(content, encoding="utf-8")
+            tmp.replace(target)
+        except Exception:
+            with contextlib.suppress(FileNotFoundError):
+                tmp.unlink()
+            raise
+
+        sha256_after = hashlib.sha256(body_bytes).hexdigest()
+        size_after = len(body_bytes)
+        normalised = _normalise_review_path(rel_path)
+
+        await self._store.append(
+            run_id,
+            "artifact_edited",
+            {
+                "path": normalised,
+                "size_before": size_before,
+                "size_after": size_after,
+                "sha256_before": sha256_before,
+                "sha256_after": sha256_after,
+                "editor": editor,
+            },
+            iter_id=paused.id,
+        )
+        return {
+            "path": normalised,
+            "size": size_after,
+            "sha256": sha256_after,
+        }
 
     async def start_run(
         self,

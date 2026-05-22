@@ -2529,3 +2529,247 @@ convention — payload preserves it verbatim), ADR-29 (Option-D
 lookahead — left in place; this ADR's persistence is independent of
 the lookahead),
 `docs/plans/2026-05-22-harness-session-ended-persistence.md`.
+
+## ADR-40 — Pause-for-review: write endpoint coupled to `paused` + `review_path`, content on disk + hash-bearing event
+
+**Status:** accepted (2026-05-22). Lands with Phase 14a; the rest of
+the pause-for-review arc (sentinel grammar 14b, dashboard editor 14c,
+engineering-team skill template 14d) is scoped in
+`docs/proposals/pause-for-review.md`.
+
+**Context.** The engineering-team skill's Phase 2 ends with a deliberate
+human gate: the agent writes a proposed plan to
+`$RELAY_RUN_DIR/improvement-plan.md` and emits
+`[[engteam:pause-for-input id="P1" question="Approve the plan?"]]`. The
+operator is expected to open the file in their own editor, optionally
+edit it, then type "go" into the pause-answer textarea. Fresh-context-
+per-iter (ADR-20) means the resumed agent re-reads the file from disk
+and operates on the edited content automatically, but the UX has three
+sharp edges:
+
+1. **Discoverability.** Nothing in the dashboard tells the operator
+   where the file lives, that they may edit it, or that it will be
+   picked up on resume.
+2. **No edit audit.** Edits happen outside relay. The event store
+   (ADR-10's single source of truth) records the `pause_requested` and
+   the `pause_resolved` answer, but the artifact mutation itself is
+   invisible. Replays cannot reconstruct what state the file was in at
+   the moment of resume.
+3. **Friction at the highest-stakes decision point.** Three-tool
+   context-switching (dashboard → editor → terminal/jq → dashboard)
+   quietly biases the operator toward rubber-stamping with "go".
+
+The proposal closes all three by lighting up an inline editor in the
+pause-answer form, with the agent declaring its review target via a
+new optional sentinel attribute. This ADR records the three
+contract-changing decisions that land with the 14a backend half.
+
+**Decision 1 (A1) — opt-in via a new sentinel attribute `review_path`.**
+The agent declares its review target on the pause sentinel:
+
+```
+[[engteam:pause-for-input id="P1" question="Approve the plan?"
+                          review_path="improvement-plan.md"]]
+```
+
+The orchestrator's sentinel parser extracts `review_path` (relative to
+`$RELAY_RUN_DIR`) and stores it in `iters.signal_args` next to
+`next_prompt`/`question`/`id`. The dashboard reads it and switches to
+inline-editor mode. Omitting the attribute is byte-identical to the
+current pause grammar (backwards-compatible).
+
+The sentinel-grammar code lands in 14b; ADR-40 names the contract.
+14a synthesises the post-14b world in tests and ships the endpoint
+already coupled to `signal_args["review_path"]`, so the 14b PR is
+purely additive (a parser change, no contract negotiation with the
+backend).
+
+**Decision 2 (B1) — direct in-place write to the artifact + an
+`artifact_edited` event with content hashes.** `PUT /api/runs/:id/
+artifacts/{path}` overwrites the file at the requested sandboxed path
+and appends one `artifact_edited` event with
+`{path, size_before, size_after, sha256_before, sha256_after, editor}`.
+The event records *that* an edit happened plus integrity hashes; the
+edited content itself lives **on disk**, not in the event payload.
+
+The agent's existing "re-read the file on resume" workflow is
+preserved — no orchestrator-side prompt-composition change is needed
+(the deferred `compose_resume_prompt` annotation per OQ-4 remains
+deferred, separately tractable later if it bites). Replays can verify
+*that* the file was edited at a known timestamp; the on-disk file at
+replay time may differ, but that is a property of every artifact in
+the system today, not a regression.
+
+**Decision 3 (OQ-1 — strict coupling).** The PUT endpoint requires
+`run.status == "paused"` AND the requested path to equal the latest
+paused iter's `signal_args.review_path` **after normalisation**
+(strip leading `./`, collapse `/./`; symlink resolution is the
+sandbox resolver's separate job). Mismatch / not-paused / running /
+unknown-run all return 409 with precise `detail` strings; the route
+also returns 400 for sandbox violations, 413 for oversize, 415 for
+binary content. There is no ad-hoc write mode — the endpoint is the
+*pause-for-review* contract, not a general filesystem write API.
+
+The strict coupling means the 14a release ships an endpoint that
+returns 409 for every real-world caller until 14b lands (because no
+production code path writes `review_path` into `signal_args` yet).
+That is the *correct* interim state — no client should be calling
+this endpoint until the sentinel-side declaration is in place — and
+is documented in spec §7. The 14a test suite synthesises
+`signal_args["review_path"]` directly to exercise the happy path.
+
+**Decision 4 — sandboxing reuses the existing ADR-25 resolver.**
+`resolve_within_sandbox` (already audited for the file browser +
+run-artifacts read endpoints) is invoked verbatim for the write path.
+One audited confinement function, two reads + one write. The write
+endpoint adds no new traversal/symlink-escape surface; the threat
+model is the read endpoint's threat model.
+
+**Decision 5 — atomic write via tempfile-in-same-dir + `Path.replace`.**
+A mid-write crash must not leave the operator's plan in a half-written
+state. The pattern is `(parent / f".{name}.tmp.{rand}").write_text(…)`
+then `.replace(target)`. `os.replace` is atomic on POSIX same-filesystem;
+the temp file lives in the same dir as the target so it is always
+same-filesystem.
+
+**Decision 6 — 14a does not create intermediate directories.** A
+`review_path` like `discussions/notes.md` is only accepted if the
+`discussions/` subdirectory already exists on disk (the agent should
+have created it as part of writing the file in its own iter). A
+missing parent dir returns 409 `missing_parent_dir`. Auto-creating
+intermediate dirs is a meaningful policy decision (does the dashboard
+own filesystem layout?) and is deliberately out of scope for v1;
+future loosening is purely additive.
+
+**Decision 7 — event is iter-scoped to the paused iter.** Replay can
+group all edits under the pause that motivated them by joining on
+`events.iter_id`. The event kind is non-terminal — `runs.status`
+stays `paused`; the run is unaffected by the edit itself.
+
+**Decision 8 — `PauseReviewError` carries a string `code` field for
+HTTP mapping.** The REST adapter maps `code` to HTTP status without
+string-matching the exception message: `unknown_run → 404`,
+`too_large → 413`, `binary → 415`, every other code → 409. This keeps
+the HTTP-status logic in the route layer and the precondition
+vocabulary in `RelayCore`, neither leaking into the other.
+
+**Rejected — A2 (dashboard infers from question content).** Regex
+on free-form text is fragile (typos, paraphrases), the agent has no
+way to opt out, and the implicit signal centralises intent in the
+wrong layer (the dashboard, not the agent that wrote the file).
+The explicit sentinel attribute is the right contract.
+
+**Rejected — A3 (always render any markdown artifacts).** Wrong
+information density when there are many artifacts (logs, phase
+files, multi-step plans). Kept as a fallback (the artifacts pane
+remains reachable from run-detail), but not the primary mechanism.
+
+**Rejected — B2 (versioned snapshot files `improvement-plan.<seq>.md`).**
+Full content audit on disk, but the skill would have to know about the
+versioning convention (read the symlink or the highest-numbered file,
+not just `improvement-plan.md`). Significantly more complex; tractable
+as a per-project policy follow-up if ever needed. Not v1.
+
+**Rejected — B3 (edit content in the event payload).** Pure
+event-store-driven replay (true ADR-10 conformance), but doubles disk
+usage for every edit (content lives in both the artifact file *and*
+the event row). For multi-MB plans this is ugly. Probably the right
+answer for a future multi-user audited build; design-compatible with
+v2 — the event payload can be extended additively. Not v1.
+
+**Rejected — a first-class `pause-for-review` sentinel verb.** A
+separate verb (`[[engteam:pause-for-review file="..."]]`) makes the
+intent explicit at the grammar level but duplicates the entire pause
+wiring (loop, signaling, status projection, dashboard form, MCP
+tool). A single optional attribute is strictly less surface area.
+
+**Rejected — ad-hoc writes allowed any time, not just during pause.**
+Operator could pre-fill an artifact for the agent to find. Reject for
+v1: the pause-for-review contract is what we want; ad-hoc writes are
+a different feature with a different threat model (no declared
+target, the agent did not opt in to having its filesystem mutated).
+Future feature is purely additive.
+
+**Rejected — server-side conflict detection (ETags / If-Match).**
+Reject PUT if the file's hash on disk does not match the operator's
+loaded baseline. Reject for v1: single-user / single-process (ADR-12)
+makes this unnecessary. Designed-in headroom: the response already
+returns the new `sha256`, so adding `If-Match: <sha256>` later is
+purely additive.
+
+**Rejected — MCP `relay__write_artifact` tool.** Agents do not edit
+their own artifacts mid-pause — the human does. If a future iteration
+wants it, the adapter is trivial (same `RelayCore.write_artifact`
+call) but the use case is unclear, so v1 ships REST-only.
+
+**Consequences.**
+
+- New event kind `artifact_edited` (spec §3.2). Per-run event count
+  grows by one per dashboard write; payload is small (paths + two
+  64-char hashes + two ints + an editor string). SSE replay pagination
+  (`_REPLAY_PAGE = 500`) is unaffected.
+- New REST route `PUT /api/runs/:id/artifacts/*` (spec §7). The
+  OpenAPI document picks it up automatically; `test_openapi.py`
+  re-validates without code changes.
+- New `RelayCore.write_artifact` method + `PauseReviewError`
+  exception. All other writes still flow through existing `RelayCore`
+  methods (ADR-07/ADR-15 preserved).
+- Sandbox surface is unchanged — the write path reuses the audited
+  resolver; the read endpoints' traversal/absolute/NUL/symlink-escape
+  tests cover the same code on the write side.
+- Pi harness sees nothing new (ADR-04 preserved). The `review_path`
+  attribute is parsed by the orchestrator's sentinel layer in 14b,
+  not by pi.
+- `MCP` surface is frozen (ADR-27 preserved). `relay__pause_response`
+  is still `(run_id, answer)`.
+- `compose_resume_prompt` is unchanged in 14a (proposal §OQ-4
+  deferred). A future iteration may annotate the resume body with
+  per-edit hashes once the editing workflow has settled in practice.
+- Audit gap honestly named (B1 vs B3): the event store records
+  *that* an edit happened with integrity hashes; the *content* is on
+  disk. For single-user MVP, the operator's git history on the
+  artifacts dir (if committed) is the canonical content-audit
+  channel. B3 remains forward-compatible.
+- Concurrent-edit race: single-user, single-process MVP (ADR-12) →
+  last-write-wins; two browser tabs editing the same file both land
+  `artifact_edited` events in order; the loser sees a stale view
+  until they refresh. Flagged for the multi-user phase.
+- 14a interim behaviour: every real-world caller sees 409 until 14b
+  lands (no production path writes `review_path` yet). This is the
+  *correct* interim state — no client should be calling this
+  endpoint until the sentinel-side declaration is in place — and is
+  documented in spec §7 and tested via synthesised `signal_args`.
+
+**Implementation notes.**
+
+- `_normalise_review_path(p) = str(PurePosixPath(p))` strips leading
+  `./` and collapses `/./` without resolving symlinks. The sandbox
+  resolver runs separately against the un-normalised user input.
+- `core.py` imports `BINARY_SNIFF_BYTES`, `MAX_FILE_BYTES`,
+  `resolve_within_sandbox` **lazily inside `write_artifact`** to
+  avoid the circular import `relay_v2.api.files → relay_v2.api.deps
+  → relay_v2.core`. A future structural cleanup might lift those
+  three names into a `relay_v2.api.sandbox` utility module shared by
+  files.py and core.py.
+- Tests live in `tests/api/test_artifacts_write.py` — integration-
+  style against a real `RelayCore` and `aiosqlite` DB (mirroring
+  `tests/api/test_runs.py`). The pause-iter row + `review_path` are
+  seeded directly via the sessionmaker; the loop is never driven.
+
+**Related:** ADR-07 / ADR-15 (all writes through `RelayCore` —
+preserved; `write_artifact` is the new method), ADR-10 (event store
+as source of truth — `artifact_edited` is the audit row), ADR-12
+(single-user MVP — last-write-wins is acceptable), ADR-13 (per-run
+worktree — orthogonal; artifacts dir is the sibling of the worktree,
+not nested), ADR-18 (opaque messages — orthogonal), ADR-20 (pause/
+resume — extended additively via `signal_args["review_path"]` in
+14b; 14a synthesises this), ADR-22 (resume forward-progress —
+preserved; a resumed-after-edit run still inherits the
+`max(max_iters, paused_seq + 1)` cap), ADR-25 (sandboxed artifact
+browser — resolver reused for writes), ADR-26 (frontend bundle
+budget — preserved by 14c using a plain `<textarea>` + the existing
+render pipeline, no new heavy dep), ADR-30 (CI gate + journal-attested
+manual acceptances — 14d follows this pattern), ADR-39 (most recent
+event-taxonomy extension — `artifact_edited` mirrors its shape),
+`docs/proposals/pause-for-review.md`,
+`docs/plans/2026-05-22-pause-for-review-14a.md`.

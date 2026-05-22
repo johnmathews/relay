@@ -24,7 +24,8 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
 from relay_v2.api.deps import get_core
-from relay_v2.api.files import serve_file, serve_listing
+from relay_v2.api.files import SandboxViolation, serve_file, serve_listing
+from relay_v2.core import PauseReviewError
 
 router = APIRouter(prefix="/api", tags=["artifacts"])
 
@@ -84,3 +85,65 @@ async def get_artifact(
     except _NotFound as nf:
         return nf.response
     return serve_file(root, file_path)
+
+
+@router.put("/runs/{run_id}/artifacts/{file_path:path}")
+async def put_artifact(
+    run_id: str,
+    file_path: str,
+    request: Request,
+) -> JSONResponse:
+    """Write text content to a sandboxed artifact during a paused review
+    (spec §6.2, §7; ADR-40). Thin adapter over
+    :meth:`relay_v2.core.RelayCore.write_artifact`.
+
+    Body: ``{"content": str, "editor"?: str}``. The endpoint is the
+    **single write entry point** on the run artifacts dir; it requires
+    the run to be ``paused`` AND the requested path to equal the latest
+    paused iter's ``signal_args.review_path`` (set by 14b). On success
+    the event store gains one ``artifact_edited`` event with the
+    pre/post SHA-256 hashes and sizes — the audit trail per ADR-10.
+
+    Status mapping:
+
+    - 200 — write succeeded; body is ``{path, size, sha256}``.
+    - 400 — sandbox violation (absolute, ``..``, NUL in path, symlink
+      escape).
+    - 404 — unknown run.
+    - 409 — run not paused / no review_path / path mismatch /
+      missing intermediate directory.
+    - 413 — body exceeds ``MAX_FILE_BYTES``.
+    - 415 — body is not valid JSON, ``content`` is not a string, the
+      ``editor`` field is not a string, or the content carries a NUL
+      byte (binary).
+    """
+    core = get_core(request)
+    try:
+        body = await request.json()
+    except Exception:
+        return _err(415, "request body must be application/json")
+    if not isinstance(body, dict):
+        return _err(415, "request body must be a JSON object")
+    content = body.get("content")
+    if not isinstance(content, str):
+        return _err(415, "body.content must be a UTF-8 string")
+    editor = body.get("editor", "dashboard")
+    if not isinstance(editor, str):
+        return _err(415, "body.editor must be a string")
+
+    try:
+        result = await core.write_artifact(
+            run_id, file_path, content, editor=editor
+        )
+    except SandboxViolation as exc:
+        return _err(400, str(exc))
+    except PauseReviewError as exc:
+        if exc.code == "unknown_run":
+            return _err(404, exc.detail)
+        if exc.code == "too_large":
+            return _err(413, exc.detail)
+        if exc.code == "binary":
+            return _err(415, exc.detail)
+        # not_paused / no_review_path / path_mismatch / missing_parent_dir
+        return _err(409, exc.detail)
+    return JSONResponse(status_code=200, content=result)
