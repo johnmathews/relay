@@ -16,7 +16,8 @@ operates on that already-isolated text.
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING
+from pathlib import PurePosixPath
+from typing import TYPE_CHECKING, Any
 
 from relay_v2.harness.protocol import SignalConfig, SignalEmitted
 
@@ -31,6 +32,7 @@ __all__ = [
     "validate_done_no_prompt_markers",
     "extract_pause_question",
     "extract_pause_id",
+    "extract_pause_review_path",
     "extract_phase_start",
     "extract_fanout_payload",
     "detect_in_text",
@@ -236,6 +238,66 @@ def extract_pause_id(text: str) -> str:
     return ""
 
 
+_REVIEW_PATH_RE = re.compile(r'review_path="((?:[^"\\]|\\.)*)"')
+
+
+_REVIEW_PATH_REPAIR = (
+    "\nThe optional review_path attribute on [[engteam:pause-for-input]]"
+    " is a path RELATIVE to $RELAY_RUN_DIR (the run's artifacts dir,\n"
+    "<project_root>/.relay/runs/<run_id>/). It must not be empty,\n"
+    "absolute, contain '..', or carry a NUL byte. Examples:\n\n"
+    '    review_path="improvement-plan.md"\n'
+    '    review_path="discussions/notes.md"\n\n'
+    "Omit the attribute entirely if the pause does not require an\n"
+    "editable artifact (the resumed run still re-reads any file your\n"
+    "next_prompt body names).\n\n"
+    "See: skills/engineering-team/pi/references/sentinels.md\n"
+)
+
+
+def extract_pause_review_path(text: str) -> str | None:
+    """First pause sentinel's ``review_path`` attribute, or ``None`` when
+    absent. Raises :class:`MarkerError` on syntactically invalid values
+    (empty / absolute / ``..``-bearing / NUL byte). Per ADR-40 the value
+    is interpreted relative to ``$RELAY_RUN_DIR`` at write time; this
+    parser performs syntactic validation only — no filesystem check."""
+    for line in text.split("\n"):
+        if _PAUSE_RE.match(line):
+            m = _REVIEW_PATH_RE.search(line)
+            if m is None:
+                return None
+            value = m.group(1).replace('\\"', '"')
+            _validate_review_path(value)
+            return value
+    return None
+
+
+def _validate_review_path(value: str) -> None:
+    if value == "":
+        raise MarkerError(
+            "extract_pause_review_path: review_path is empty",
+            _REVIEW_PATH_REPAIR,
+        )
+    if "\x00" in value:
+        raise MarkerError(
+            "extract_pause_review_path: review_path contains NUL byte",
+            _REVIEW_PATH_REPAIR,
+        )
+    if value.startswith("/") or PurePosixPath(value).is_absolute():
+        raise MarkerError(
+            f"extract_pause_review_path: review_path {value!r} is "
+            "absolute (must be relative to $RELAY_RUN_DIR)",
+            _REVIEW_PATH_REPAIR,
+        )
+    parts = PurePosixPath(value).parts
+    if any(part == ".." for part in parts):
+        raise MarkerError(
+            f"extract_pause_review_path: review_path {value!r} contains "
+            "'..' (path traversal not allowed)",
+            _REVIEW_PATH_REPAIR,
+        )
+
+
 def extract_phase_start(text: str) -> str:
     """Value of the *last* ``phase-start`` sentinel; ``""`` if none.
     Last-wins matches the driver, which writes the final phase seen."""
@@ -343,14 +405,15 @@ def detect_in_text(text: str, config: SignalConfig) -> SignalEmitted | None:
             kind="handoff", args={"next_prompt": extract_handoff_prompt(text)}
         )
     if counts["pause"]:
-        return SignalEmitted(
-            kind="pause",
-            args={
-                "next_prompt": extract_pause_prompt(text),
-                "question": extract_pause_question(text),
-                "id": extract_pause_id(text),
-            },
-        )
+        args: dict[str, Any] = {
+            "next_prompt": extract_pause_prompt(text),
+            "question": extract_pause_question(text),
+            "id": extract_pause_id(text),
+        }
+        review_path = extract_pause_review_path(text)
+        if review_path is not None:
+            args["review_path"] = review_path
+        return SignalEmitted(kind="pause", args=args)
     if counts.get("fanout"):
         # FanoutParseError and MarkerError propagate to the loop's
         # _drive_iter catch clause (loop.py — Task 6).

@@ -53,6 +53,16 @@ PAUSE_BLOCK = (
     "[[engteam:prompt-end]]\n\n"
     '[[engteam:pause-for-input id="P1" question="Use A or B?"]]'
 )
+# 14b — pause sentinel with the optional review_path attribute. Asserts
+# the attribute lands in iters.signal_args end-to-end through the loop.
+PAUSE_BLOCK_WITH_REVIEW = (
+    "Plan is at $RELAY_RUN_DIR/improvement-plan.md.\n\n"
+    "[[engteam:prompt-start]]\n"
+    "Re-read improvement-plan.md and start Phase 3.\n"
+    "[[engteam:prompt-end]]\n\n"
+    '[[engteam:pause-for-input id="P1" question="Approve plan?"'
+    ' review_path="improvement-plan.md"]]'
+)
 # Indented sentinel inside a fence + NO real column-0 closing sentinel.
 FENCED_NO_SIGNAL = (
     "Here is the contract, for reference:\n\n"
@@ -282,6 +292,38 @@ def test_pause_then_resume(tmp_path: Path) -> None:
         ]
         assert "pause_requested" in kinds
         assert "pause_resolved" in kinds
+
+
+def test_pause_signal_args_carries_review_path(tmp_path: Path) -> None:
+    """14b — a pause sentinel with review_path="..." threads the attribute
+    through the loop into the paused iter's signal_args (ADR-40). The
+    attribute is opt-in: omitting it must leave the key absent (covered
+    by ``test_pause_then_resume`` above)."""
+    settings = _settings(tmp_path)
+    harness = ScriptedHarness([TextScript(PAUSE_BLOCK_WITH_REVIEW)])
+
+    async def scenario(core: RelayCore) -> str:
+        pid = await core.register_project(tmp_path, "p")
+        run_id = await core.start_run(pid, "Start.")
+        result = await core.wait_for_run(run_id)
+        assert result.status == "paused"
+        return run_id
+
+    run_id = _run(scenario, settings, harness)
+    with _read(settings) as s:
+        iters = list(
+            s.scalars(select(Iter).where(Iter.run_id == run_id)
+                      .order_by(Iter.seq))
+        )
+        assert len(iters) == 1
+        assert iters[0].signal_kind == "pause"
+        assert iters[0].signal_args is not None
+        assert iters[0].signal_args["review_path"] == "improvement-plan.md"
+        # The pre-14b keys still travel unchanged alongside the new one.
+        assert iters[0].signal_args["id"] == "P1"
+        assert "Re-read improvement-plan.md" in (
+            iters[0].signal_args["next_prompt"]
+        )
 
 
 def test_resume_at_max_iters_boundary(tmp_path: Path) -> None:

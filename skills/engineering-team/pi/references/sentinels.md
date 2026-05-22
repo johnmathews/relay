@@ -29,7 +29,8 @@ The eight verbs:
 - `handoff` — closing sentinel, more work remains. No attrs.
 - `done` — closing sentinel, plan exhausted. No attrs.
 - `pause-for-input` — closing sentinel, user input required. Required attrs:
-  `id="P<n>"`, `question="<one-line summary>"`.
+  `id="P<n>"`, `question="<one-line summary>"`. Optional attr (added 14b):
+  `review_path="<path>"` — see "Reviewable pauses" below.
 - `fanout` — closing sentinel, dispatch N parallel child runs and resume
   this run after they all settle. No attrs on the verb line; the payload
   is a JSON block between `[[engteam:fanout-start]]` and
@@ -216,3 +217,36 @@ Do NOT emit `pause-for-input` for:
    question must be one line; multi-line context goes in the prompt body.
 5. End the session. The user will resume the loop with relay's resume
    flag, supplying the answer.
+
+### Reviewable pauses (`review_path`)
+
+When the pause asks the user to **read or edit a file** (typically the
+improvement plan or a discussion note), add the optional `review_path`
+attribute to point at the file. The dashboard reads this and offers an
+inline editor; the run's event store records each save as an
+`artifact_edited` event (relay-v2 spec §3.2, ADR-40).
+
+`review_path` is **relative to `$RELAY_RUN_DIR`** (the run's artifacts
+dir, `<project_root>/.relay/runs/<run_id>/`). Absolute paths, `..`
+components, empty strings, and NUL bytes are rejected at parse time
+(`MarkerError`). Omit the attribute when the pause is a pure question
+that does not need an editable artifact — your `next_prompt` already
+tells the resumed session to re-read any files it needs, and the rest
+of the workflow is unchanged.
+
+Example:
+
+    [[engteam:prompt-start]]
+    The improvement plan is at `$RELAY_RUN_DIR/improvement-plan.md`.
+    Re-read it in full — the user may have edited it. Then start
+    Phase 3.
+    [[engteam:prompt-end]]
+
+    [[engteam:pause-for-input id="P1" question="Approve plan?"
+                              review_path="improvement-plan.md"]]
+
+The orchestrator stores `review_path` in the paused iter's `signal_args`
+alongside `id`, `question`, and `next_prompt`. The file does **not**
+need to be present on disk at the moment the sentinel is parsed — the
+dashboard 404s and offers a "Create at this path" state if the agent
+declared a path it never wrote.

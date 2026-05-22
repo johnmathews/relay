@@ -375,6 +375,16 @@ The prompt-marker pair (`[[engteam:prompt-start]]` … `[[engteam:prompt-end]]`)
 remains the mechanism for carrying the next-iter prompt before `handoff`
 and `pause`. See `references/signaling.md` (TBD).
 
+`pause-for-input` accepts an **optional** `review_path="<relative-path>"`
+attribute (added 14b, ADR-40). When present, the orchestrator stores it
+as `signal_args["review_path"]` on the paused iter; the dashboard's
+`PauseAnswerForm` (14c) reads it to switch to inline-editor mode. The
+path is **relative to `$RELAY_RUN_DIR`**; absolute paths, `..`
+components, empty strings, or NUL bytes are rejected at parse time with
+`MarkerError`. Omitting the attribute is byte-identical to the pre-14b
+grammar — skills emitting plain `pause-for-input` continue to work
+unchanged.
+
 ### 5.2 `mcp_tools` (alternative; not built in MVP)
 
 A small in-process MCP server registers tools `relay__handoff`,

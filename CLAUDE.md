@@ -463,6 +463,46 @@ sandbox 400s + 2 body 415s + 1 oversize 413 + 1 atomic-write + 1
 editor-field; 3 pi-e2e still gated), `ruff`/`mypy --strict` clean
 (**39** source files, no new modules), backend coverage 94%. No
 frontend changes — frontend test count unchanged at 161.
+**Phase 14b** (2026-05-22,
+[docs/plans/2026-05-22-pause-for-review-14b.md](docs/plans/2026-05-22-pause-for-review-14b.md))
+teaches the sentinel parser the optional `review_path` attribute on
+`[[engteam:pause-for-input ...]]`, lighting up 14a's
+documented-interim-409 write endpoint as a working write path for any
+skill that emits the attribute. New `extract_pause_review_path(text)`
+in `src/relay_v2/harness/signaling/sentinels.py` mirrors
+`extract_pause_id` / `extract_pause_question` (line-anchored
+`_PAUSE_RE.match` → `review_path="..."` regex with `\"`-unescape
+support) and delegates syntactic validation to a module-private
+`_validate_review_path`: empty / NUL-byte / absolute (leading `/` or
+`PurePosixPath.is_absolute()`) / any `..` path component raise
+`MarkerError` with a focused multi-line repair recipe
+(`_REVIEW_PATH_REPAIR`, same shape as `extract_fanout_payload`'s
+`_REPAIR`). `detect_in_text`'s pause branch calls the new extractor
+and conditionally adds `"review_path"` to `args` — **the key is
+ABSENT from `signal_args` when the attribute is absent** (load-bearing
+for 14a's `no_review_path` 409 branch in `write_artifact`; a
+present-but-`None` key would falsely satisfy `if "review_path" in
+signal_args`). The parser performs syntactic validation only (no
+filesystem resolution); the 14a `resolve_within_sandbox` resolver
+remains the runtime enforcement per ADR-25/40. `signal_args["review_path"]`
+travels through the existing pause-persistence machinery (the same
+JSON column already carrying `next_prompt`/`question`/`id`), so the
+loop, event store, and SSE need no change. `skills/engineering-team/
+pi/references/sentinels.md` gains a "Reviewable pauses
+(`review_path`)" sub-section + a verbs-list annotation; `spec.md` §5
+gets a one-paragraph note. 14b is HARNESS-SIGNALING + SKILL-DOCS
+ONLY — no frontend change (14c), no Phase-2 skill template change
+(14d), no `compose_resume_prompt` change (deferred per OQ-4 to 14e),
+no new event kind (`artifact_edited` already shipped in 14a), no new
+ADR (the A1 decision is recorded in ADR-40). 325 backend tests pass
+(313 + 12 new: 11 in `test_signaling_sentinels.py` covering
+absent/present/subdir/quote-unescape/empty/absolute/traversal/
+nested-traversal/NUL + `detect_in_text` present-and-absent cases, +
+1 orchestrator integration `test_pause_signal_args_carries_review_path`
+in `test_loop.py` asserting end-to-end persistence; 3 pi-e2e still
+gated), `ruff`/`mypy --strict` clean (**39** source files, no new
+modules), backend coverage 94%. Frontend test count unchanged at 161
+(no frontend file touched).
 
 ## What relay v2 is
 

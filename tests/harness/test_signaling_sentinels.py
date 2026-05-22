@@ -21,6 +21,7 @@ from relay_v2.harness.signaling.sentinels import (
     extract_pause_id,
     extract_pause_prompt,
     extract_pause_question,
+    extract_pause_review_path,
     extract_phase_start,
     validate_done_no_prompt_markers,
 )
@@ -534,3 +535,102 @@ def test_detect_done_with_markers_is_violation() -> None:
     a contract violation, surfaced as MarkerError, not a silent done."""
     with pytest.raises(MarkerError):
         detect_in_text(C6, SENTINELS)
+
+
+# --- 14b: pause-for-input gains optional review_path attribute (ADR-40) ---
+
+_RP_BLOCK_NO_RP = (
+    "Plan saved.\n\n"
+    "[[engteam:prompt-start]]\n"
+    "Re-read $RELAY_RUN_DIR/improvement-plan.md and continue.\n"
+    "[[engteam:prompt-end]]\n"
+    '[[engteam:pause-for-input id="P1" question="Approve plan?"]]'
+)
+
+
+def _rp_block(review_attr: str) -> str:
+    """Build a well-formed pause block with the given review_path attribute
+    spelling appended to the sentinel line."""
+    return (
+        "Plan saved.\n\n"
+        "[[engteam:prompt-start]]\n"
+        "Re-read $RELAY_RUN_DIR/improvement-plan.md and continue.\n"
+        "[[engteam:prompt-end]]\n"
+        f'[[engteam:pause-for-input id="P1" question="Approve plan?" {review_attr}]]'
+    )
+
+
+def test_extract_pause_review_path_absent() -> None:
+    assert extract_pause_review_path(_RP_BLOCK_NO_RP) is None
+
+
+def test_extract_pause_review_path_present() -> None:
+    text = _rp_block('review_path="improvement-plan.md"')
+    assert extract_pause_review_path(text) == "improvement-plan.md"
+
+
+def test_extract_pause_review_path_subdir() -> None:
+    # Parser does not normalise; subdir paths are returned verbatim.
+    text = _rp_block('review_path="discussions/notes.md"')
+    assert extract_pause_review_path(text) == "discussions/notes.md"
+
+
+def test_extract_pause_review_path_unescapes_quotes() -> None:
+    # Mirrors extract_pause_question's \" unescape rule.
+    text = _rp_block(r'review_path="a\"b.md"')
+    assert extract_pause_review_path(text) == 'a"b.md'
+
+
+def test_extract_pause_review_path_rejects_empty() -> None:
+    text = _rp_block('review_path=""')
+    with pytest.raises(MarkerError) as ei:
+        extract_pause_review_path(text)
+    assert ei.value.headline.startswith("extract_pause_review_path:")
+    assert "empty" in ei.value.headline
+
+
+def test_extract_pause_review_path_rejects_absolute() -> None:
+    text = _rp_block('review_path="/etc/passwd"')
+    with pytest.raises(MarkerError) as ei:
+        extract_pause_review_path(text)
+    assert "absolute" in ei.value.headline
+
+
+def test_extract_pause_review_path_rejects_traversal() -> None:
+    text = _rp_block('review_path="../escape.md"')
+    with pytest.raises(MarkerError) as ei:
+        extract_pause_review_path(text)
+    assert "'..'" in ei.value.headline
+
+
+def test_extract_pause_review_path_rejects_traversal_nested() -> None:
+    text = _rp_block('review_path="a/../b.md"')
+    with pytest.raises(MarkerError) as ei:
+        extract_pause_review_path(text)
+    assert "'..'" in ei.value.headline
+
+
+def test_extract_pause_review_path_rejects_nul() -> None:
+    text = _rp_block('review_path="a\x00b"')
+    with pytest.raises(MarkerError) as ei:
+        extract_pause_review_path(text)
+    assert "NUL" in ei.value.headline
+
+
+def test_detect_in_text_pause_includes_review_path_when_present() -> None:
+    text = _rp_block('review_path="improvement-plan.md"')
+    s = detect_in_text(text, SENTINELS)
+    assert s is not None and s.kind == "pause"
+    assert s.args["review_path"] == "improvement-plan.md"
+    # The pre-14b keys are still there unchanged.
+    assert s.args["id"] == "P1"
+    assert s.args["question"] == "Approve plan?"
+    assert "Re-read $RELAY_RUN_DIR/improvement-plan.md" in s.args["next_prompt"]
+
+
+def test_detect_in_text_pause_omits_review_path_when_absent() -> None:
+    # Backwards-compat regression: skills not on 14b grammar produce
+    # signal_args with NO "review_path" key (absent, not None).
+    s = detect_in_text(_RP_BLOCK_NO_RP, SENTINELS)
+    assert s is not None and s.kind == "pause"
+    assert "review_path" not in s.args
