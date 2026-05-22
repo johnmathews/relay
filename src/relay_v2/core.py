@@ -77,12 +77,11 @@ class _RunState:
     session_handle: SessionHandle = field(default_factory=SessionHandle)
     settled: asyncio.Event = field(default_factory=asyncio.Event)
     result: LoopResult | None = None
-    # ADR-38 (Phase 9f, Task 4): opaque OTel iter context from the parent's
-    # dispatching fanout iter.  Set by _dispatch_children before enqueue so
-    # _run can pass it to otel.run_span() and parent the child's trace span
-    # under the iter that triggered the fanout.  None for top-level (root)
-    # runs and for synthesizer re-enqueues (_maybe_resume_parent creates a
-    # fresh _RunState without this field — Task 4b wires the synth path).
+    # parent_iter_ctx — captured OTel Context of the dispatching iter span
+    # when this run was spawned by a fanout (set by _dispatch_children on
+    # child rows; set by _maybe_resume_parent on the parent's synthesizer-
+    # phase _RunState). None for top-level user-initiated runs, which are
+    # trace roots. ADR-38.
     parent_iter_ctx: IterSpanContext | None = None
 
 

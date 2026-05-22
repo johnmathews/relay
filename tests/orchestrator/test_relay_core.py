@@ -75,9 +75,6 @@ class _StubIterSpan:
 class _RecordingRunSpan:
     """No-op RunSpan that yields a stub iter span with a non-None context."""
 
-    def __init__(self, parent_iter_ctx: IterSpanContext) -> None:
-        self.parent_iter_ctx = parent_iter_ctx
-
     @contextmanager
     def iter_span(self, *, seq: int, phase: str | None) -> Iterator[IterSpan]:
         yield _StubIterSpan()
@@ -98,7 +95,7 @@ class RecordingInstrumentation:
         self, run_id: str, *, parent_iter_ctx: IterSpanContext = None
     ) -> Iterator[RunSpan]:
         self.calls.append((run_id, parent_iter_ctx))
-        yield _RecordingRunSpan(parent_iter_ctx)
+        yield _RecordingRunSpan()
 
     def shutdown(self) -> None:
         pass
