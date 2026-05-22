@@ -110,6 +110,56 @@ def test_broadcaster_fanout_unsubscribe_and_full_policy() -> None:
 # ── Generator-level SSE tests (ADR-23) ─────────────────────────────────
 
 
+def test_sse_replay_includes_harness_session_ended(tmp_path: Path) -> None:
+    """ADR-39: the SSE replay stream carries the new harness_session_ended
+    row ordered immediately before each iter's iter_ended event (ADR-23
+    replay invariant preserved across the new row)."""
+    settings = _settings(tmp_path)
+    harness = ScriptedHarness([TextScript(HANDOFF), TextScript(DONE)])
+
+    async def scenario(core: RelayCore) -> None:
+        pid = await core.register_project(tmp_path, "p")
+        run_id = await core.start_run(pid, "Go.", max_iters=5)
+        result = await core.wait_for_run(run_id)
+        assert result.status == "done"
+
+        events = await _drain(core, run_id, 0)
+        kinds = [e["event"] for e in events]
+
+        # The new event appears at least once per closed iter (2 iters here).
+        assert kinds.count("harness_session_ended") == 2
+        # Pair invariant: every iter_ended is preceded by a
+        # harness_session_ended (consumed by tracking the indices).
+        ie_indices = [i for i, k in enumerate(kinds) if k == "iter_ended"]
+        hse_indices = [
+            i for i, k in enumerate(kinds) if k == "harness_session_ended"
+        ]
+        assert len(ie_indices) == len(hse_indices) == 2
+        for hse_i, ie_i in zip(hse_indices, ie_indices, strict=True):
+            assert hse_i < ie_i, (
+                "harness_session_ended must precede iter_ended in replay"
+            )
+        # And the payload is well-formed (stop_reason from the scripted
+        # harness's default SessionEnded — 'clean').
+        hse_event = events[hse_indices[0]]
+        # TextScript scripts a 'clean' SessionEnded, but the loop breaks
+        # mid-stream on the terminal-sentinel detection (before the
+        # scripted generator reaches its `yield ended` line), so
+        # PiSession-equivalent `wait()` returns the cancel-synthesized
+        # SessionEnded — stop_reason='cancelled'. The Option-D harness
+        # lookahead (ADR-29) is the load-bearing mechanism that gives the
+        # real pi harness `clean` here; the scripted double does not
+        # implement it. The shape of the payload is what we're asserting.
+        assert hse_event["data"]["payload"]["stop_reason"] in {
+            "clean",
+            "cancelled",
+        }
+        assert "messages" in hse_event["data"]["payload"]
+        assert "summary" in hse_event["data"]["payload"]
+
+    _run(scenario, settings, harness)
+
+
 def test_finished_run_replays_in_seq_order_then_eof(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     harness = ScriptedHarness([TextScript(HANDOFF), TextScript(DONE)])
