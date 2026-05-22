@@ -1,22 +1,107 @@
-"""Unit tests for RelayCore service-layer methods (Phase 9e).
+"""Unit tests for RelayCore service-layer methods (Phase 9e/9f).
 
 Covers:
 - list_children: empty for a run with no fanout; direct children only
   (not grandchildren); ordered by started_at asc.
+- parent_iter_ctx threading (Phase 9f, Task 4): _dispatch_children
+  stashes the ctx on each child's _RunState; _run passes it to
+  otel.run_span(); non-fanout runs pass None.
 
 Uses bare ``async def test_*`` with pytest-asyncio auto mode (ADR-24).
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+from sqlalchemy import create_engine
+from sqlalchemy import select as sa_select
+from sqlalchemy.orm import Session as SyncSession
 
 from relay_v2.config import Settings
 from relay_v2.core import RelayCore
 from relay_v2.db import init_db
+from relay_v2.db.models import Run
+from relay_v2.observability import IterSpan, IterSpanContext, RunSpan
 from tests.orchestrator.scripted_harness import ScriptedHarness, TextScript
 
 DONE_BLOCK = "All work complete.\n\n[[engteam:done]]"
+
+FANOUT_TWO = (
+    "Dispatching two children.\n\n"
+    "[[engteam:fanout-start]]\n"
+    "{"
+    '"children": ['
+    '{"role": "worker-a", "prompt": "Do task A."},'
+    '{"role": "worker-b", "prompt": "Do task B."}'
+    "],"
+    '"join_prompt": "Synthesize the results."'
+    "}\n"
+    "[[engteam:fanout-end]]\n\n"
+    "[[engteam:fanout]]"
+)
+
+
+# ── stub Instrumentation ────────────────────────────────────────────────
+
+
+_SENTINEL_CTX = object()  # A non-None stand-in for a real OTel context.
+
+
+class _StubIterSpan:
+    """Minimal IterSpan whose context is a non-None sentinel.
+
+    The loop captures iter_span.context as fanout_parent_ctx in the
+    fanout branch (Task 3/loop.py).  Using NOOP_ITER_SPAN.context (=None)
+    would make fanout_parent_ctx=None and the test assertion would vacuously
+    pass even without the plumbing.  A sentinel makes the non-None assertion
+    load-bearing.
+    """
+
+    context: IterSpanContext = _SENTINEL_CTX
+
+    def record_tool_call(self, **_: object) -> None:
+        pass
+
+    def set_usage(self, messages: object) -> None:
+        pass
+
+    def set_exit(self, exit_reason: str) -> None:
+        pass
+
+
+class _RecordingRunSpan:
+    """No-op RunSpan that yields a stub iter span with a non-None context."""
+
+    def __init__(self, parent_iter_ctx: IterSpanContext) -> None:
+        self.parent_iter_ctx = parent_iter_ctx
+
+    @contextmanager
+    def iter_span(self, *, seq: int, phase: str | None) -> Iterator[IterSpan]:
+        yield _StubIterSpan()
+
+
+class RecordingInstrumentation:
+    """Stub Instrumentation that captures every run_span call.
+
+    ``calls`` is a list of (run_id, parent_iter_ctx) tuples in the order
+    run_span was entered.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, IterSpanContext]] = []
+
+    @contextmanager
+    def run_span(
+        self, run_id: str, *, parent_iter_ctx: IterSpanContext = None
+    ) -> Iterator[RunSpan]:
+        self.calls.append((run_id, parent_iter_ctx))
+        yield _RecordingRunSpan(parent_iter_ctx)
+
+    def shutdown(self) -> None:
+        pass
 
 
 # ── helpers ────────────────────────────────────────────────────────────
@@ -168,3 +253,102 @@ async def test_list_runs_includes_children_when_requested(
         assert {r.id for r in rows} == {parent_id, child_id}
     finally:
         await core.aclose()
+
+
+# ── Phase 9f Task 4: parent_iter_ctx threading ─────────────────────────
+
+
+async def test_dispatch_children_stashes_parent_iter_ctx_on_child_state(
+    tmp_path: Path,
+) -> None:
+    """_dispatch_children stashes the fanout_parent_ctx on each child's
+    _RunState.parent_iter_ctx BEFORE enqueue.  _run then passes it to
+    otel.run_span() as parent_iter_ctx.
+
+    Drive a parent that fans out to 2 children; the recording stub captures
+    every run_span call.  Assert:
+    - The parent's run_span was opened with parent_iter_ctx=None (it is a
+      root run, not a child).
+    - Both children's run_span calls carry a non-None parent_iter_ctx.
+    - Both children carry the *same* context object (same fanout iter).
+    """
+    settings = Settings(data_dir=tmp_path / ".relay")
+    otel = RecordingInstrumentation()
+    harness = ScriptedHarness(
+        [TextScript(FANOUT_TWO), TextScript(DONE_BLOCK), TextScript(DONE_BLOCK),
+         TextScript(DONE_BLOCK)]
+    )
+    core = RelayCore(settings, harness=harness, otel=otel)
+    await core.start()
+    try:
+        proj_root = tmp_path / "proj"
+        proj_root.mkdir(parents=True, exist_ok=True)
+        pid = await core.register_project(proj_root, "p")
+        parent_id = await core.start_run(pid, "Investigate.")
+        # Wait for the parent to settle at awaiting_children.
+        first = await core.wait_for_run(parent_id)
+        assert first.status == "awaiting_children", first.status
+        # Children rows exist in DB now (created before enqueue — 9c invariant).
+        # Fetch their IDs from DB so we can await them.
+        engine = create_engine(settings.db_url)
+        try:
+            with SyncSession(engine) as s:
+                child_rows = list(
+                    s.scalars(
+                        sa_select(Run).where(Run.parent_run_id == parent_id)
+                    )
+                )
+        finally:
+            engine.dispose()
+        child_ids = [c.id for c in child_rows]
+        assert len(child_ids) == 2
+        for cid in child_ids:
+            await core.wait_for_run(cid)
+        # Wait for synthesizer (parent reaches done on its second _RunState).
+        second = await core.wait_for_run(parent_id)
+        assert second.status == "done", second.status
+    finally:
+        await core.aclose()
+
+    # Parent was opened with no parent_iter_ctx (it is a root run).
+    parent_calls = [(rid, ctx) for rid, ctx in otel.calls if rid == parent_id]
+    assert len(parent_calls) >= 1
+    # The first (fanout) parent run_span call must have parent_iter_ctx=None.
+    assert parent_calls[0][1] is None
+
+    # Both children must have been opened with a non-None parent_iter_ctx.
+    child_ctxs = [ctx for rid, ctx in otel.calls if rid in child_ids]
+    assert len(child_ctxs) == 2
+    for ctx in child_ctxs:
+        assert ctx is not None, "child run_span must have a parent_iter_ctx"
+    # Both children share the same ctx object (dispatched from the same iter).
+    assert child_ctxs[0] is child_ctxs[1]
+
+
+async def test_non_fanout_runs_pass_none_parent_iter_ctx(
+    tmp_path: Path,
+) -> None:
+    """A normal (done) run causes run_span to be opened with
+    parent_iter_ctx=None.  Regression guard: threading must not
+    accidentally inject a ctx on non-fanout paths.
+    """
+    settings = Settings(data_dir=tmp_path / ".relay")
+    otel = RecordingInstrumentation()
+    harness = ScriptedHarness([TextScript(DONE_BLOCK)])
+    core = RelayCore(settings, harness=harness, otel=otel)
+    await core.start()
+    try:
+        proj_root = tmp_path / "proj"
+        proj_root.mkdir(parents=True, exist_ok=True)
+        pid = await core.register_project(proj_root, "p")
+        run_id = await core.start_run(pid, "Do the work.")
+        result = await core.wait_for_run(run_id)
+        assert result.status == "done", result.status
+    finally:
+        await core.aclose()
+
+    calls = [(rid, ctx) for rid, ctx in otel.calls if rid == run_id]
+    assert len(calls) == 1
+    assert calls[0][1] is None, (
+        f"non-fanout run_span got parent_iter_ctx={calls[0][1]!r}, expected None"
+    )

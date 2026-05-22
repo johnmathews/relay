@@ -45,7 +45,11 @@ from relay_v2.db.models import Event, Iter, Project, Prompt, Run
 from relay_v2.events import EventStore
 from relay_v2.harness import Harness
 from relay_v2.harness.pi import PiHarness
-from relay_v2.observability import Instrumentation, build_instrumentation
+from relay_v2.observability import (
+    Instrumentation,
+    IterSpanContext,
+    build_instrumentation,
+)
 from relay_v2.orchestrator.lifecycle import (
     RunContext,
     compose_join_prompt,
@@ -73,6 +77,13 @@ class _RunState:
     session_handle: SessionHandle = field(default_factory=SessionHandle)
     settled: asyncio.Event = field(default_factory=asyncio.Event)
     result: LoopResult | None = None
+    # ADR-38 (Phase 9f, Task 4): opaque OTel iter context from the parent's
+    # dispatching fanout iter.  Set by _dispatch_children before enqueue so
+    # _run can pass it to otel.run_span() and parent the child's trace span
+    # under the iter that triggered the fanout.  None for top-level (root)
+    # runs and for synthesizer re-enqueues (_maybe_resume_parent creates a
+    # fresh _RunState without this field — Task 4b wires the synth path).
+    parent_iter_ctx: IterSpanContext | None = None
 
 
 class RelayCore:
@@ -330,6 +341,7 @@ class RelayCore:
         parent_worktree_path: Path | None,
         fanout_payload: dict[str, Any],
         iter_id: int | None,
+        parent_iter_ctx: IterSpanContext | None = None,
     ) -> None:
         """Create N child runs and enqueue them (spec.md §6, 9b).
 
@@ -412,6 +424,15 @@ class RelayCore:
                 },
             )
             self._runs[child_run_id] = _RunState()
+            # ADR-38 (9f Task 4): stash the fanout iter's OTel context on
+            # the child's _RunState BEFORE the enqueue pass so _run can
+            # read it from state.parent_iter_ctx and parent the child's
+            # relay.run span under the dispatching iter in the trace tree.
+            # Must happen in this first pass (create-all rows), not the
+            # second pass (enqueue), to preserve the 9c invariant: a fast
+            # harness must not let child A's _run read an un-set
+            # parent_iter_ctx before we get back to set it here.
+            self._runs[child_run_id].parent_iter_ctx = parent_iter_ctx
             contexts.append(
                 RunContext(
                     run_id=child_run_id,
@@ -698,7 +719,16 @@ class RelayCore:
         # supervisor-cancelled run still closes its span — the `with`
         # records the exception, marks ERROR, and re-raises, never
         # altering loop control flow.
-        with self._otel.run_span(ctx.run_id) as run_span:
+        # ADR-38 (9f Task 4): pass the dispatching iter's OTel context so
+        # child runs are parented under the fanout iter in the trace tree.
+        # state.parent_iter_ctx is None for root runs (correct — they are
+        # trace roots) and None for synthesizer re-enqueues until Task 4b
+        # wires _maybe_resume_parent. The cancelled-before-start guard
+        # above must remain above this line so cascade-DB-finalised
+        # descendants never open a span.
+        with self._otel.run_span(
+            ctx.run_id, parent_iter_ctx=state.parent_iter_ctx
+        ) as run_span:
             try:
                 try:
                     result = await run_loop(
@@ -809,6 +839,7 @@ class RelayCore:
                 parent_worktree_path=ctx.worktree_path,
                 fanout_payload=result.fanout_payload or {},
                 iter_id=closing.id if closing else None,
+                parent_iter_ctx=result.fanout_parent_ctx,
             )
             return
         await set_run_status(
