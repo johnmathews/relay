@@ -71,7 +71,7 @@ def create_app(
         # subsequent request. The sub-app's own ASGI lifespan is *not*
         # run by Starlette (ADR-27 #1367 footgun); we run its session
         # manager explicitly via the ``async with`` below.
-        mcp = create_mcp_server(core, resolved)
+        mcp = create_mcp_server(core)
         app.mount("/mcp", mcp.streamable_http_app())
         # Phase 8 (spec §11.2): serve the built SPA at "/" in
         # production. Appended last — after /health, the REST routers

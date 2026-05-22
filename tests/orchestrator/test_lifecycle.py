@@ -50,7 +50,9 @@ def test_register_project_is_idempotent(tmp_path: Path) -> None:
 
 def test_provision_workspace_git_success(tmp_path: Path) -> None:
     """A real git work tree → a per-run worktree + branch are created
-    (the success branch all loop tests skip via non-git tmp dirs)."""
+    (the success branch all loop tests skip via non-git tmp dirs).
+    Worktree + run-dir land under ``<project_root>/.relay/`` per
+    spec §3.3."""
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
@@ -61,28 +63,27 @@ def test_provision_workspace_git_success(tmp_path: Path) -> None:
     subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "init"],
                     cwd=repo, check=True)
 
-    data_dir = tmp_path / ".relay"
-
     async def scenario() -> tuple[Path | None, str | None, Path]:
-        return await provision_workspace(repo, data_dir, "run-xyz")
+        return await provision_workspace(repo, "run-xyz")
 
     wt, branch, run_dir = asyncio.run(scenario())
     assert wt is not None and wt.exists()
+    assert wt.is_relative_to(repo / ".relay" / "worktrees")
     assert branch == "relay/run-xyz"
-    assert run_dir == data_dir / "runs" / "run-xyz"
+    assert run_dir == repo / ".relay" / "runs" / "run-xyz"
 
 
 def test_provision_workspace_non_git_falls_back(tmp_path: Path) -> None:
     """Non-git root → no worktree/branch, run_dir still provisioned
     (the fallback every loop test relies on, now explicitly asserted)."""
-    data_dir = tmp_path / ".relay"
 
     async def scenario() -> tuple[Path | None, str | None, Path]:
-        return await provision_workspace(tmp_path, data_dir, "run-1")
+        return await provision_workspace(tmp_path, "run-1")
 
     wt, branch, run_dir = asyncio.run(scenario())
     assert wt is None and branch is None
     assert run_dir.exists()
+    assert run_dir == tmp_path / ".relay" / "runs" / "run-1"
 
 
 def test_compose_resume_prompt_format() -> None:

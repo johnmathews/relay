@@ -917,7 +917,7 @@ Per ADR-10.
 
 | var | default | meaning |
 |---|---|---|
-| `RELAY_DATA_DIR` | `<project_root>/.relay` | per-project data directory |
+| `RELAY_DATA_DIR` | `<cwd>/.relay` | server-global SQLite event store dir (relay.db lives here). Per-run worktrees & artifacts live under each project's own `<project_root>/.relay/` (§3.3), not here. |
 | `RELAY_PI_BIN` | `pi` | pi binary path (override for testing) |
 | `RELAY_PI_MODEL` | `claude-sonnet-4-6` | default model |
 | `RELAY_PI_PROVIDER` | `anthropic` | default provider |

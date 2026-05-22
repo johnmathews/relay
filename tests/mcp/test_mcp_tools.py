@@ -59,7 +59,7 @@ def _run[T](
         )
         await core.start()
         try:
-            mcp = create_mcp_server(core, settings)
+            mcp = create_mcp_server(core)
             return await coro(core, mcp)
         finally:
             await core.aclose()
@@ -362,7 +362,7 @@ def test_read_artifact_happy_and_sandbox(tmp_path: Path) -> None:
         run_id = await core.start_run(pid, "Go.")
         await core.wait_for_run(run_id)
 
-        run_dir = settings.data_dir / "runs" / run_id
+        run_dir = proj / ".relay" / "runs" / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "report.md").write_text("# hello\nbody\n")
 

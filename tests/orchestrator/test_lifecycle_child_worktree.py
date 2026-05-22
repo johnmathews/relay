@@ -39,9 +39,8 @@ async def test_child_worktree_contains_parent_commits(
 ) -> None:
     project = tmp_path / "project"
     await _setup_repo(project)
-    data_dir = tmp_path / ".relay"
 
-    parent_wt, _, _ = await provision_workspace(project, data_dir, "parent-001")
+    parent_wt, _, _ = await provision_workspace(project, "parent-001")
     assert parent_wt is not None
 
     # Commit work in the parent worktree.
@@ -51,7 +50,7 @@ async def test_child_worktree_contains_parent_commits(
 
     # Child branches off parent HEAD.
     child_wt, child_branch, _ = await provision_workspace(
-        project, data_dir, "child-001",
+        project, "child-001",
         parent_worktree_path=parent_wt,
     )
     assert child_wt is not None
@@ -65,11 +64,10 @@ async def test_child_worktree_missing_parent_degrades_gracefully(
 ) -> None:
     project = tmp_path / "project"
     await _setup_repo(project)
-    data_dir = tmp_path / ".relay"
     missing = tmp_path / "nonexistent"
 
     wt, branch, run_dir = await provision_workspace(
-        project, data_dir, "child-002",
+        project, "child-002",
         parent_worktree_path=missing,
     )
     assert wt is not None  # still succeeds, branches from project HEAD
@@ -82,9 +80,8 @@ async def test_provision_workspace_no_parent_unchanged(
 ) -> None:
     project = tmp_path / "project"
     await _setup_repo(project)
-    data_dir = tmp_path / ".relay"
 
-    wt, branch, run_dir = await provision_workspace(project, data_dir, "run-001")
+    wt, branch, run_dir = await provision_workspace(project, "run-001")
     assert wt is not None
     assert branch == "relay/run-001"
     assert run_dir.exists()

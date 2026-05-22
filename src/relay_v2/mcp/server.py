@@ -34,16 +34,15 @@ from mcp.server.fastmcp import FastMCP
 
 from relay_v2.api.files import SandboxViolation, resolve_within_sandbox
 from relay_v2.api.schemas import EventOut, IterOut, RunDetailOut, RunOut
-from relay_v2.config import Settings
 from relay_v2.core import RelayCore
 
 
-def create_mcp_server(core: RelayCore, settings: Settings) -> FastMCP:
+def create_mcp_server(core: RelayCore) -> FastMCP:
     """Build the relay-v2 FastMCP server bound to a shared ``core``.
 
-    ``core`` and ``settings`` are captured by closure — MCP tools have
-    no request object, so this factory is the injection seam (it mirrors
-    the ``create_app(settings, *, harness=)`` seam: the same ``core``
+    ``core`` is captured by closure — MCP tools have no request object,
+    so this factory is the injection seam (it mirrors the
+    ``create_app(settings, *, harness=)`` seam: the same ``core``
     instance the app lifespan builds is passed straight through, so the
     scripted-harness test path works unchanged).
     """
@@ -153,11 +152,12 @@ def create_mcp_server(core: RelayCore, settings: Settings) -> FastMCP:
     @mcp.tool(name="relay__read_artifact")
     async def read_artifact(run_id: str, path: str) -> str:
         """Read a text artifact from a run's data dir
-        (``<data_dir>/runs/<run_id>/``), sandboxed. ``path`` is relative
-        to that root; traversal/symlink escape is rejected."""
-        if await core.get_run(run_id) is None:
+        (``<project_root>/.relay/runs/<run_id>/``), sandboxed. ``path``
+        is relative to that root; traversal/symlink escape is rejected.
+        """
+        root = await core.get_run_artifacts_dir(run_id)
+        if root is None:
             raise ValueError(f"unknown run {run_id}")
-        root = settings.data_dir / "runs" / run_id
         if not root.exists():
             raise ValueError(f"no artifacts for run {run_id}")
         try:

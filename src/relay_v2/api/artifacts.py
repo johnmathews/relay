@@ -1,15 +1,16 @@
 """Run-artifacts file browser (ADR-25) — a second sandboxed root.
 
-spec §9.1's Artifacts pane browses a run's ``<data_dir>/runs/<run_id>/``
-directory (the agent's ``improvement-plan.md``, ``evaluation-report.md``,
-``discussions/`` …). That directory is a *sibling of the worktree*
-(spec §3.3), deliberately outside any project ``root_path``, so the
-Phase 3 project file browser cannot reach it.
+spec §9.1's Artifacts pane browses a run's
+``<project_root>/.relay/runs/<run_id>/`` directory (the agent's
+``improvement-plan.md``, ``evaluation-report.md``, ``discussions/`` …).
+That directory is a *sibling of the worktree* (spec §3.3), under the
+**project's** data dir — not the relay-global one.
 
 This router exposes it read-only, scoped per run. The sandbox root is
-derived **server-side** from the path's ``run_id`` segment
-(``settings.data_dir / "runs" / <run_id>``) — never client-supplied —
-and the *same* audited :func:`relay_v2.api.files.resolve_within_sandbox`
+derived **server-side** from the run row (``run_id`` → project →
+``<project_root>/.relay/runs/<run_id>``) via
+:meth:`RelayCore.get_run_artifacts_dir` — never client-supplied — and
+the *same* audited :func:`relay_v2.api.files.resolve_within_sandbox`
 plus the shared :func:`~relay_v2.api.files.serve_listing` /
 :func:`~relay_v2.api.files.serve_file` implementation are reused. One
 audited confinement function, one serving path, two trust roots.
@@ -18,14 +19,12 @@ audited confinement function, one serving path, two trust roots.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
 from relay_v2.api.deps import get_core
 from relay_v2.api.files import serve_file, serve_listing
-from relay_v2.config import Settings
 
 router = APIRouter(prefix="/api", tags=["artifacts"])
 
@@ -41,11 +40,9 @@ async def _artifacts_root(request: Request, run_id: str) -> Path:
     ready JSON response when the run is unknown or its artifacts dir was
     never created — both are 404 (distinct details)."""
     core = get_core(request)
-    run = await core.get_run(run_id)
-    if run is None:
+    root = await core.get_run_artifacts_dir(run_id)
+    if root is None:
         raise _NotFound(_err(404, f"unknown run {run_id}"))
-    settings = cast(Settings, request.app.state.settings)
-    root = settings.data_dir / "runs" / run_id
     if not root.exists():
         raise _NotFound(_err(404, f"no artifacts for run {run_id}"))
     return root

@@ -38,6 +38,7 @@ __all__ = [
     "load_run",
     "open_iter",
     "close_iter",
+    "project_data_dir",
     "provision_workspace",
     "register_project",
     "set_iter_session",
@@ -142,13 +143,27 @@ async def create_run(
         await s.commit()
 
 
+def project_data_dir(project_root: Path) -> Path:
+    """Per-project on-disk root (spec.md §3.3): ``<project_root>/.relay``.
+
+    Worktrees and run-artifacts dirs live under here. The relay-global
+    SQLite event store stays at ``settings.data_dir`` (single multi-
+    tenant DB; ADR-12), but everything that belongs to a specific
+    project hangs off the project's own root.
+    """
+    return project_root / ".relay"
+
+
 async def provision_workspace(
     project_root: Path,
-    data_dir: Path,
     run_id: str,
     parent_worktree_path: Path | None = None,
 ) -> tuple[Path | None, str | None, Path]:
     """Create the artifacts dir; best-effort per-run git worktree.
+
+    Workspace lives under ``<project_root>/.relay/`` per spec §3.3, so
+    a run started against project A never leaks files into project B's
+    (or relay-v2's own) directory tree.
 
     When ``parent_worktree_path`` is given and exists, branches the new
     worktree off the parent worktree's HEAD commit rather than the
@@ -156,6 +171,7 @@ async def provision_workspace(
     parent's in-progress work). When the parent worktree path does not
     exist or git fails, degrades to branching from the project HEAD.
     """
+    data_dir = project_data_dir(project_root)
     run_dir = data_dir / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 

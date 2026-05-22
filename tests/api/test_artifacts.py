@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -27,30 +26,27 @@ from fastapi import FastAPI
 from relay_v2.api.artifacts import router
 
 
-@dataclass
-class _StubRun:
-    id: str
-
-
 class _StubCore:
-    """Only ``get_run`` is exercised by the artifacts handlers."""
+    """Only ``get_run_artifacts_dir`` is exercised by the artifacts
+    handlers. After Bug 1's per-project workspace fix the route looks
+    up the run's artifacts root via core (which encodes
+    `<project_root>/.relay/runs/<run_id>`), not via
+    ``settings.data_dir`` — so the stub no longer needs a settings
+    object at all."""
 
-    def __init__(self, run_ids: set[str]) -> None:
+    def __init__(self, run_ids: set[str], data_dir: Path) -> None:
         self._ids = run_ids
+        self._data_dir = data_dir
 
-    async def get_run(self, run_id: str) -> _StubRun | None:
-        return _StubRun(run_id) if run_id in self._ids else None
-
-
-@dataclass
-class _StubSettings:
-    data_dir: Path
+    async def get_run_artifacts_dir(self, run_id: str) -> Path | None:
+        if run_id not in self._ids:
+            return None
+        return self._data_dir / "runs" / run_id
 
 
 def _client(data_dir: Path, run_ids: set[str]) -> httpx.AsyncClient:
     app = FastAPI()
-    app.state.core = _StubCore(run_ids)
-    app.state.settings = _StubSettings(data_dir=data_dir)
+    app.state.core = _StubCore(run_ids, data_dir)
     app.include_router(router)
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://t"

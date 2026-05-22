@@ -58,6 +58,7 @@ from relay_v2.orchestrator.lifecycle import (
     latest_fanout_iter,
     latest_paused_iter,
     load_run,
+    project_data_dir,
     provision_workspace,
     register_project,
     set_run_status,
@@ -386,7 +387,6 @@ class RelayCore:
             child_run_id = self._new_run_id()
             wt, branch, run_dir = await provision_workspace(
                 project_root,
-                self._settings.data_dir,
                 child_run_id,
                 parent_worktree_path=parent_worktree_path,
             )
@@ -629,7 +629,10 @@ class RelayCore:
                 )
                 return
 
-            run_dir = self._settings.data_dir / "runs" / parent_run_id
+            run_dir = (
+                project_data_dir(Path(project.root_path)) / "runs"
+                / parent_run_id
+            )
             phase_file = run_dir / "phase"
             phase = (
                 phase_file.read_text().strip()
@@ -880,6 +883,24 @@ class RelayCore:
     async def register_project(self, root_path: Path, name: str) -> int:
         return await register_project(self._sm, root_path, name)
 
+    async def get_run_artifacts_dir(self, run_id: str) -> Path | None:
+        """The run's on-disk artifacts root
+        (``<project_root>/.relay/runs/<run_id>``), or ``None`` if the
+        run is unknown. The single resolver routes/MCP tools call to
+        avoid reaching into ``settings.data_dir`` — the artifacts dir
+        is per-project (spec.md §3.3), not per-server.
+        """
+        async with self._sm() as s:
+            run = await s.get(Run, run_id)
+            if run is None:
+                return None
+            project = await s.get(Project, run.project_id)
+            if project is None:
+                return None
+            return (
+                project_data_dir(Path(project.root_path)) / "runs" / run_id
+            )
+
     async def start_run(
         self,
         project_id: int,
@@ -897,7 +918,7 @@ class RelayCore:
 
         run_id = self._new_run_id()
         wt, branch, run_dir = await provision_workspace(
-            project_root, self._settings.data_dir, run_id
+            project_root, run_id
         )
         max_i = max_iters or self._settings.max_iters
         timeout = iter_timeout or self._settings.iter_timeout
@@ -1043,7 +1064,7 @@ class RelayCore:
                 run_id, "pause_resolved", {"answer": answer}
             )
 
-            run_dir = self._settings.data_dir / "runs" / run_id
+            run_dir = project_data_dir(project_root) / "runs" / run_id
             phase_file = run_dir / "phase"
             phase = (
                 phase_file.read_text().strip()
@@ -1322,7 +1343,7 @@ class RelayCore:
         DB write. Exactly one of ``prompt_body`` / ``prompt_id`` must be
         given. The run_dir is a literal ``"<preview>"`` placeholder built
         the same way ``start_run`` derives ``RELAY_RUN_DIR``
-        (``settings.data_dir / "runs" / <run_id>``) but never created."""
+        (``<project_root>/.relay/runs/<run_id>``) but never created."""
         if (prompt_body is None) == (prompt_id is None):
             raise ValueError(
                 "exactly one of prompt_body / prompt_id must be provided"
@@ -1339,7 +1360,9 @@ class RelayCore:
         else:
             assert prompt_body is not None
             body = prompt_body
-        run_dir = self._settings.data_dir / "runs" / "<preview>"
+        run_dir = (
+            project_data_dir(Path(project.root_path)) / "runs" / "<preview>"
+        )
         return {
             "preamble": build_preamble(run_dir, phase),
             "body": body,
