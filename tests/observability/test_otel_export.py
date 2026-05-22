@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import subprocess
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
@@ -34,7 +35,7 @@ from relay_v2.observability import (
     build_instrumentation,
 )
 from relay_v2.observability import otel as otel_mod
-from tests.orchestrator.scripted_harness import EventScript, ScriptedHarness
+from tests.orchestrator.scripted_harness import EventScript, ScriptedHarness, TextScript
 
 DONE = "All done.\n\n[[engteam:done]]"
 
@@ -365,3 +366,139 @@ def test_noop_run_span_ignores_parent_iter_ctx() -> None:
         # The noop run span must still be functional (iter_span works).
         with run_span.iter_span(seq=1, phase=None) as iter_span:
             assert iter_span.context is None
+
+
+# ── Task 4b: synthesizer-phase run-span parenting ─────────────────────────
+
+
+_FANOUT_TWO = (
+    "Dispatching two children.\n\n"
+    "[[engteam:fanout-start]]\n"
+    '{"children": ['
+    '{"role": "worker-a", "prompt": "Do task A."},'
+    '{"role": "worker-b", "prompt": "Do task B."}'
+    '],'
+    '"join_prompt": "Synthesize the results."'
+    "}\n"
+    "[[engteam:fanout-end]]\n\n"
+    "[[engteam:fanout]]"
+)
+_CHILD_DONE = "Work complete.\n\n[[engteam:done]]"
+_SYNTH_DONE = "Synthesis complete.\n\n[[engteam:done]]"
+
+
+def test_synthesizer_phase_runspan_is_parented_under_dispatching_iter(
+    tmp_path: Path,
+) -> None:
+    """After Task 4b, the parent's synthesizer-phase relay.run span must be
+    parented under the dispatching iter span (same fanout iter that the child
+    run-spans parent under).  The entire fanout-join sub-tree shares one
+    trace_id rooted at the pre-fanout relay.run span.
+
+    Before Task 4b the synthesizer-phase relay.run is a disconnected root.
+    After 4b it has parent.span_id == dispatching_iter.span_id. ADR-38.
+    """
+    # Git-init so child runs can provision real worktrees (branch fields).
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "t@t"], cwd=tmp_path, check=True
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "t"], cwd=tmp_path, check=True
+    )
+    subprocess.run(
+        ["git", "commit", "-q", "--allow-empty", "-m", "init"],
+        cwd=tmp_path, check=True,
+    )
+
+    settings = _settings(tmp_path)
+    harness = ScriptedHarness([
+        TextScript(_FANOUT_TWO),
+        TextScript(_CHILD_DONE),
+        TextScript(_CHILD_DONE),
+        TextScript(_SYNTH_DONE),
+    ])
+    exporter = InMemorySpanExporter()
+    otel = OtelInstrumentation(SimpleSpanProcessor(exporter))
+
+    async def scenario(core: RelayCore) -> str:
+        pid = await core.register_project(tmp_path, "p")
+        parent_id = await core.start_run(pid, "Investigate.")
+        # First settle: parent enters awaiting_children.
+        first = await core.wait_for_run(parent_id)
+        assert first.status == "awaiting_children", first.status
+        # Fetch children via the RelayCore API (9e).
+        children = await core.list_children(parent_id)
+        assert len(children) == 2
+        # Drain children.
+        for child in children:
+            await core.wait_for_run(child.id)
+        # Second settle: synthesizer iter completes → done.
+        second = await core.wait_for_run(parent_id)
+        assert second.status == "done", second.status
+        return parent_id
+
+    parent_id = _run(scenario, settings, harness, otel)
+
+    finished = exporter.get_finished_spans()
+
+    # ── find the two relay.run spans for the parent run ────────────────────
+    parent_run_spans = [
+        s for s in finished
+        if s.name == "relay.run"
+        and s.attributes.get("relay.run_id") == parent_id
+    ]
+    assert len(parent_run_spans) == 2, (
+        f"expected exactly 2 relay.run spans for parent run, "
+        f"got {len(parent_run_spans)}"
+    )
+
+    # Pre-fanout phase: the root run span (no parent).
+    pre_fanout_spans = [s for s in parent_run_spans if s.parent is None]
+    synth_spans = [s for s in parent_run_spans if s.parent is not None]
+    assert len(pre_fanout_spans) == 1, (
+        "expected exactly one root relay.run span for the pre-fanout phase"
+    )
+    assert len(synth_spans) == 1, (
+        "expected exactly one non-root relay.run span for the synth phase "
+        "(Task 4b not yet implemented — synth-phase span is still a root)"
+    )
+    pre_fanout_run = pre_fanout_spans[0]
+    synth_run = synth_spans[0]
+
+    # ── find the dispatching iter span ────────────────────────────────────
+    # The dispatching iter is the relay.iter span whose parent is the
+    # pre-fanout relay.run span.  It is the fanout-signal iter (seq==1 on
+    # the parent run).
+    parent_iter_spans = [
+        s for s in finished
+        if s.name == "relay.iter"
+        and s.attributes.get("relay.run_id") == parent_id
+    ]
+    dispatching_iters = [
+        s for s in parent_iter_spans
+        if s.parent is not None
+        and s.parent.span_id == pre_fanout_run.context.span_id
+    ]
+    assert len(dispatching_iters) == 1, (
+        f"expected exactly one relay.iter child of the pre-fanout run span, "
+        f"got {len(dispatching_iters)}"
+    )
+    dispatching_iter = dispatching_iters[0]
+
+    # ── core assertion: synth-phase parents under dispatching iter ─────────
+    # ADR-38: synth-phase run-span parents under the same dispatching iter
+    # as the children (one connected fanout-join sub-tree).
+    assert synth_run.parent.span_id == dispatching_iter.context.span_id, (
+        "synthesizer-phase relay.run span must parent under the dispatching "
+        f"iter span (Task 4b).  Got parent.span_id="
+        f"{synth_run.parent.span_id!r}, expected "
+        f"{dispatching_iter.context.span_id!r}"
+    )
+
+    # All spans share the same trace (one connected tree).
+    assert (
+        pre_fanout_run.context.trace_id
+        == synth_run.context.trace_id
+        == dispatching_iter.context.trace_id
+    ), "all spans in the fanout-join cycle must share the same trace_id"

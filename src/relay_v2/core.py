@@ -635,7 +635,23 @@ class RelayCore:
                 phase_file.read_text().strip()
                 if phase_file.exists() else None
             )
+            # Preserve the dispatching iter's OTel context from the old
+            # _RunState so the synthesizer-phase relay.run span parents under
+            # the same iter as the children (one connected fanout-join sub-tree
+            # in the trace).  The conditional handles the impossible-but-safe
+            # case where result is None — falls back to None (root span),
+            # matching the pre-Task-4b default.  No try/except: an unexpected
+            # exception here should propagate so the bug is visible.
+            old_state = self._runs.get(parent_run_id)
+            preserved_ctx = (
+                old_state.result.fanout_parent_ctx
+                if old_state is not None and old_state.result is not None
+                else None
+            )
             self._runs[parent_run_id] = _RunState()
+            # ADR-38: synth-phase run-span parents under the same dispatching
+            # iter as the children (one connected fanout-join sub-tree).
+            self._runs[parent_run_id].parent_iter_ctx = preserved_ctx
             await self._queue.put(
                 RunContext(
                     run_id=parent_run_id,
