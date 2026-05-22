@@ -370,6 +370,48 @@ prevailing orchestrator-test pattern reads back the *kinds present*
 (set membership) rather than exact kinds lists or event counts —
 so the planned widespread re-baseline never materialised; only two
 new tests cover the new event directly.
+**Post-9g bug-fix sweep** (2026-05-23) closed three independent
+regressions filed in the 9f live-acceptance journal
+([journal/260523-9f-bug-fixes.md](journal/260523-9f-bug-fixes.md)),
+each shipped as its own commit chain: (1) `UsageRow.vue` was reading
+Anthropic-API token names (`input_tokens`/`output_tokens`/
+`cache_read_input_tokens`) but pi's `SessionEnded.messages[].usage`
+uses pi-flavoured keys (`input`/`output`/`cacheRead`/`cacheWrite`/
+`totalTokens` + `cost.total`) per ADR-18 — the same names
+`_aggregate_usage` in `observability/otel.py` reads; the SFC + fixture
+now mirror that source of truth (and assistant-role filter), restoring
+the in-tile token + cost summary. (2) `provision_workspace` was being
+called with `settings.data_dir` (the relay-global SQLite root) so a
+run started against project A had its worktree provisioned under
+relay-v2's tree instead of `A/.relay/worktrees/<run_id>` — spec §3.3
+violation. Fix: `provision_workspace(project_root, run_id, …)` drops
+its `data_dir` arg and resolves the workspace under
+`project_data_dir(project_root) = project_root / ".relay"`; new
+`RelayCore.get_run_artifacts_dir(run_id)` is the single resolver for
+the read paths (`api/artifacts.py`, MCP `relay__read_artifact`,
+core's resume / preview `run_dir` derivations) — they no longer
+reach into `settings.data_dir`; `spec.md` §11.1's `RELAY_DATA_DIR`
+description is clarified accordingly (`data_dir` now holds the
+multi-tenant `relay.db` only; everything per-project is per-project).
+Existing runs whose `worktree_path` rows still point at the old
+relay-global location will 404 through the new routes — acceptable
+for the single-user MVP, no data lost on disk. (3) `KNOWN_EVENT_TYPES`
+in `frontend/src/api/sse.ts` was missing `harness_session_ended`
+(ADR-39) and `child_runs_resolved` (9a) — the browser EventSource
+only fires listeners for explicitly registered named events, so live
+events of those two kinds were silently dropped client-side (refresh
+worked because it skipped SSE and hit REST replay); both kinds added,
+inline comment ties the list to spec §3.2 with the `grep` command
+that catalogs every kind the backend can emit, and the prior 9a test
+that falsely passed (the fixture also emitted `subagent_return` whose
+invalidation key was the assertion target) is supplemented by two
+isolating cases that emit ONLY the kind under test. No schema change,
+no new event kinds, no new sentinel grammar, no new modules, no new
+ADR — all three are pure bug fixes restoring existing contracts. 298
+backend tests pass (296 + 2 new from Bug 1: `test_project_data_dir.py`;
+3 pi-e2e still gated), `ruff`/`mypy --strict` clean, backend coverage
+94%; 161 frontend tests pass (158 + 3 new: 1 `UsageRow` real-payload
++ 2 `events.store` isolating cases).
 
 ## What relay v2 is
 
