@@ -167,6 +167,78 @@ def test_done_terminates(tmp_path: Path) -> None:
         assert len(iters) == 1 and iters[0].signal_kind == "done"
 
 
+def test_loop_emits_harness_session_ended_on_done_close(tmp_path: Path) -> None:
+    """ADR-39: on a clean ``[[engteam:done]]`` close the loop appends one
+    ``harness_session_ended`` event with the verbatim
+    ``SessionEnded.messages``/``stop_reason``, ordered immediately before
+    the iter's ``iter_ended``.
+
+    The current sentinel parser returns ``args={}`` for ``done`` (see
+    ``sentinels.detect_in_text``), so ``summary`` is ``None`` even on the
+    done close path — recorded explicitly here so a future grammar change
+    that introduces a real summary arg also has to update this assertion.
+    """
+    from relay_v2.harness import (
+        AssistantText as _AT,
+    )
+    from relay_v2.harness.protocol import SessionEnded as _SE
+    from tests.orchestrator.scripted_harness import EventScript
+
+    messages_fixture = [
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": DONE_BLOCK}],
+            "usage": {"input": 12, "output": 7},
+        }
+    ]
+    script = EventScript(
+        events=[
+            _AT(seq=2, ts=1000.0, text=DONE_BLOCK, turn_seq=1, kind="text"),
+        ],
+        final=_SE(
+            seq=3, ts=1001.0, messages=messages_fixture, stop_reason="clean"
+        ),
+    )
+    settings = _settings(tmp_path)
+    harness = ScriptedHarness([script])
+
+    async def scenario(core: RelayCore) -> str:
+        pid = await core.register_project(tmp_path, "p")
+        run_id = await core.start_run(pid, "Go.")
+        result = await core.wait_for_run(run_id)
+        assert result.status == "done"
+        return run_id
+
+    run_id = _run(scenario, settings, harness)
+
+    with _read(settings) as s:
+        rows = list(
+            s.scalars(
+                select(Event).where(Event.run_id == run_id).order_by(Event.seq)
+            )
+        )
+        kinds = [r.kind for r in rows]
+        assert "harness_session_ended" in kinds, (
+            f"expected harness_session_ended in events; got {kinds!r}"
+        )
+
+        hse_idx = kinds.index("harness_session_ended")
+        ie_idx = kinds.index("iter_ended")
+        assert hse_idx < ie_idx, (
+            "harness_session_ended must precede iter_ended"
+        )
+
+        hse_row = rows[hse_idx]
+        assert hse_row.payload == {
+            "stop_reason": "clean",
+            "messages": messages_fixture,
+            "summary": None,
+        }
+        assert hse_row.iter_id == rows[ie_idx].iter_id, (
+            "harness_session_ended and iter_ended share the iter_id"
+        )
+
+
 def test_pause_then_resume(tmp_path: Path) -> None:
     """pause terminates status=paused, persists the next-prompt; resume
     composes the saved prompt + answer and continues to completion."""
