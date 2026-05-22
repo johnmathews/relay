@@ -399,17 +399,7 @@ def test_synthesizer_phase_runspan_is_parented_under_dispatching_iter(
     After 4b it has parent.span_id == dispatching_iter.span_id. ADR-38.
     """
     # Git-init so child runs can provision real worktrees (branch fields).
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    subprocess.run(
-        ["git", "config", "user.email", "t@t"], cwd=tmp_path, check=True
-    )
-    subprocess.run(
-        ["git", "config", "user.name", "t"], cwd=tmp_path, check=True
-    )
-    subprocess.run(
-        ["git", "commit", "-q", "--allow-empty", "-m", "init"],
-        cwd=tmp_path, check=True,
-    )
+    _git_init(tmp_path)
 
     settings = _settings(tmp_path)
     harness = ScriptedHarness([
@@ -738,7 +728,9 @@ def test_recursive_fanout_produces_three_level_tree(tmp_path: Path) -> None:
     assert len(parent_dispatching_iters) == 1
     parent_dispatching_iter = parent_dispatching_iters[0]
 
-    # ── Child's pre-fanout relay.run parents under parent's dispatching iter ──
+    # ── Both child relay.run spans parent under parent's dispatching iter ────
+    # ADR-38: every relay.run span for a given generation (pre-fanout phase +
+    # synthesizer phase) parents under the same iter that dispatched that run.
     child_run_spans = [
         s for s in finished
         if s.name == "relay.run"
@@ -749,15 +741,25 @@ def test_recursive_fanout_produces_three_level_tree(tmp_path: Path) -> None:
         f"expected 2 relay.run spans for child (pre-fanout + synth), "
         f"got {len(child_run_spans)}"
     )
-    child_pre_fanout_spans = [
-        s for s in child_run_spans
-        if s.parent is not None
-        and s.parent.span_id == parent_dispatching_iter.context.span_id
-    ]
-    assert len(child_pre_fanout_spans) == 1, (
-        "child's pre-fanout relay.run must parent under parent's dispatching iter"
+    # Both must parent under the parent's dispatching iter (ADR-38).
+    for s in child_run_spans:
+        assert s.parent is not None, "child relay.run must have a parent"
+        assert s.parent.span_id == parent_dispatching_iter.context.span_id, (
+            "child relay.run (both phases) must parent under the parent's "
+            "dispatching iter (ADR-38)"
+        )
+    # Identify pre-fanout (started first) and synth (started second) by time.
+    child_run_sorted = sorted(child_run_spans, key=lambda s: s.start_time)
+    child_pre_fanout = child_run_sorted[0]
+    child_synth = child_run_sorted[1]
+    # Verify the synth span specifically.
+    assert child_synth.parent is not None, (
+        "child's synth-phase relay.run must have a parent"
     )
-    child_pre_fanout = child_pre_fanout_spans[0]
+    assert child_synth.parent.span_id == parent_dispatching_iter.context.span_id, (
+        "child's synth-phase relay.run must parent under the parent's dispatching "
+        "iter (ADR-38 invariant applies at every level of recursion)"
+    )
 
     # ── Child's dispatching iter (child of child pre-fanout run span) ─────────
     child_dispatching_iters = [
