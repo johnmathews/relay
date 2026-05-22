@@ -300,3 +300,68 @@ def test_otel_iter_span_context_carries_trace_identity() -> None:
     assert child_span.parent is not None
     assert child_span.parent.span_id == iter_span_id
     assert child_span.context.trace_id == iter_span_finished.context.trace_id
+
+
+# ── Task 2: parent_iter_ctx kwarg on Instrumentation.run_span ─────────────
+
+
+def test_otel_run_span_accepts_parent_iter_ctx_kwarg_default_none() -> None:
+    """Opening run_span with no kwarg still produces a root span (no parent).
+    This asserts the default behaviour is unchanged."""
+    exporter = InMemorySpanExporter()
+    otel = OtelInstrumentation(SimpleSpanProcessor(exporter))
+
+    with otel.run_span("r-default") as _run_span:
+        pass
+
+    finished = exporter.get_finished_spans()
+    run_spans = [s for s in finished if s.name == "relay.run"]
+    assert len(run_spans) == 1
+    assert run_spans[0].parent is None  # root span — no parent
+
+
+def test_otel_run_span_parents_under_parent_iter_ctx() -> None:
+    """Open a run+iter span on parent run 'P'; capture iter_span.context;
+    close the iter+run; then call run_span('C', parent_iter_ctx=captured).
+    Assert C run-span's parent.span_id == P_iter.span_id and trace_id matches."""
+    exporter = InMemorySpanExporter()
+    otel = OtelInstrumentation(SimpleSpanProcessor(exporter))
+
+    captured_ctx = None
+    p_iter_span_id = None
+    p_trace_id = None
+
+    # Open parent run 'P' and capture iter context.
+    with otel.run_span("P") as p_run_span:
+        with p_run_span.iter_span(seq=1, phase=None) as p_iter_span:
+            captured_ctx = p_iter_span.context
+            p_iter_span_id = p_iter_span._span.get_span_context().span_id  # type: ignore[union-attr]
+            p_trace_id = p_iter_span._span.get_span_context().trace_id  # type: ignore[union-attr]
+
+    assert captured_ctx is not None
+
+    # Open child run 'C' with the captured iter context as parent.
+    with otel.run_span("C", parent_iter_ctx=captured_ctx) as _c_run_span:
+        pass
+
+    c_run_spans = [
+        s for s in exporter.get_finished_spans()
+        if s.name == "relay.run" and s.attributes.get("relay.run_id") == "C"
+    ]
+    assert len(c_run_spans) == 1
+    c_run = c_run_spans[0]
+
+    # The C run-span must be parented under P's iter span.
+    assert c_run.parent is not None
+    assert c_run.parent.span_id == p_iter_span_id
+    # Trace continuity: C run-span must share the same trace as P.
+    assert c_run.context.trace_id == p_trace_id
+
+
+def test_noop_run_span_ignores_parent_iter_ctx() -> None:
+    """NOOP.run_span accepts parent_iter_ctx=<anything> without raising and
+    returns the same NOOP RunSpan. Locks NOOP signature compatibility."""
+    with NOOP.run_span("r1", parent_iter_ctx=object()) as run_span:
+        # The noop run span must still be functional (iter_span works).
+        with run_span.iter_span(seq=1, phase=None) as iter_span:
+            assert iter_span.context is None

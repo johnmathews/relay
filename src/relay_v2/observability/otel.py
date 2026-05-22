@@ -98,7 +98,7 @@ class RunSpan(Protocol):
 
 class Instrumentation(Protocol):
     def run_span(
-        self, run_id: str
+        self, run_id: str, *, parent_iter_ctx: IterSpanContext = None
     ) -> AbstractContextManager[RunSpan]: ...
 
     def shutdown(self) -> None: ...
@@ -133,7 +133,9 @@ class NoopInstrumentation:
     state, makes no network call (ADR-29 risk surface)."""
 
     @contextmanager
-    def run_span(self, run_id: str) -> Iterator[RunSpan]:
+    def run_span(
+        self, run_id: str, *, parent_iter_ctx: IterSpanContext = None
+    ) -> Iterator[RunSpan]:
         yield NOOP_RUN_SPAN
 
     def shutdown(self) -> None:
@@ -298,9 +300,13 @@ class OtelInstrumentation:
         self._tracer = self._provider.get_tracer("relay_v2.observability")
 
     @contextmanager
-    def run_span(self, run_id: str) -> Iterator[RunSpan]:
+    def run_span(
+        self, run_id: str, *, parent_iter_ctx: IterSpanContext = None
+    ) -> Iterator[RunSpan]:
         span = self._tracer.start_span(
-            "relay.run", attributes={"relay.run_id": run_id}
+            "relay.run",
+            context=parent_iter_ctx,
+            attributes={"relay.run_id": run_id},
         )
         ctx = set_span_in_context(span)
         try:
