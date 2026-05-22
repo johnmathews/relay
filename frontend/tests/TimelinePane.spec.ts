@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import TimelinePane from '../src/components/runs/TimelinePane.vue'
 import type { StreamEvent } from '../src/stores/events'
+import { useBrowserUiStore } from '../src/stores/files'
 
 // Realistic relay event kinds + payloads (spec §3.2 / src/relay_v2/
 // events.py / orchestrator/loop.py — NOT invented).
@@ -135,6 +137,60 @@ describe('TimelinePane', () => {
     expect(text).toContain('∅')
     // shortSha truncates to first 4 chars + ellipsis.
     expect(text).toContain('dead…')
+  })
+
+  it('artifact_edited row is a clickable target that selects the artifact (14e)', async () => {
+    setActivePinia(createPinia())
+    const events: StreamEvent[] = [
+      {
+        seq: 1,
+        kind: 'artifact_edited',
+        payload: {
+          path: 'improvement-plan.md',
+          size_before: 11,
+          size_after: 14,
+          sha256_before: 'a3f2',
+          sha256_after: '9b1e',
+          editor: 'dashboard',
+        },
+      },
+    ]
+    const w = mount(TimelinePane, {
+      props: { events, runId: 'run-abc' },
+    })
+    const row = w.find('[data-testid="artifact-edited-row"]')
+    expect(row.exists()).toBe(true)
+    // The row renders as a <button> for keyboard + a11y affordance.
+    expect((row.element as HTMLElement).tagName).toBe('BUTTON')
+    await row.trigger('click')
+    const store = useBrowserUiStore('run:run-abc')
+    expect(store.selectedPath).toBe('improvement-plan.md')
+  })
+
+  it('create-path artifact_edited row is also clickable (14e)', async () => {
+    setActivePinia(createPinia())
+    const events: StreamEvent[] = [
+      {
+        seq: 1,
+        kind: 'artifact_edited',
+        payload: {
+          path: 'discussions/notes.md',
+          size_before: 0,
+          size_after: 25,
+          sha256_before: null,
+          sha256_after: 'deadbe',
+          editor: 'dashboard',
+        },
+      },
+    ]
+    const w = mount(TimelinePane, {
+      props: { events, runId: 'run-xyz' },
+    })
+    const row = w.find('[data-testid="artifact-edited-row"]')
+    await row.trigger('click')
+    expect(useBrowserUiStore('run:run-xyz').selectedPath).toBe(
+      'discussions/notes.md',
+    )
   })
 
   it('signal row has the distinctive card + a linkable anchor id', () => {

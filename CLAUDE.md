@@ -332,10 +332,7 @@ trace-tree integration; 3 pi-e2e still gated), `ruff`/`mypy
 --strict` clean, backend coverage 94%. Acceptance: automated via
 `InMemorySpanExporter` (one connected tree per cycle, no orphan
 roots) + manual live-Langfuse-UI journal-attested per ADR-30.
-**Out-of-scope reminders**: skill-side fanout docs
-(`skills/engineering-team/pi/references/fanout.md` + phase-doc
-cross-links) remain a deliberate small follow-up PR (deferred from
-9e — UI-only, no contract change); the latent ADR-10 gap that
+**Out-of-scope reminders**: the latent ADR-10 gap that
 `agent_end`/`SessionEnded` is never persisted as an `events` row on
 the sentinel-close path is still parked (ADR-29/30 — its own ADR +
 spec §6 change when opened). The fanout-join arc (9a→9f) is now
@@ -608,6 +605,51 @@ fully shipped; 14e is the parking lot for the diff view (proposal
 deferred ADR-40 carry-over), plural `review_paths` (§OQ-2), and the
 optional OTel span attribute carrying per-pause `artifact_edited`
 count.
+**Phase 14e** (2026-05-23,
+[docs/plans/2026-05-23-pause-for-review-14e.md](docs/plans/2026-05-23-pause-for-review-14e.md))
+lands the "audit polish" bundle for the pause-for-review arc with no
+contract change. `PauseAnswerForm.vue`'s right pane gains a
+`[ Preview | Diff ]` toggle (Diff disabled while the textarea is
+clean; renders dirty-vs-loaded-baseline via the existing lazy
+`DiffRender.vue` entry, which dynamic-imports `diff2html`; baseline
+updates on Save and a return-to-clean snaps the right pane back to
+Preview). `TimelinePane.vue`'s `artifact_edited` rows become
+click-targets that open the artifacts pane at the file's *current*
+on-disk content — honestly framed as navigation, not a historical
+diff (ADR-40 §B1 deliberately does not preserve before-content; a
+historical diff is unreconstructable). The click handler mutates the
+shared `run:<runId>` file-browser Pinia store's `selectedPath` and
+scrolls `ArtifactsPane` into view; the visual row layout (✎ · path ·
+sha-before… → sha-after… · editor) is byte-identical to 14c.
+`relay.pause.artifacts_edited_count` lands as a scalar attribute on
+the **resumed iter's** `relay.iter` span: `RunContext` gains a new
+`paused_predecessor_iter_id` field (set by `resume_run`), `run_loop`
+issues one `SELECT COUNT(*)` against `events.iter_id == :paused_iter_id
+AND kind == 'artifact_edited'` *before* the loop body (so the
+attribute lands at iter-start, single int, low cardinality), and
+passes the count via the new `pause_artifacts_edited_count` kwarg on
+`RunSpan.iter_span`. The OTel module never queries the DB — same
+shape as `set_usage(messages)` (orchestrator pre-fetches, OTel sets
+the attribute); NOOP `Instrumentation` accepts and ignores the kwarg
+(no provider, no exporter, no network — same as the 9f
+`parent_iter_ctx` kwarg). And the deferred 9e fanout-docs follow-up
+closes: `skills/engineering-team/pi/phases/phase-2-planning.md`
+gains a blockquote cross-link to `../references/fanout.md` (the
+reference doc + phase-1/phase-3 cross-links already shipped
+2026-05-22 — phase-2 was the remaining gap; the 9e block's
+"deferred" line is removed). No new ADR; no grammar change; no
+event-kind change; no MCP change. Sibling sub-phase 14f (plural
+`review_paths`) lands ADR-41 and the only contract change in the
+14e/14f bundle. OQ-4 stays parked pending 14d live-acceptance
+evidence (proposal §"Open questions"). 328 backend tests pass
+(325 + 3 new from 14e: `test_otel_pause_attr.py` covering
+0/1/3 `artifact_edited` events on the resumed iter span + NOOP
+acceptance; 3 pi-e2e still gated), `ruff`/`mypy --strict` clean
+(**39** source files, no new modules), backend coverage 94%;
+180 frontend tests pass (173 + 7 new: 5 PauseAnswerForm Diff-toggle
+cases — default Preview / disabled-while-clean / enabled-on-dirty /
+back-to-Preview-on-Save-or-Discard / no-toggle-on-binary; 2
+TimelinePane click-target cases — basic + create-path).
 
 ## What relay v2 is
 

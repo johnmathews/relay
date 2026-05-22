@@ -1268,6 +1268,12 @@ class RelayCore:
                     start_seq=paused.seq,
                     phase=phase,
                     body=body,
+                    # 14e: the resumed loop's first iter carries
+                    # `relay.pause.artifacts_edited_count` on its OTel
+                    # iter span; the count is scoped to this paused
+                    # iter's id (events appended via the 14a write
+                    # endpoint while the run was paused).
+                    paused_predecessor_iter_id=paused.id,
                 )
             )
 

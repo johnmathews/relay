@@ -822,7 +822,17 @@ artifacts, managing prompts, and registering projects.
     (and the existing minimal form renders unchanged) when the
     paused iter does not declare a `review_path`. Each save lands an
     `artifact_edited` event row in the timeline (path + pre/post
-    sha256 short hashes + editor).
+    sha256 short hashes + editor). 14e: the right pane of the review
+    block carries a `[ Preview | Diff ]` toggle — Diff is disabled
+    while the textarea is byte-equal to the loaded baseline and
+    renders a unified diff of dirty-vs-loaded-baseline via the lazy
+    `DiffRender` entry (no extra eager bundle weight); a successful
+    Save updates the baseline so the Diff tab returns to disabled
+    until the next edit. Clicking an `artifact_edited` row in the
+    timeline navigates the artifacts pane to that file's *current*
+    on-disk content (not a historical diff — ADR-40 §B1 deliberately
+    does not preserve before-content; pre/post hashes remain row
+    metadata).
   - **Cancel action** — always available while `status ∈ {running,
     awaiting_children}`. When `awaiting_children` with N children, the
     label reads "Cancel run and N children"; cancellation cascades

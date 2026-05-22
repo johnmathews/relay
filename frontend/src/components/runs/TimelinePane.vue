@@ -24,6 +24,7 @@ import ToolCallCard from './ToolCallCard.vue'
 import SignalCard from './SignalCard.vue'
 import UsageRow from './UsageRow.vue'
 import type { StreamEvent } from '@/stores/events'
+import { useBrowserUiStore } from '@/stores/files'
 
 const props = defineProps<{
   /** The ordered, deduped event list from the events store. */
@@ -36,6 +37,14 @@ const props = defineProps<{
    * FILTER CONTRACT). `null`/`undefined` ⇒ show all iters (default).
    */
   selectedIterSeq?: number | null
+  /**
+   * The run this timeline belongs to. When provided (14e), an
+   * `artifact_edited` row becomes a click-target that opens the
+   * artifacts pane at the file's current on-disk content via the
+   * shared file browser store keyed `run:<runId>`. Optional so older
+   * call-sites (and tests) need not thread it through.
+   */
+  runId?: string
 }>()
 
 /**
@@ -261,6 +270,29 @@ function shortSha(v: unknown): string {
   if (typeof v !== 'string' || v === '') return '?'
   return `${v.slice(0, 4)}…`
 }
+
+/**
+ * 14e: clicking an `artifact_edited` row opens the artifacts pane at
+ * the file's CURRENT on-disk state (deliberately not a historical diff
+ * — ADR-40 §B1 does not preserve before-content; the row reads the
+ * artifact as it exists right now). We mutate the shared file-browser
+ * Pinia store keyed `run:<runId>` so `ArtifactsPane`'s `FileViewer`
+ * picks up the selection, then scroll the pane into view. No-op if the
+ * `runId` prop isn't provided (older call-sites / unit tests).
+ */
+function onArtifactEditedClick(path: string): void {
+  if (props.runId == null || path === '') return
+  useBrowserUiStore(`run:${props.runId}`).selectFile(path)
+  if (typeof document !== 'undefined') {
+    const el = document.querySelector('[data-testid="artifacts-pane"]')
+    if (el != null && 'scrollIntoView' in el) {
+      (el as HTMLElement).scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+      })
+    }
+  }
+}
 </script>
 
 <template>
@@ -341,10 +373,13 @@ function shortSha(v: unknown): string {
           :event="row.event"
         />
 
-        <div
+        <button
           v-else-if="row.type === 'artifact_edited'"
+          type="button"
           class="timeline__edit"
           data-testid="artifact-edited-row"
+          :title="runId ? 'Open this artifact' : ''"
+          @click="onArtifactEditedClick(asStr(row.event.payload.path, ''))"
         >
           <span class="timeline__edit-glyph">✎</span>
           <code class="timeline__edit-path">{{ asStr(row.event.payload.path, '?') }}</code>
@@ -356,7 +391,7 @@ function shortSha(v: unknown): string {
           <span class="timeline__edit-editor">·
             {{ asStr(row.event.payload.editor, 'dashboard') }}
           </span>
-        </div>
+        </button>
 
         <div
           v-else
@@ -455,7 +490,22 @@ function shortSha(v: unknown): string {
   padding: 0.25rem 0.5rem;
   font-size: 0.85em;
   color: var(--color-text-muted, #888);
+  border: none;
   border-left: 2px solid var(--color-border-subtle, #e0e0e0);
+  background: transparent;
+  text-align: left;
+  font-family: inherit;
+  cursor: pointer;
+  width: 100%;
+}
+
+.timeline__edit:hover {
+  background: rgba(224, 179, 65, 0.07);
+}
+
+.timeline__edit:focus-visible {
+  outline: 2px solid #e0b341;
+  outline-offset: 1px;
 }
 
 .timeline__edit-glyph {

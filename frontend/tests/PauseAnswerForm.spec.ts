@@ -382,3 +382,140 @@ describe('PauseAnswerForm — review pane (14c)', () => {
     expect(ta.value).toBe('original')
   })
 })
+
+// ── 14e — Preview/Diff view-mode toggle ──────────────────────────────
+//
+// Right pane gains a `[ Preview | Diff ]` segmented control. Diff is
+// disabled while the textarea is byte-equal to the loaded baseline;
+// when the operator dirties the textarea the Diff tab becomes
+// available. Save + Discard return the textarea to clean → the right
+// pane snaps back to Preview. The 415 binary path renders no toggle.
+
+describe('PauseAnswerForm — Diff toggle (14e)', () => {
+  let originalFetch: typeof globalThis.fetch | undefined
+  const fetchMock = vi.fn()
+
+  beforeEach(() => {
+    POST.mockReset()
+    GET.mockReset()
+    fetchMock.mockReset()
+    originalFetch = globalThis.fetch
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch
+  })
+
+  afterEach(() => {
+    if (originalFetch != null) globalThis.fetch = originalFetch
+  })
+
+  it('mounts with Preview active and Diff disabled while clean', async () => {
+    GET.mockResolvedValue(
+      ok({ path: 'plan.md', content: '# Original\n', size: 11, modified: 1 }),
+    )
+    const w = mountForm({
+      runId: 'run-1',
+      question: 'q?',
+      reviewPath: 'plan.md',
+    })
+    await flushPromises()
+    const toggle = w.find('[data-testid="pause-review-view-toggle"]')
+    expect(toggle.exists()).toBe(true)
+    const previewBtn = w.find('[data-testid="pause-review-view-preview"]')
+      .element as HTMLButtonElement
+    const diffBtn = w.find('[data-testid="pause-review-view-diff"]')
+      .element as HTMLButtonElement
+    expect(previewBtn.getAttribute('aria-selected')).toBe('true')
+    expect(diffBtn.disabled).toBe(true)
+    // Preview pane is rendered; diff pane is not.
+    expect(w.find('[data-testid="pause-review-preview"]').exists()).toBe(true)
+    expect(w.find('[data-testid="pause-review-diff"]').exists()).toBe(false)
+  })
+
+  it('Diff enables once dirty; clicking it switches the right pane', async () => {
+    GET.mockResolvedValue(
+      ok({ path: 'plan.md', content: '# Original\n', size: 11, modified: 1 }),
+    )
+    const w = mountForm({
+      runId: 'run-1',
+      question: 'q?',
+      reviewPath: 'plan.md',
+    })
+    await flushPromises()
+    await w
+      .find('[data-testid="pause-review-textarea"]')
+      .setValue('# Edited\n')
+    const diffBtn = w.find('[data-testid="pause-review-view-diff"]')
+      .element as HTMLButtonElement
+    expect(diffBtn.disabled).toBe(false)
+    await w.find('[data-testid="pause-review-view-diff"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="pause-review-diff"]').exists()).toBe(true)
+    expect(w.find('[data-testid="pause-review-preview"]').exists()).toBe(false)
+  })
+
+  it('Save success snaps back to Preview and disables Diff', async () => {
+    GET.mockResolvedValue(
+      ok({ path: 'plan.md', content: 'a', size: 1, modified: 1 }),
+    )
+    fetchMock.mockResolvedValue(
+      fetchOk({ path: 'plan.md', size: 1, sha256: 'x' }),
+    )
+    const w = mountForm({
+      runId: 'run-1',
+      question: 'q?',
+      reviewPath: 'plan.md',
+    })
+    await flushPromises()
+    await w.find('[data-testid="pause-review-textarea"]').setValue('b')
+    await w.find('[data-testid="pause-review-view-diff"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="pause-review-diff"]').exists()).toBe(true)
+
+    await w.find('[data-testid="pause-review-save"]').trigger('click')
+    await flushPromises()
+
+    const diffBtn = w.find('[data-testid="pause-review-view-diff"]')
+      .element as HTMLButtonElement
+    expect(diffBtn.disabled).toBe(true)
+    // Right pane is back to Preview.
+    expect(w.find('[data-testid="pause-review-preview"]').exists()).toBe(true)
+    expect(w.find('[data-testid="pause-review-diff"]').exists()).toBe(false)
+  })
+
+  it('Discard returns the right pane to Preview', async () => {
+    GET.mockResolvedValue(
+      ok({ path: 'plan.md', content: 'original', size: 8, modified: 1 }),
+    )
+    const w = mountForm({
+      runId: 'run-1',
+      question: 'q?',
+      reviewPath: 'plan.md',
+    })
+    await flushPromises()
+    await w.find('[data-testid="pause-review-textarea"]').setValue('dirty')
+    await w.find('[data-testid="pause-review-view-diff"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="pause-review-diff"]').exists()).toBe(true)
+
+    await w.find('[data-testid="pause-review-discard"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="pause-review-preview"]').exists()).toBe(true)
+    expect(w.find('[data-testid="pause-review-diff"]').exists()).toBe(false)
+    const diffBtn = w.find('[data-testid="pause-review-view-diff"]')
+      .element as HTMLButtonElement
+    expect(diffBtn.disabled).toBe(true)
+  })
+
+  it('binary (415) renders no view-mode toggle at all', async () => {
+    GET.mockResolvedValue(errResp(415, { detail: 'binary' }))
+    const w = mountForm({
+      runId: 'run-1',
+      question: 'q?',
+      reviewPath: 'diagram.png',
+    })
+    await flushPromises()
+    expect(w.find('[data-testid="pause-review-view-toggle"]').exists()).toBe(
+      false,
+    )
+    expect(w.find('[data-testid="pause-review-binary"]').exists()).toBe(true)
+  })
+})

@@ -349,6 +349,7 @@ onBeforeUnmount(() => {
         <TimelinePane
           :events="eventList"
           :selected-iter-seq="currentRun.selectedIterId"
+          :run-id="detail.id"
         />
 
         <!-- W5 — Iters pane. Clicking an iter filters the timeline

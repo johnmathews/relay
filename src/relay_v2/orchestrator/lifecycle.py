@@ -69,6 +69,12 @@ class RunContext:
     phase: str | None
     body: str
     parent_run_id: str | None = None  # set for child runs dispatched via fanout (9b)
+    # 14e: the paused iter's id when this context resumes a paused run.
+    # The first iter of the resumed loop carries
+    # `relay.pause.artifacts_edited_count` on its OTel iter span counting
+    # `artifact_edited` events scoped to this iter id. None for a fresh
+    # run, a fanout child, or a synth-phase re-enqueue.
+    paused_predecessor_iter_id: int | None = None
 
     @property
     def cwd(self) -> Path:

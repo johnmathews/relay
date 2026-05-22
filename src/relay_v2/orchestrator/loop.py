@@ -25,6 +25,9 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
+from sqlalchemy import func, select
+
+from relay_v2.db.models import Event
 from relay_v2.events import EventStore
 from relay_v2.harness import (
     AssistantText,
@@ -274,6 +277,26 @@ async def run_loop(
     # effective_max == max_iters, so fresh-run behavior is unchanged.
     effective_max = max(ctx.max_iters, seq + 1)
 
+    # 14e: when the first iter of this loop is a resumed iter, count
+    # `artifact_edited` events scoped to the paused predecessor iter so
+    # the OTel `relay.iter` span can carry `relay.pause.artifacts_edited_count`.
+    # Subsequent iters get `None` (attribute omitted). The count query is
+    # one indexed lookup against `events.iter_id`.
+    pause_edits_pending: int | None = None
+    if ctx.paused_predecessor_iter_id is not None:
+        async with sm() as s:
+            pause_edits_pending = int(
+                await s.scalar(
+                    select(func.count())
+                    .select_from(Event)
+                    .where(
+                        Event.iter_id == ctx.paused_predecessor_iter_id,
+                        Event.kind == "artifact_edited",
+                    )
+                )
+                or 0
+            )
+
     while seq < effective_max:
         seq += 1
         preamble = build_preamble(ctx.run_dir, phase)
@@ -300,7 +323,19 @@ async def run_loop(
         # dashboard timeline. The `with` only wraps — every return /
         # the handoff continue below behaves exactly as before; the
         # span just ends on the way out.
-        with otel_run.iter_span(seq=seq, phase=phase) as iter_span:
+        #
+        # 14e: on the FIRST iter of a resumed run, also pass the
+        # pre-computed count of `artifact_edited` events scoped to the
+        # paused predecessor iter. The OTel iter span records it as
+        # `relay.pause.artifacts_edited_count` (an int; low cardinality).
+        # `pause_edits_pending` is consumed once then reset to None so
+        # the attribute appears only on the resumed iter's span.
+        with otel_run.iter_span(
+            seq=seq,
+            phase=phase,
+            pause_artifacts_edited_count=pause_edits_pending,
+        ) as iter_span:
+            pause_edits_pending = None
             session = await harness.spawn(
                 prompt=full_prompt,
                 cwd=ctx.cwd,

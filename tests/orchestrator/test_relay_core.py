@@ -76,7 +76,13 @@ class _RecordingRunSpan:
     """No-op RunSpan that yields a stub iter span with a non-None context."""
 
     @contextmanager
-    def iter_span(self, *, seq: int, phase: str | None) -> Iterator[IterSpan]:
+    def iter_span(
+        self,
+        *,
+        seq: int,
+        phase: str | None,
+        pause_artifacts_edited_count: int | None = None,
+    ) -> Iterator[IterSpan]:
         yield _StubIterSpan()
 
 

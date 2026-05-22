@@ -143,6 +143,15 @@ per-finding out-of-scope notes, because they are stated up front rather than bur
 A plan with no non-goals is suspicious — almost every real plan is shaped as much by what
 it deliberately excludes as by what it includes.
 
+> **Coarse-grained parallelism via fanout.** When the plan identifies 2+ genuinely
+> independent units whose results merge cleanly into a single follow-on decision,
+> consider emitting `[[engteam:fanout]]` from the closing step of Phase 2 instead of
+> the usual `pause-for-input` handoff to Phase 3, and letting each unit run as its
+> own child run. See [`../references/fanout.md`](../references/fanout.md) for the
+> decision criteria and the grammar. This is appropriate only when the parallel
+> exploration is worth the fixed cost of a fresh pi process per child; for routine
+> sequential work the standard Phase-3 handoff is the right call.
+
 **Work units** — A sequence of work units. Each unit contains:
 
 - **ID:** The `W<n>` identifier from the frontmatter. Must match exactly — this is the

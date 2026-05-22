@@ -24,6 +24,7 @@
 import { computed, ref, watch } from 'vue'
 import ActionButton from '@/components/shared/ActionButton.vue'
 import MarkdownRender from '@/components/files/MarkdownRender.vue'
+import DiffRender from '@/components/files/DiffRender.vue'
 import {
   useResumeRunMutation,
   useArtifactContentQuery,
@@ -108,6 +109,26 @@ const reviewState = computed<'binary' | '404' | 'editor'>(() => {
 
 /** Whether the local buffer differs from the loaded baseline. */
 const isDirty = computed(() => dirty.value !== (loadedContent.value ?? ''))
+
+// ── 14e Preview/Diff view-mode toggle ────────────────────────────────
+//
+// Right pane switches between markdown Preview (the loaded view) and a
+// unified-diff render of dirty-vs-loadedBaseline. Diff is disabled while
+// the textarea is clean (the diff would be empty). The renderer is the
+// existing lazy `DiffRender.vue` entry (which dynamic-imports diff2html
+// on first render — no eager bundle weight). Baseline updates on Save
+// per OQ-5 (locked decisions): single-user MVP means there is no other
+// writer, so "dirty-vs-server-current" and "dirty-vs-loaded-baseline"
+// collapse to one comparison.
+const viewMode = ref<'preview' | 'diff'>('preview')
+const diffDisabled = computed(() => !isDirty.value)
+// When the operator dirties the textarea, the Diff tab becomes
+// available but we keep whatever mode they chose. When the textarea
+// returns to clean (via Discard or Save), force Preview — otherwise
+// the right pane would render an empty disabled-Diff state.
+watch(isDirty, (nowDirty) => {
+  if (!nowDirty) viewMode.value = 'preview'
+})
 
 /** Save is disabled while clean, except on 404 (where empty save creates). */
 const saveDisabled = computed(() => {
@@ -286,6 +307,39 @@ async function onSubmit(): Promise<void> {
 
       <div
         v-if="reviewState !== 'binary'"
+        class="pause-review__view-toggle"
+        role="tablist"
+        aria-label="Right-pane view mode"
+        data-testid="pause-review-view-toggle"
+      >
+        <button
+          type="button"
+          role="tab"
+          class="pause-review__view-tab"
+          :class="{ 'pause-review__view-tab--active': viewMode === 'preview' }"
+          :aria-selected="viewMode === 'preview'"
+          data-testid="pause-review-view-preview"
+          @click="viewMode = 'preview'"
+        >
+          Preview
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class="pause-review__view-tab"
+          :class="{ 'pause-review__view-tab--active': viewMode === 'diff' }"
+          :aria-selected="viewMode === 'diff'"
+          :disabled="diffDisabled"
+          :title="diffDisabled ? 'No unsaved changes — diff is empty' : ''"
+          data-testid="pause-review-view-diff"
+          @click="viewMode = 'diff'"
+        >
+          Diff
+        </button>
+      </div>
+
+      <div
+        v-if="reviewState !== 'binary'"
         class="pause-review__editor"
       >
         <textarea
@@ -297,10 +351,22 @@ async function onSubmit(): Promise<void> {
           :disabled="saving"
         />
         <div
+          v-if="viewMode === 'preview'"
           class="pause-review__preview"
           data-testid="pause-review-preview"
         >
           <MarkdownRender :source="dirty" />
+        </div>
+        <div
+          v-else
+          class="pause-review__preview"
+          data-testid="pause-review-diff"
+        >
+          <DiffRender
+            :old-text="loadedContent ?? ''"
+            :new-text="dirty"
+            :filename="reviewPath ?? ''"
+          />
         </div>
       </div>
 
@@ -500,6 +566,33 @@ async function onSubmit(): Promise<void> {
   background: var(--color-bg);
   overflow: auto;
   font-size: 0.9em;
+}
+
+.pause-review__view-toggle {
+  display: flex;
+  gap: 0.25rem;
+  margin-bottom: 0.25rem;
+}
+
+.pause-review__view-tab {
+  padding: 0.25rem 0.7rem;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 0.84em;
+  cursor: pointer;
+}
+
+.pause-review__view-tab:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.pause-review__view-tab--active {
+  background: rgba(224, 179, 65, 0.18);
+  border-color: #e0b341;
 }
 
 .pause-review__actions {

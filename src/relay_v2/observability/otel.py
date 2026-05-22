@@ -92,7 +92,11 @@ class RunSpan(Protocol):
     """Per-run span handle. Yields child iter spans."""
 
     def iter_span(
-        self, *, seq: int, phase: str | None
+        self,
+        *,
+        seq: int,
+        phase: str | None,
+        pause_artifacts_edited_count: int | None = None,
     ) -> AbstractContextManager[IterSpan]: ...
 
 
@@ -123,7 +127,11 @@ class _NoopIterSpan:
 class _NoopRunSpan:
     @contextmanager
     def iter_span(
-        self, *, seq: int, phase: str | None
+        self,
+        *,
+        seq: int,
+        phase: str | None,
+        pause_artifacts_edited_count: int | None = None,
     ) -> Iterator[IterSpan]:
         yield NOOP_ITER_SPAN
 
@@ -263,7 +271,11 @@ class _OtelRunSpan:
 
     @contextmanager
     def iter_span(
-        self, *, seq: int, phase: str | None
+        self,
+        *,
+        seq: int,
+        phase: str | None,
+        pause_artifacts_edited_count: int | None = None,
     ) -> Iterator[IterSpan]:
         attrs: dict[str, Any] = {
             "relay.run_id": self._run_id,
@@ -271,6 +283,17 @@ class _OtelRunSpan:
         }
         if phase is not None:
             attrs["relay.phase"] = phase
+        # 14e: scalar count of `artifact_edited` events scoped to the
+        # paused predecessor iter, set on the resumed iter's span at
+        # start. The orchestrator pre-computes the count (the OTel
+        # module never queries the DB — same shape as set_usage's
+        # pre-fetched messages). `None` here means "not a resumed iter"
+        # (or count was 0 and orchestrator chose to omit) — attribute
+        # is omitted in that case.
+        if pause_artifacts_edited_count is not None:
+            attrs["relay.pause.artifacts_edited_count"] = (
+                pause_artifacts_edited_count
+            )
         span = self._tracer.start_span(
             "relay.iter", context=self._ctx, attributes=attrs
         )
