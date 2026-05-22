@@ -55,8 +55,16 @@ def _run[T](body: Callable[[AsyncClient], Awaitable[T]], tmp_path: Path) -> T:
     return asyncio.run(_main())
 
 
-def test_no_build_is_a_noop(tmp_path: Path) -> None:
-    """With no built frontend the app behaves exactly as pre-Phase-8."""
+def test_no_build_is_a_noop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no built frontend the app behaves exactly as pre-Phase-8.
+
+    Monkeypatches :func:`frontend_dist_dir` to ``None`` so the test is
+    hermetic — a dev checkout with a lingering ``frontend/dist/`` from a
+    prior ``npm run build`` (gitignored) must not flip the assertion.
+    """
+    monkeypatch.setattr(static_mod, "frontend_dist_dir", lambda: None)
     assert static_mod.frontend_dist_dir() is None
 
     async def body(ac: AsyncClient) -> None:
