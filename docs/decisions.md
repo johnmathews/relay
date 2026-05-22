@@ -2246,3 +2246,131 @@ exactly this kind of "look-decide-mutate" race.
 **Related:** ADR-12 (single-process MVP), ADR-31/32 (run finalisation
 + orphan safety nets), ADR-34 (startup cascade helper, 9a), ADR-36
 (join watcher, 9c — the same `_enqueue_lock` serialiser).
+
+---
+
+## ADR-38 — Cross-run trace context: in-memory, threaded via `LoopResult` → `_RunState` (Phase 9f)
+
+**Status:** accepted (2026-05-22)
+**Phase:** 9f (OTel span parenting across runs)
+
+**Context.** Phase 7 (ADR-29) shipped the OTel mirror as an
+`Instrumentation` seam emitting one `relay.run` → `relay.iter` →
+`relay.tool_call` tree per run. After 9b/9c shipped fanout-join, a
+fanned-out workflow surfaces in Langfuse as four (or more)
+*disconnected* trees — the parent's pre-fanout `relay.run`, each
+child's `relay.run`, and the parent's synthesizer-phase `relay.run`
+(the second `_run` invocation triggered by `_maybe_resume_parent`'s
+`_RunState` swap at `core.py:618`). 9f connects them so the entire
+fanout-join lifecycle reads as one trace tree, rooted at the parent's
+pre-fanout run-span and branching at the dispatching iter.
+
+**Decision — routing.** The dispatching iter's OTel `Context` is
+captured inside the closing iter's `with` block in `run_loop`,
+returned on a new `LoopResult.fanout_parent_ctx` field, threaded
+through `RelayCore._apply_result` → `_dispatch_children` → each
+child's `_RunState.parent_iter_ctx`, and consumed by `_run` calling
+`self._otel.run_span(ctx.run_id, parent_iter_ctx=…)`. Every hop
+already exists in the call graph; the new field rides along as
+`Optional[IterSpanContext]`. No new shared mutable map on
+`RelayCore`; no schema migration; no `traceparent` column.
+
+**Decision — opaque carrier.** The carrier is an `IterSpanContext =
+Any` type alias defined in `observability/otel.py` and re-exported.
+The concrete object is OTel's `Context` (the W3C-propagation
+immutable container produced by `set_span_in_context(span,
+parent_ctx)` inside `_OtelRunSpan.iter_span` today). Only
+`OtelInstrumentation.run_span` and `_OtelIterSpan.context` know its
+real type; the loop and core round-trip it as `Any`. This keeps the
+OTel mirror's reach into the orchestrator a single opaque value, not
+a leakage of OTel types into orchestrator layers (ADR-04 spirit
+extended to the observability seam).
+
+**Decision — synth-phase parenting.** The synthesizer-phase
+`relay.run` (the parent's *second* `_run` invocation, created by
+`_maybe_resume_parent` replacing `_RunState` at `core.py:618`) is
+also parented under the dispatching iter — *not* as a separate
+trace root. The same `parent_iter_ctx` carrier preserved from the
+parent's old `_RunState.result.fanout_parent_ctx` is stashed on the
+fresh `_RunState` before re-enqueue. Result: the dispatching iter
+has children + synthesizer-phase `parent.run` as descendants, one
+connected sub-tree. The synthesizer iter inside that span is
+unmarked (a normal iter; no `relay.iter_kind` attribute).
+
+**Decision — recursive symmetry.** A fanout child that itself fans
+out captures *its own* dispatching iter's context; the grandchild's
+`relay.run` is parented on the child's dispatching iter, which is
+itself nested under the child's `relay.run`, which is nested under
+the parent's dispatching iter, which is nested under the parent's
+`relay.run`. The mechanism is per-iter; no special-casing of
+recursion depth. Bounded by `max_fanout_depth` (ADR-35).
+
+**Decision — restart caveat.** Restart with a parent in
+`awaiting_children` loses cross-run span linkage. The new process
+has no in-memory `_RunState.parent_iter_ctx`, no closed-but-still-
+valid OTel `Context` from the previous process's tracer. Accepted:
+the 9a startup cascade (`_cascade_cancel_descendants`) writes the
+final `run_ended` rows; the next Langfuse view of those runs will
+simply show disconnected `relay.run` trees with ERROR status.
+Restart-survival of cross-run trace context is a V1 non-goal
+(ADR-34: recovering an in-flight fanout across a restart is itself
+a V1 non-goal — span linkage inherits the same constraint).
+
+**Rejected — in-memory dict on `RelayCore` keyed by `child_run_id`.**
+Introduces a new mutable shared map alongside `_runs` / `_tasks` /
+`_enqueue_lock` with silent-leak failure mode (no consumer of the
+key → unbounded growth) and hides the producer→consumer coupling
+behind a dict key. Threading the carrier as an explicit field on
+`LoopResult` / `_RunState` makes the data-flow visible at every hop.
+
+**Rejected — persistent `traceparent` column on `runs`.** Pushes
+OTel mirror state into the source-of-truth schema (uncomfortable per
+ADR-10's framing — the event store is *the* source of truth; OTel
+only mirrors it, never the other way). Requires a migration for no
+observable benefit at single-user/single-process MVP scale (ADR-12).
+The in-memory carrier is sufficient because the producer (parent
+loop) and consumer (child `_run`) live in the same process by
+construction (ADR-12, ADR-34).
+
+**Rejected — span links from the synthesizer iter to each child
+run.** Redundant with the parent-iter→child-run parentage already
+in the tree; would complicate the `IterSpan` / `RunSpan` protocols
+with a `SpanLink`-add method. Parent-child is the standard OTel
+shape and renders correctly in Langfuse without further hints.
+
+**Consequences.**
+
+- The `Instrumentation` Protocol gains a `.context` property on
+  `IterSpan` (an opaque `IterSpanContext`) and a keyword-only
+  `parent_iter_ctx: IterSpanContext = None` on `run_span`. The
+  NOOP path is unchanged byte-for-byte: `_NoopIterSpan.context`
+  is a class attribute set to `None`, and
+  `NoopInstrumentation.run_span` accepts and ignores the kwarg.
+- The 9c watcher (`_maybe_resume_parent`) reads the preserved
+  context from the *old* `_RunState.result.fanout_parent_ctx`
+  before the line-618 swap and writes it onto the fresh state,
+  preserving recursive symmetry: a synthesizer phase that itself
+  fans out captures and threads its own dispatching context the
+  same way.
+- The cancel cascade (ADR-37) and the cancelled-before-start
+  guard in `_run` are unaffected — both sit above the
+  `with self._otel.run_span(...)` block, so a cascade-DB-finalised
+  descendant never opens a `relay.run` span (intentional: nothing
+  to mirror because nothing ran).
+- The `_enqueue_lock` reuse from ADR-37 / ADR-36 covers the
+  read-modify-write of `_RunState.parent_iter_ctx` implicitly:
+  `_dispatch_children` populates all child states before
+  enqueueing (9c two-pass invariant), and
+  `_maybe_resume_parent`'s preserve-then-overwrite runs under the
+  same lock as the watcher.
+
+**Related:** ADR-04 (harness isolation — extended in spirit to the
+OTel seam), ADR-10 (event store is the source of truth — OTel
+mirror invariant intact), ADR-29 (Phase-7 OTel mirror, the
+foundation 9f extends), ADR-34 (V1 non-goal of cross-restart
+fanout, basis for the restart caveat), ADR-35 (Option-A
+lifecycle-tied state, same reasoning applied to span context),
+ADR-36 (synth-phase `_RunState` swap, the point at which the
+preserved context is re-applied), ADR-37 (`_enqueue_lock`
+serialiser covering watcher and dispatch),
+`docs/plans/2026-05-22-fanout-join-9f.md`.

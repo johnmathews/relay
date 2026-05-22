@@ -847,6 +847,55 @@ Per ADR-10.
 > network); the live-Langfuse-UI check is a manual journal-attested
 > step. Operational ref: `docs/observability.md`.
 
+> **Phase-9f cross-run parenting (ADR-38).** With fanout-join, the
+> orchestrator runs more than one `relay.run` span per logical
+> workflow: the parent's pre-fanout phase, each child, and the
+> parent's synthesizer phase (the second `_run` invocation triggered
+> by `_maybe_resume_parent`'s `_RunState` swap). 9f connects them
+> into one trace tree: the dispatching iter's OTel `Context` is
+> captured inside the closing iter's `with` block in `run_loop`,
+> threaded as an opaque `IterSpanContext` through
+> `LoopResult.fanout_parent_ctx` → `RelayCore._dispatch_children`
+> → each child's `_RunState.parent_iter_ctx`, and consumed by
+> `_run` calling `self._otel.run_span(ctx.run_id, parent_iter_ctx=…)`.
+> Each child's `relay.run` therefore opens *under* the dispatching
+> iter (same `trace_id`; `parent.span_id == dispatching_iter.span_id`).
+> The synthesizer-phase `relay.run` is parented on the *same*
+> dispatching iter alongside the children — the watcher preserves
+> the carrier from the old `_RunState.result.fanout_parent_ctx`
+> across the line-618 swap, so the join phase visually descends from
+> the dispatch that triggered it. Recursive fanout preserves the
+> same pattern at each level: a grandchild's `relay.run` chains back
+> through two iter spans to the original parent. The connected tree
+> reads as:
+>
+> ```
+> relay.run            (parent, pre-fanout phase)
+> ├── relay.iter (seq=1, normal)
+> └── relay.iter (seq=2, fanout-closing)         ← dispatching iter
+>     ├── relay.run (child A)
+>     │   ├── relay.iter (child A seq=1)
+>     │   └── relay.iter (child A seq=2, done)
+>     ├── relay.run (child B)
+>     │   └── relay.iter (child B seq=1, done)
+>     └── relay.run (parent, synthesizer phase)  ← re-enqueued post-join, parented on the dispatching iter
+>         └── relay.iter (seq=3, synthesizer)
+> ```
+>
+> Therefore: `relay.run` is the trace root *except* when the run is
+> a fanout child OR a synth-phase parent re-enqueue, in which case
+> it is parented on the dispatching iter. The carrier lives in
+> memory only (no `traceparent` column, no shared dict on
+> `RelayCore`); span linkage is lost across a server restart — the
+> 9a startup cascade (ADR-34, V1 non-goal of cross-restart fanout)
+> finalises the descendant tree with `cancelled` + `run_ended`, and
+> the post-restart Langfuse view shows the surviving rows as
+> disconnected ERROR-status `relay.run` trees. The OTel mirror
+> invariant (ADR-10) is unchanged: spans only mirror the event
+> store, never act as a second source of truth — 9f reshapes
+> *parentage*, not *content*. Rationale, rejected alternatives, and
+> the restart caveat are recorded in ADR-38.
+
 ## 11. Configuration & deployment
 
 ### 11.1 Environment variables

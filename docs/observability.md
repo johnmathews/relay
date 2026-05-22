@@ -137,3 +137,60 @@ needs real pi + a live Langfuse and is qualitative:
 Record the result (date, pi version, Langfuse version, screenshot or
 trace ID) in a journal entry — this is the honest verification; CI does
 not assert "nests correctly in the UI".
+
+### Trace tree across fanout (Phase 9f, ADR-38)
+
+After 9f, a fanned-out workflow surfaces in Langfuse as **one
+connected trace tree** rooted at the parent's pre-fanout
+`relay.run`, branching at the dispatching iter: each child's
+`relay.run` parents on the dispatching iter, the parent's
+synthesizer-phase `relay.run` is a sibling of the children under
+the same iter, and the synthesizer iter itself nests under that
+synth-phase run-span. Automated span-structure tests
+(`tests/observability/test_otel_export.py`) lock in the parentage
+shape against an `InMemorySpanExporter`; the live-UI acceptance
+below is the manual half (same journal-attested pattern as the
+single-run check above, gated like `PI_INTEGRATION=1` — ADR-30).
+
+1. Start Langfuse (`docs/langfuse-compose.example.yml`) and the
+   relay env vars as in the single-run procedure above
+   (`RELAY_OTEL_EXPORT=langfuse`, `RELAY_LANGFUSE_HOST`,
+   `RELAY_LANGFUSE_PUBLIC_KEY`, `RELAY_LANGFUSE_SECRET_KEY`;
+   `PI_AGENT_SDK=1` for the real-pi path).
+2. `relay serve`, register a project.
+3. Trigger a fanout-emitting run — either a real
+   `[[engteam:fanout]]` from a multi-iter task, or a scripted
+   harness piped through a live `RelayCore`. Two children with a
+   short body is enough.
+4. Open the Langfuse UI and find the parent run's trace. Confirm:
+   - **One `trace_id`** across the parent's pre-fanout phase, both
+     children, and the synthesizer phase.
+   - **Root span:** the parent's pre-fanout `relay.run` (no parent
+     span).
+   - **Dispatching iter:** the fanout-closing `relay.iter`
+     (`relay.exit_reason == "signal"`) under the parent's
+     pre-fanout `relay.run`.
+   - **Each child's `relay.run`** is parented directly on the
+     dispatching iter.
+   - **Synthesizer-phase `relay.run`** (the parent's *second*
+     run-span, opened by `_maybe_resume_parent`'s re-enqueue) is
+     also parented on the dispatching iter — a sibling of the
+     children, not a separate trace root.
+   - **Synthesizer iter** nests under the synthesizer-phase
+     `relay.run` (not under the dispatching iter directly).
+5. If the test workflow exercises recursive fanout (a child that
+   itself fans out into grandchildren), verify the same shape at
+   every level: each grandchild's `relay.run` parents on its
+   parent-child's dispatching iter, all sharing the single
+   trace_id.
+6. Cross-check that a server restart with a parent still in
+   `awaiting_children` produces *disconnected* `relay.run` trees
+   with ERROR status (the 9a cascade finalises descendants;
+   cross-run span linkage is intentionally lost — ADR-34 V1
+   non-goal, recorded in ADR-38's restart caveat).
+7. Record the result in a dated journal entry (e.g.
+   `journal/YYMMDD-9f-langfuse-acceptance.md`): date, pi version,
+   Langfuse version, fanout depth + child count exercised, trace
+   ID / screenshot. As with the single-run check, CI does not
+   assert "renders correctly in Langfuse"; this is the honest
+   verification.
