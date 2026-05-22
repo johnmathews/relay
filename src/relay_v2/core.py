@@ -740,13 +740,15 @@ class RelayCore:
         # supervisor-cancelled run still closes its span — the `with`
         # records the exception, marks ERROR, and re-raises, never
         # altering loop control flow.
-        # ADR-38 (9f Task 4): pass the dispatching iter's OTel context so
-        # child runs are parented under the fanout iter in the trace tree.
-        # state.parent_iter_ctx is None for root runs (correct — they are
-        # trace roots) and None for synthesizer re-enqueues until Task 4b
-        # wires _maybe_resume_parent. The cancelled-before-start guard
-        # above must remain above this line so cascade-DB-finalised
-        # descendants never open a span.
+        # ADR-38: pass the dispatching iter's OTel context so fanout-spawned
+        # runs are parented under the dispatching iter in the trace tree.
+        # state.parent_iter_ctx is None for top-level runs (correct — they
+        # are trace roots), the parent's dispatching iter context for fanout
+        # children (set by _dispatch_children), and the run's own dispatching
+        # iter context for synth-phase re-enqueues (set by
+        # _maybe_resume_parent, preserving recursive symmetry). The
+        # cancelled-before-start guard above must remain above this line so
+        # cascade-DB-finalised descendants never open a span.
         with self._otel.run_span(
             ctx.run_id, parent_iter_ctx=state.parent_iter_ctx
         ) as run_span:
