@@ -215,8 +215,30 @@ async def _finish_iter(
     signal_kind: str | None,
     signal_args: dict[str, Any] | None,
     exit_reason: str,
+    stop_reason: str,
+    messages: list[Any],
+    summary: str | None = None,
 ) -> None:
-    """Close the iter row + append the paired ``iter_ended`` event."""
+    """Close the iter row + append ``harness_session_ended`` then ``iter_ended``.
+
+    The ``harness_session_ended`` event (ADR-39) lands BEFORE ``iter_ended``
+    on every close path: terminal signal, cancelled, timed-out,
+    no-signal, crash. Both events share ``iter_id``;
+    ``harness_session_ended`` persists pi's verbatim
+    ``SessionEnded.messages`` (ADR-18 opaque) and ``stop_reason``, closing
+    the ADR-10 invariant gap parked since Phase 7 (ADR-29 captured the
+    data for OTel; the event store now gets it too).
+    """
+    await store.append(
+        run_id,
+        "harness_session_ended",
+        {
+            "stop_reason": stop_reason,
+            "messages": messages,
+            "summary": summary,
+        },
+        iter_id=iter_id,
+    )
     await close_iter(
         store.sessionmaker,
         iter_id,
@@ -320,6 +342,8 @@ async def run_loop(
                     store, run_id=ctx.run_id, iter_id=iter_id, seq=seq,
                     signal_kind=None, signal_args=None,
                     exit_reason="cancelled",
+                    stop_reason=outcome.stop_reason,
+                    messages=outcome.messages,
                 )
                 return LoopResult("cancelled", reason="cancelled")
             if outcome.timed_out:
@@ -328,6 +352,8 @@ async def run_loop(
                     store, run_id=ctx.run_id, iter_id=iter_id, seq=seq,
                     signal_kind=None, signal_args=None,
                     exit_reason="timeout",
+                    stop_reason=outcome.stop_reason,
+                    messages=outcome.messages,
                 )
                 return LoopResult("failed", reason="timeout")
 
@@ -356,6 +382,8 @@ async def run_loop(
                     store, run_id=ctx.run_id, iter_id=iter_id, seq=seq,
                     signal_kind=None, signal_args=args,
                     exit_reason=reason,
+                    stop_reason=outcome.stop_reason,
+                    messages=outcome.messages,
                 )
                 return LoopResult(
                     "failed", reason=reason,
@@ -363,10 +391,16 @@ async def run_loop(
                 )
 
             iter_span.set_exit("signal")
+            summary_val = (
+                signal.args.get("summary") if signal.kind == "done" else None
+            )
             await _finish_iter(
                 store, run_id=ctx.run_id, iter_id=iter_id, seq=seq,
                 signal_kind=signal.kind, signal_args=signal.args,
                 exit_reason="signal",
+                stop_reason=outcome.stop_reason,
+                messages=outcome.messages,
+                summary=summary_val,
             )
             if signal.kind == "done":
                 return LoopResult(
