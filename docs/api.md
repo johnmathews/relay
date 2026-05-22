@@ -34,8 +34,9 @@ models in `relay_v2.api.schemas` (response models use
 | Method | Path | RelayCore method | Notes |
 |---|---|---|---|
 | POST | `/runs` | `start_run` (+`get_prompt` to resolve `prompt_id`) | body `{project_id, prompt_body \| prompt_id, max_iters?, iter_timeout?}` — exactly one prompt source; 201 |
-| GET | `/runs` | `list_runs` | query `project_id?, status?, limit=50, offset=0` (status filter + pagination applied in the handler — presentation only) |
+| GET | `/runs` | `list_runs` | query `project_id?, status?, limit=50, offset=0` (status filter + pagination applied in the handler — presentation only); query also accepts `include_children=false` (default — top-level runs only; pass `true` to include child runs from fanout, 9e) |
 | GET | `/runs/{run_id}` | `get_run` + `list_iters` | includes `iters[]` + current status; 404 if absent |
+| GET | `/runs/{run_id}/children` | `list_children` | direct children of a parent run (no recursion); `[]` when no fanout; 404 if `run_id` unknown (9e) |
 | POST | `/runs/{run_id}/cancel` | `cancel_run` | returns the updated run |
 | POST | `/runs/{run_id}/resume` | `resume_run` | body `{answer}`; not-paused / already-running → 409; unknown run or deleted project → 404 |
 | GET | `/runs/{run_id}/events` | `list_events` | paginated replay; query `after_seq=0, limit=100, offset=0` |
