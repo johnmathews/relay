@@ -74,6 +74,7 @@ const TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled'])
 const INVALIDATING_KINDS = new Set([
   'run_started',
   'iter_started',
+  'harness_session_ended',
   'iter_ended',
   'signal_emit',
   'pause_requested',
