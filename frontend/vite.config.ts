@@ -66,6 +66,7 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     include: ['tests/**/*.spec.ts'],
+    setupFiles: ['tests/setup.ts'],
     coverage: {
       // MANDATE 5 — "vitest v4 changed the coverage.all default; set it
       // explicitly". Reality in vitest 4.1.6 (verified against the
