@@ -310,30 +310,35 @@ When all six are true:
 
 ## Known doc gaps (deferred, not blocking)
 
-These were identified in the 2026-05-23 documentation sweep but
-**deliberately not fixed** in that pass. They are not blockers for
-acceptance testing; revisit after the MVP-acceptance phase closes.
+These were identified in the 2026-05-23 documentation sweep. The
+first three were closed in a follow-up pass the same day; the
+remaining item is low-priority and revisitable after the
+MVP-acceptance phase closes.
 
-- **No standalone `docs/fanout.md` operational runbook.** Design
-  lives across `docs/spec.md` §5.4 / §6, `docs/observability.md`
-  §"Trace tree across fanout", and `docs/dashboard.md` §"Fanout-join
-  dashboard additions". An operator-facing "here's what a fanout
-  run looks like in production" runbook does not exist. If
-  acceptance testing surfaces friction around fanout ops, file as
-  follow-up.
-- **`frontend/README.md` not refreshed.** Quick-start is correct; the
-  dual-list invariant from the post-9g sweep is now in
-  `docs/dashboard.md` but not in `frontend/README.md`. Low priority.
-- **ADR-30 carries the pre-rename ghcr image name
-  (`ghcr.io/johnmathews/relay-v2`).** Decisions.md is append-only
-  per CLAUDE.md; the corrected name (`ghcr.io/johnmathews/relay`) is
-  in `README.md`, `docs/getting-started.md`, and the CI workflow.
-  A future ADR can record the rename if it ever needs to be
-  cross-referenced from a decision.
+**Closed (2026-05-23 follow-up):**
+
+- ~~No standalone `docs/fanout.md` operational runbook.~~ Closed —
+  `docs/fanout.md` written: lifecycle, sentinel grammar, dashboard,
+  cancellation, restart, OTel trace tree, limits, troubleshooting.
+  Cross-linked from `README.md` and `docs/getting-started.md`.
+- ~~`frontend/README.md` not refreshed.~~ Closed — added
+  post-MVP component overview (PauseAnswerForm review mode,
+  UsageRow, ParentRunChip, ChildrenPane, DiffRender),
+  load-bearing invariants section (dual-list, vitest swallower,
+  pi-flavoured token names), and a "verify before commit" note
+  with the `tail` exit-code hazard.
+- ~~ADR-30 carries the pre-rename ghcr image name.~~ Closed —
+  ADR-42 appended documenting the GHCR repo + image rename
+  `relay-v2 → relay` under the append-only convention; ADR-30 is
+  left as-is per CLAUDE.md.
+
+**Still open (low priority):**
+
 - **`docs/motivation.md` Goal 3 doesn't reflect inline-editor
   workflow.** The dashboard is now a second-class artifact editor
   during pauses (14a–14f), not just a viewer. The motivation
-  framing is still accurate; the goal text could be sharpened later.
+  framing is still accurate; the goal text could be sharpened
+  later. Revisit when motivation.md gets its next refresh.
 
 ## Appendix — quick refs
 

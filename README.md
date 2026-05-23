@@ -46,7 +46,10 @@ Per-subsystem operational references: [`docs/harness.md`](docs/harness.md),
 [`docs/orchestrator.md`](docs/orchestrator.md), [`docs/api.md`](docs/api.md),
 [`docs/dashboard.md`](docs/dashboard.md), [`docs/mcp.md`](docs/mcp.md),
 [`docs/skills.md`](docs/skills.md),
-[`docs/observability.md`](docs/observability.md). `CLAUDE.md` summarises
+[`docs/observability.md`](docs/observability.md),
+[`docs/fanout.md`](docs/fanout.md) (operator runbook for
+parallel-iter fanout-join — what it looks like in production, how to
+cancel, restart behaviour, troubleshooting). `CLAUDE.md` summarises
 the design hierarchy and load-bearing invariants for Claude Code
 sessions.
 

@@ -237,4 +237,5 @@ the built Vue SPA from one process at `:7800` (spec §11.2, ADR-30).
 - Per-subsystem ops refs: [`harness.md`](harness.md),
   [`orchestrator.md`](orchestrator.md), [`api.md`](api.md),
   [`dashboard.md`](dashboard.md), [`mcp.md`](mcp.md),
-  [`skills.md`](skills.md), [`observability.md`](observability.md).
+  [`skills.md`](skills.md), [`observability.md`](observability.md),
+  [`fanout.md`](fanout.md) (parallel-iter fanout-join runbook).

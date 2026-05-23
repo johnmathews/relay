@@ -2864,3 +2864,47 @@ that question reopens, without further grammar change.
 **Related ADRs:** ADR-20 (pause/resume; `signal_args` shape), ADR-25
 (sandbox resolver), ADR-29 (OTel mirror), ADR-40 (the pause-for-review
 contract this ADR extends).
+
+## ADR-42 — GHCR repository + image rename `relay-v2` → `relay`
+
+**Status:** accepted (2026-05-23). Operational correction to ADR-30
+§"Verification — automated"'s image-tag line, applied under the
+append-only convention (CLAUDE.md "Documentation": "Never edit or
+delete an existing ADR").
+
+**Context.** The GitHub repository was renamed from
+`johnmathews/relay-v2` to `johnmathews/relay` (the "-v2" suffix served
+its purpose during the rewrite; the new name is the canonical home).
+GHCR derives the image name from the repo name by default, so the
+container image is now published at `ghcr.io/johnmathews/relay`. The
+CI workflow's image-tag line was updated in commit `14935fe` (and the
+`docker pull` snippet in `README.md` + `docs/getting-started.md`
+follows the new name). ADR-30 §"Verification — automated" still
+records the original name `ghcr.io/johnmathews/relay-v2:latest`; per
+the append-only rule, that line stays as-is — this ADR is the
+forward reference.
+
+**Decision.** Going forward the canonical image is
+`ghcr.io/johnmathews/relay` (`:latest` for the most recent build,
+`:<git-sha>` for the immutable per-build tag). Any ADR-30 reader who
+encounters the old name should read it as historical and consult
+this ADR for the current path. The CI workflow, README, and
+`docs/getting-started.md` are the operational sources of truth for
+the image name; this ADR fixes the source-of-truth contradiction in
+the ADR log itself.
+
+**Consequences.**
+- The old GHCR package `ghcr.io/johnmathews/relay-v2` is orphaned —
+  no new pushes go there. Users with a pinned reference must update
+  to `ghcr.io/johnmathews/relay`.
+- The MEMORY note `ghcr-package-name-after-rename` captures the
+  operator-side fallout (the orphaned package needs to be deleted or
+  hidden in GHCR settings if it should not appear in package
+  listings).
+- No code change is implied by this ADR — the CI rename and image
+  tag bump already shipped in `14935fe`. This ADR is documentation-
+  only, restoring consistency between the ADR log and the running
+  CI/README/getting-started state.
+
+**Related ADRs:** ADR-30 (CI gate + GHCR publish — the original
+decision whose image-tag line this ADR corrects).
