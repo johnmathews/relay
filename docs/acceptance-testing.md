@@ -40,8 +40,21 @@ connected tree** in the Langfuse UI (not three disconnected
 `relay.run` roots). The 9f InMemorySpanExporter assertion already
 runs in CI; this gate is the eyeballs-on-the-UI confirmation.
 
-**Journal:** `journal/260522-9f-langfuse-acceptance.md` (existing,
-pending attestation).
+**Status: PASSED 2026-05-22** — see
+[`journal/260522-9f-langfuse-acceptance.md`](../journal/260522-9f-langfuse-acceptance.md)
+for the original attestation. That entry's narrative is rich: the
+"What was verified" section confirms both ADR-38 promises, and the
+journal lists three regressions the live acceptance surfaced — all
+three were addressed in the post-9g bug-fix sweep (`UsageRow` token
+names, worktree under wrong project, `KNOWN_EVENT_TYPES` silently
+dropping live SSE). **Read that entry first** before deciding
+whether to re-run this gate.
+
+**Recommended action for this phase:** **re-exercise as a regression
+check.** The 9f attestation predates 9g + the post-9g sweep + 14a–14f;
+this run confirms the post-MVP polish didn't break the trace-tree
+shape. Treat this section's checklist as the protocol; if a regression
+appears, log it in §3 and link the original entry as context.
 
 **Prerequisites:**
 - [ ] Self-hosted Langfuse running (see `docs/langfuse-compose.example.yml`).
@@ -89,8 +102,14 @@ pause-for-review arc (14a → 14f) works for the operator: the
 dashboard renders the inline editor, edits are saved, resume picks
 up the edits, OTel attributes populate.
 
-**Journal:** `journal/260523-14d-live-acceptance.md` (existing,
-pending attestation).
+**Status: PENDING.** See
+[`journal/260523-14d-live-acceptance.md`](../journal/260523-14d-live-acceptance.md)
+for the protocol the prior session worked out and context on what's
+already been attested (the template edit + automated gate landed in
+that session; only the live `PI_INTEGRATION=1` run is outstanding —
+deliberately deferred to the operator). The "Status" and "What this
+session attested" sections of that entry are the right narrative
+context if a step below feels ambiguous.
 
 **Prerequisites:**
 - [ ] Pi v0.74.0 installed; `PI_AGENT_SDK=1` exported.
@@ -286,8 +305,10 @@ Severity:
 The acceptance-testing phase closes when **all** of the following
 are true:
 
-- [ ] §1.1 (9f Langfuse) gate journal-attested.
-- [ ] §1.2 (14d engteam) gate journal-attested.
+- [ ] §1.1 (9f Langfuse) gate re-exercised as a regression check;
+      the original 2026-05-22 PASS still holds, or any new
+      regression has been fixed and re-confirmed.
+- [ ] §1.2 (14d engteam) gate journal-attested for the first time.
 - [ ] §2 exercise-sweep complete; every checkbox ticked.
 - [ ] §3 bugs of severity **High** all closed (fixed and merged).
 - [ ] §3 bugs of severity **Medium** triaged — either closed or
