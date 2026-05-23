@@ -84,7 +84,7 @@ curl -sX POST http://127.0.0.1:7800/api/projects \
 # 2. Start a run
 curl -sX POST http://127.0.0.1:7800/api/runs \
   -H 'content-type: application/json' \
-  -d '{"project_id": 1, "prompt": "echo hello"}'
+  -d '{"project_id": 1, "prompt_body": "echo hello"}'
 
 # 3. List runs
 curl -s http://127.0.0.1:7800/api/runs
@@ -187,7 +187,7 @@ docker compose -f docker-compose.example.yml up
 ```
 
 Or pull the CI-published image (note: the package is private by default
-until you flip it at <https://github.com/users/johnmathews/packages/container/relay-v2/settings>):
+until you flip it at <https://github.com/users/johnmathews/packages/container/relay/settings>):
 
 ```bash
 docker pull ghcr.io/johnmathews/relay:latest
@@ -226,7 +226,7 @@ the built Vue SPA from one process at `:7800` (spec §11.2, ADR-30).
 ## What to read next
 
 - [`spec.md`](spec.md) — the canonical design contract.
-- [`decisions.md`](decisions.md) — 41 ADRs; the *why* behind every
+- [`decisions.md`](decisions.md) — 42 ADRs; the *why* behind every
   load-bearing choice.
 - [`plan.md`](plan.md) — the phased build history (MVP + the shipped
   post-MVP arcs: 9a–9g fanout-join + 14a–14f pause-for-review) and

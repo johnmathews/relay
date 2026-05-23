@@ -37,7 +37,7 @@ The four docs under `docs/` are the canonical source. Read in this order:
 | Doc | Purpose |
 |---|---|
 | [`docs/motivation.md`](docs/motivation.md) | Why v2 exists. Goals, non-goals, hard constraints, parked risks. |
-| [`docs/decisions.md`](docs/decisions.md) | 41 ADRs with context, alternatives, rationale, consequences. **Append-only.** |
+| [`docs/decisions.md`](docs/decisions.md) | 42 ADRs with context, alternatives, rationale, consequences. **Append-only.** |
 | [`docs/spec.md`](docs/spec.md) | Canonical design — architecture, data model, harness protocol, signaling, REST + MCP surface, Vue dashboard, observability, packaging. |
 | [`docs/plan.md`](docs/plan.md) | 9 MVP phases (0–8, all complete) + post-MVP arcs (9a–9g fanout-join + 14a–14f pause-for-review, both shipped) + remaining sketch. |
 | [`docs/acceptance-testing.md`](docs/acceptance-testing.md) | Live tracker for the current MVP-acceptance phase: gates, exercise sweep, bug log, definition of done. |
@@ -81,7 +81,8 @@ frontend development Vite proxies `/api` to the backend — see
 on first run. Configuration is env-driven via `RELAY_*` variables (see
 [`docs/spec.md`](docs/spec.md) §11), e.g. `RELAY_PORT=8080 uv run relay
 serve`. Implemented CLI subcommands: `relay serve`, `relay --version`,
-`relay install-skill` (`[--project PATH] [--force]`). In the MVP, runs
+`relay install-skill` (`[--project PATH] [--force] [--harness NAME]`).
+In the MVP, runs
 are created and managed through the dashboard, the REST API
 ([`docs/api.md`](docs/api.md)), or the MCP server — not a `relay start`
 CLI (that, plus `status`/`cancel`, is a post-MVP convenience; spec
