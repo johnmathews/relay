@@ -24,7 +24,7 @@ Claude Desktop) can drive relay runs through it.
 | `relay__cancel_run` | `(run_id: str) -> Run` | `cancel_run` |
 | `relay__pause_response` | `(run_id: str, answer: str) -> Run` | `resume_run` |
 | `relay__tail_events` | `(run_id: str, since_seq?: int) -> list[Event]` | `list_events(after_seq=)` |
-| `relay__read_artifact` | `(run_id: str, path: str) -> str` | sandboxed read of `<data_dir>/runs/<run_id>/` |
+| `relay__read_artifact` | `(run_id: str, path: str) -> str` | sandboxed read of `<project_root>/.relay/runs/<run_id>/` (per-project, ADR-25; corrected from the pre-9g `<data_dir>/...` path in the post-9g bug-fix sweep) |
 
 `project_root` is resolved to a registered project by exact `root_path`
 match, then `Path.resolve()`-normalised match. An unknown root, unknown
@@ -38,6 +38,14 @@ The REST `GET /api/runs` endpoint defaults to top-level-only (the
 dashboard's "Show child runs" toggle re-enables children); the MCP
 surface always shows the tree because programmatic clients are the ones
 that benefit most from full visibility.
+
+**Event kinds returned by `tail_events`.** The stream now includes
+`harness_session_ended` (9g — close-time `SessionEnded` mirror with
+`stop_reason` + `messages[].usage` summary), `artifact_edited` (14a —
+paused-iter artifact writes), and `subagent_dispatch` /
+`subagent_return` / `child_runs_resolved` (9a–9c — fanout-join), in
+addition to the original Phase-3 set. Consumers should treat unknown
+kinds as opaque so a future spec §3.2 addition does not break clients.
 
 ### `tail_events` is a snapshot, not a stream
 

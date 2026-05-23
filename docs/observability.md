@@ -28,6 +28,22 @@ relay.run                       (one per run; RelayCore._run try/finally)
 `relay.iter_seq` is the same integer the dashboard timeline shows, so a
 Langfuse trace and the dashboard line up one-to-one (spec.md §9).
 
+**14e — pause-attribute on the resumed iter.** When a run resumes from
+a pause, the first iter of the resume carries
+`relay.pause.artifacts_edited_count` on its `relay.iter` span — a
+scalar `int` equal to the number of `artifact_edited` events
+iter-scoped to the paused predecessor (i.e. how many save actions
+the operator performed during that pause window). `RunContext` gains
+a `paused_predecessor_iter_id` field set by `resume_run`; `run_loop`
+issues one `SELECT COUNT(*)` against
+`events.iter_id == :paused_iter_id AND kind == 'artifact_edited'`
+before the loop body and passes the count to OTel via the
+`pause_artifacts_edited_count` kwarg on `RunSpan.iter_span`. The OTel
+module never queries the DB (same shape as `set_usage(messages)` —
+orchestrator pre-fetches, OTel sets the attribute); NOOP
+`Instrumentation` accepts and ignores the kwarg. The attribute is
+omitted (not zero-filled) on iters that did not follow a pause.
+
 ### GenAI / usage attributes
 
 Set on the **iter** span, aggregated across the assistant messages in
@@ -61,6 +77,16 @@ GenAI module. Cache/cost have no stable GenAI key, hence `relay.usage.*`.
 > event store, SSE, and MCP surfaces are unchanged. On a genuine
 > crash/timeout (no `agent_end`) there is simply no usage to record and
 > the attributes are omitted (never zero-filled).
+>
+> **9g (ADR-39) — `harness_session_ended` is also persisted.** Phase
+> 9g closed the latent ADR-10 gap that `SessionEnded` was captured by
+> this Option-D lookahead and surfaced to OTel but never written to
+> the events table. A new event kind `harness_session_ended` is
+> appended in `loop._finish_iter` on every iter-close path BEFORE
+> the paired `iter_ended` event, with payload `{stop_reason,
+> messages, summary}`. The OTel mirror still reads from
+> `out.messages` in-memory (Option D preserved); the new event row
+> is for replay consumers (SSE, audit, future analytics).
 
 ## Configuration
 

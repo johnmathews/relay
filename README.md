@@ -2,13 +2,19 @@
 
 Chain agent sessions for unattended multi-phase engineering work.
 
-> **Status:** Phases 0–8 complete — the MVP is done. Harness (pi) →
-> orchestrator (`RelayCore` + append-only event store + chained-iter
-> run loop) → REST API + SSE → Vue 3 dashboard → MCP server at `/mcp`
-> → bundled `engineering-team` skill → opt-in OTel mirror to Langfuse,
-> plus a published container image and CI. See
-> [`docs/plan.md`](docs/plan.md) for the phase history and post-MVP
-> sketch.
+> **Status:** Phases 0–8 complete — the MVP is done. Post-MVP polish
+> has since shipped: parallel-iter fanout/join (Phases 9a–9f) +
+> `harness_session_ended` event persistence (9g) +
+> pause-for-review (Phases 14a–14f, inline artifact edit during a
+> paused run). The codebase is now in an **MVP-acceptance-testing
+> phase** — feature work is parked until the named gates close (see
+> [`docs/acceptance-testing.md`](docs/acceptance-testing.md)).
+> Harness (pi) → orchestrator (`RelayCore` + append-only event store
+> + chained-iter run loop) → REST API + SSE → Vue 3 dashboard →
+> MCP server at `/mcp` → bundled `engineering-team` skill →
+> opt-in OTel mirror to Langfuse, plus a published container image
+> and CI. See [`docs/plan.md`](docs/plan.md) for the full phase
+> history and post-MVP sketch.
 
 ## What relay is for
 
@@ -31,9 +37,10 @@ The four docs under `docs/` are the canonical source. Read in this order:
 | Doc | Purpose |
 |---|---|
 | [`docs/motivation.md`](docs/motivation.md) | Why v2 exists. Goals, non-goals, hard constraints, parked risks. |
-| [`docs/decisions.md`](docs/decisions.md) | 30 ADRs with context, alternatives, rationale, consequences. **Append-only.** |
+| [`docs/decisions.md`](docs/decisions.md) | 41 ADRs with context, alternatives, rationale, consequences. **Append-only.** |
 | [`docs/spec.md`](docs/spec.md) | Canonical design — architecture, data model, harness protocol, signaling, REST + MCP surface, Vue dashboard, observability, packaging. |
-| [`docs/plan.md`](docs/plan.md) | 9 MVP phases (0–8, all complete) + post-MVP sketch, with per-phase verification criteria. |
+| [`docs/plan.md`](docs/plan.md) | 9 MVP phases (0–8, all complete) + post-MVP arcs (9a–9g fanout-join + 14a–14f pause-for-review, both shipped) + remaining sketch. |
+| [`docs/acceptance-testing.md`](docs/acceptance-testing.md) | Live tracker for the current MVP-acceptance phase: gates, exercise sweep, bug log, definition of done. |
 
 Per-subsystem operational references: [`docs/harness.md`](docs/harness.md),
 [`docs/orchestrator.md`](docs/orchestrator.md), [`docs/api.md`](docs/api.md),
@@ -54,7 +61,7 @@ Requires [`uv`](https://docs.astral.sh/uv/) and Python 3.13.
 
 ```bash
 uv sync                              # create the venv, install deps
-uv run pytest                        # run the test suite (192+ passed)
+uv run pytest                        # run the test suite (342 passed, 3 pi-e2e gated)
 uv run relay serve                   # daemon on http://127.0.0.1:7800
 curl http://127.0.0.1:7800/health    # -> {"status": "ok"}
 ```

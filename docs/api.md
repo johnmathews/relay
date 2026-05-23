@@ -83,6 +83,14 @@ gets a clean close (it reconnects and replay backfills).
 | GET | `/projects/{id}/files` | dir listing; query `path=` (default = project root); `{path, entries:[{name,is_dir,size,modified}]}`, dirs-first then name-asc |
 | GET | `/projects/{id}/files/{file_path:path}` | file content `{path, content, size, modified}`; binary → 415; >5 MiB → 413 |
 
+### Run artifacts (read + single write entry — ADR-25, ADR-40/41)
+
+| Method | Path | RelayCore method | Notes |
+|---|---|---|---|
+| GET | `/runs/{id}/artifacts` | sandboxed list under `<project_root>/.relay/runs/<run_id>/`; same shape as the file-browser dir listing |
+| GET | `/runs/{id}/artifacts/{file_path:path}` | sandboxed file read; same 400 / 404 / 413 / 415 mapping as the project file-browser GET |
+| PUT | `/runs/{id}/artifacts/{file_path:path}` | `write_artifact` | body `{content: str, editor?: str}`. **Single write entry on the run artifacts dir.** Coupled to `run.status == 'paused'` AND set-membership in the paused iter's `signal_args.review_paths` (14b/14f). 200 `{path, size, sha256}`; 400 sandbox violation, 404 unknown run, 409 `not_paused` / `no_review_path` / `path_mismatch` / `missing_parent_dir`, 413 oversize, 415 binary or malformed body. Every success appends one `artifact_edited` event iter-scoped to the paused iter (§3.2) |
+
 **Sandbox.** All confinement is in one audited function,
 `relay_v2.api.files.resolve_within_sandbox(root, rel)`. It rejects (→
 HTTP **400**, `SandboxViolation`): a NUL byte, an absolute path, any
@@ -129,6 +137,15 @@ paused", "is already running") → **409**; preview bad-request
 ("must be provided") → **400** at the call site; everything else
 (unknown entity, "no saved pause prompt", resume of a run whose project
 was deleted) → **404**.
+
+`RelayCore.write_artifact` (14a) uses its own
+`PauseReviewError(code, detail)` rather than `ValueError` so the
+artifacts PUT route can map each code without string-matching.
+`unknown_run → 404`, `too_large → 413`, `binary → 415`, every other
+code (`not_paused` / `no_review_path` / `path_mismatch` /
+`missing_parent_dir`) → **409**. Sandbox violations from the shared
+`resolve_within_sandbox` resolver propagate as `SandboxViolation` →
+**400**.
 
 ## Testing (ADR-24)
 

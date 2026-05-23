@@ -491,15 +491,23 @@ contexts per iter, with the lead engineer's compressed handoff carrying
 state forward. Pi's session resume is reserved for crash recovery, not
 inter-iter chaining.
 
-**Subagent dispatch.** If `signal.kind == "subagent_dispatch"` (a new
-strategy when needed), the orchestrator spawns a child run with a fresh
-session, ties it to the parent via `parent_run_id`, and feeds its result
-back to the parent. Out of scope for MVP — the engineering-team skill
-in v2 may not require subagents in the initial port. On server restart,
-parents in `awaiting_children` are treated as orphans: cancelled, with
-their children cascade-cancelled (ADR-34). Single-process MVP —
-recovering an in-flight fanout across a restart is a deliberate non-goal
-for V1.
+**Subagent dispatch / fanout (9a–9f, shipped post-MVP).** The agent's
+`fanout` sentinel (closing verb paired with a `[[engteam:fanout-start]]
+… [[engteam:fanout-end]]` JSON marker block — §5.4) spawns N child
+runs with `parent_run_id` set; the parent transitions
+`running → awaiting_children` and waits. When every child reaches a
+terminal status (`done` / `failed` / `cancelled`) the join watcher
+emits one `subagent_return` per child + one `child_runs_resolved`,
+transitions the parent back to `running`, and re-enqueues it with a
+synthesizer prompt composed from `join_prompt` and a `RELAY_CHILD_
+RESULTS:` trailer (9c). Concurrency is capped by an `asyncio.Semaphore
+(max_fanout_concurrent)`; depth is bounded by `max_fanout_depth`
+(ADR-35). Runtime cancel on an `awaiting_children` parent flips the
+parent first then cascades to descendants (parent-first ordering,
+ADR-37). On server restart, parents in `awaiting_children` are
+treated as orphans: cancelled, with their children cascade-cancelled
+(ADR-34) — recovering an in-flight fanout across a restart is a
+deliberate V1 non-goal.
 
 **Join (9c).** When all children of an `awaiting_children` parent reach
 a terminal status (`done`, `failed`, or `cancelled`), the orchestrator:
@@ -1126,14 +1134,19 @@ Carried from `motivation.md` risks; resolved as design progresses.
   `cacheWrite`/`totalTokens` and a `cost` sub-object (`cost.total` in
   USD). Open part: per-iter aggregation strategy for the OTel/Langfuse
   export (Phase 7) — not consumed in Phase 1.
-- **OQ-4.** *Resolved (2026-05-19, W7).* `provision_workspace`
+- **OQ-4.** *Resolved (2026-05-19, W7; path corrected 2026-05-23
+  post-9g bug-fix sweep).* `provision_workspace`
   (`orchestrator/lifecycle.py`, ADR-13) creates a best-effort per-run
-  git worktree at `<data_dir>/worktrees/<run_id>` on branch
+  git worktree at `<project_root>/.relay/worktrees/<run_id>` on branch
   `relay/<run_id>`, degrading to the project root when the root is not
   a git work tree (e.g. fixture runs). The v1 per-run-branch pattern
-  ports; the path/branch naming is relay-data-dir-relative rather than
-  v1's `.claude/worktrees/eng-*`. Both the success and fallback
-  branches are covered by `tests/orchestrator/test_lifecycle.py`.
+  ports; the worktree is **per-project** (under the project's
+  `.relay/` dir, the same place the artifacts live — spec §3.3),
+  *not* under the relay-global `data_dir` (the pre-9g layout was a
+  spec §3.3 violation; corrected in the post-9g bug-fix sweep — see
+  CLAUDE.md "Bug 2"). `data_dir` now holds only the multi-tenant
+  `relay.db`. Both the success and fallback branches are covered by
+  `tests/orchestrator/test_lifecycle.py`.
 - **OQ-5.** *Resolved (2026-05-19, W4 / ADR pre-phase).* Pi is pinned to
   **0.74.0** via a committed `.tool-versions` file (the human-facing
   pin) plus `RELAY_PI_EXPECTED_VERSION` (`Settings.pi_expected_version`,

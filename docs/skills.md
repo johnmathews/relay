@@ -80,11 +80,24 @@ install can see what was deployed; agents never load it.
 ## Single-session MVP
 
 relay-v2's MVP runs **one long session per phase, no subagent
-dispatch**. v1's "Engineer N / Product Owner" subagents are *analysis
-lenses the single session works in sequence*. Subagent parallelism is
-a post-MVP relay feature (a `subagent_dispatch` signal the orchestrator
-does not yet handle); the phase structure and sentinel contract are
-written so it can be reintroduced without restructuring (ADR-28).
+dispatch within the skill itself**. v1's "Engineer N / Product Owner"
+subagents are *analysis lenses the single session works in sequence*.
+The orchestrator-level fanout-join arc (9a–9f) is live, but the
+bundled engteam skill does not currently emit `[[engteam:fanout]]` —
+plural subagent parallelism is opt-in for future skills / variant
+phases. ADR-28's phase structure and sentinel contract leave room
+for the engteam skill to adopt fanout later without restructuring.
+
+**14d — pause-for-review wired into Phase 2.** The engteam Phase-2
+Step-4 closing sentinel emits `review_path="improvement-plan.md"`
+alongside `id` and `question` on the same line. The dashboard's
+inline review pane (14c) lets the operator edit
+`improvement-plan.md` before resuming; the resumed iter re-reads it
+in full (the Step-4 `prompt-start`/`prompt-end` body has the
+load-bearing "the user may have edited it" instruction so the
+ADR-20 fresh-context-per-iter mechanism picks up the edits). Phase
+2 also gains a blockquote cross-link to `references/fanout.md`
+(14e — closes the deferred 9e follow-up).
 
 ## Verification
 
@@ -99,7 +112,8 @@ written so it can be reintroduced without restructuring (ADR-28).
   inlined-gate / no-`/done` Phase-4 note).
 
 Run with the project gate: `uv run ruff check . && uv run mypy &&
-uv run pytest` (183 passed, 3 pi-e2e skipped; ADR-28).
+uv run pytest` (342 passed, 3 pi-e2e skipped; ADR-28 — count includes
+the 9a–9g + 14a–14f post-MVP additions).
 
 **Behavioral (manual, pi-gated — ADR-28).** The end-to-end acceptance
 (plan.md Phase 6) spawns real pi and is qualitative, so it is a manual

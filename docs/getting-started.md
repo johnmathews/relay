@@ -28,7 +28,7 @@
 ```bash
 git clone https://github.com/johnmathews/relay && cd relay
 uv sync                              # create .venv, install deps
-uv run pytest                        # 194 passed, 3 skipped (pi-e2e gated)
+uv run pytest                        # 342 passed, 3 skipped (pi-e2e gated)
 uv run relay serve                   # daemon on http://127.0.0.1:7800
 ```
 
@@ -226,9 +226,14 @@ the built Vue SPA from one process at `:7800` (spec §11.2, ADR-30).
 ## What to read next
 
 - [`spec.md`](spec.md) — the canonical design contract.
-- [`decisions.md`](decisions.md) — 30 ADRs; the *why* behind every
+- [`decisions.md`](decisions.md) — 41 ADRs; the *why* behind every
   load-bearing choice.
-- [`plan.md`](plan.md) — the phased build history and post-MVP sketch.
+- [`plan.md`](plan.md) — the phased build history (MVP + the shipped
+  post-MVP arcs: 9a–9g fanout-join + 14a–14f pause-for-review) and
+  the remaining post-MVP sketch.
+- [`acceptance-testing.md`](acceptance-testing.md) — the live tracker
+  for the current MVP-acceptance phase (gates, exercise sweep, bug
+  log).
 - Per-subsystem ops refs: [`harness.md`](harness.md),
   [`orchestrator.md`](orchestrator.md), [`api.md`](api.md),
   [`dashboard.md`](dashboard.md), [`mcp.md`](mcp.md),

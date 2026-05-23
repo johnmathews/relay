@@ -165,15 +165,56 @@ green:
 # Python (from repo root)
 uv run ruff check .
 uv run mypy
-uv run pytest                       # 142 passed, 3 pi-e2e gated
+uv run pytest                       # 342 passed, 3 pi-e2e gated (post-14f)
 
 # Frontend (from frontend/)
-npm run check                       # eslint --max-warnings 0 + vue-tsc + vitest
+npm run check                       # eslint --max-warnings 0 + vue-tsc + vitest (186 passed)
 npm run build                       # vue-tsc -b && vite build (must also pass)
 ```
 
 `npm run check` is the composite frontend gate; `eslint` is hardened
 with `--max-warnings 0` so a warning fails it. vitest runs under jsdom
-with the v8 coverage provider. Eager first-load is ~41 KB gz; shiki
-grammars, mermaid, katex and cytoscape are lazy chunks (Phase-4 bundle
-budget < 800 KB gz, met with wide margin).
+with the v8 coverage provider. The eager first-load budget (Phase-4
+mandate; <800 KB gz) is met with wide margin; shiki grammars,
+mermaid, katex, cytoscape, diff2html, and the markdown render
+pipeline are all lazy chunks. Re-measure with `npm run build` after
+any new SFC adds a heavy dep.
+
+## Pause-for-review (14a–14f) and the SSE event-kind contract
+
+The dashboard's `PauseAnswerForm.vue` (rendered when a run is
+`paused`) reads the latest paused iter's `signal_args.review_paths`
+(14f / ADR-41; legacy scalar `review_path` is read as a one-element
+list for migration). When the array is non-empty it renders a review
+pane above the question/answer block: textarea + lazy markdown
+preview, Save button firing `PUT /api/runs/:id/artifacts/{path}`,
+`[ Preview | Diff ]` view-mode toggle on the right pane (Diff
+disabled while clean; renders dirty-vs-loaded-baseline via the
+existing lazy `DiffRender.vue` entry — 14e). N == 1 renders the
+single-pane layout byte-identical to 14c; N > 1 renders a tab bar
+with per-tab dirty state (14f) — one Save in flight at a time on
+the active tab, Resume disabled only while that Save is in flight,
+soft-warning surfaced for unsaved changes on non-active tabs (which
+do **not** block Resume — an abandoned tab must not strand the
+operator). Timeline `artifact_edited` rows are click-targets that
+navigate the artifacts pane to the file's *current* on-disk content
+(14e — not a historical diff, since ADR-40 §B1 does not preserve
+before-content). `UsageRow.vue` (9g) renders `harness_session_ended`
+events inline in the timeline with `stop_reason` + summed token
+counts (pi-flavoured keys per ADR-18: `input` / `output` /
+`cacheRead` / `cacheWrite` / `totalTokens` + `cost.total`).
+
+> **Dual-list invariant (load-bearing — post-9g bug-fix sweep).**
+> Every event kind the backend can emit (spec §3.2) MUST appear in
+> both `frontend/src/api/sse.ts::KNOWN_EVENT_TYPES` AND
+> `frontend/src/stores/events.ts::INVALIDATING_KINDS`. The browser
+> `EventSource` only fires listeners for explicitly-registered named
+> events — a kind in `INVALIDATING_KINDS` but missing from
+> `KNOWN_EVENT_TYPES` is silently dropped on the live SSE stream
+> (refresh works because it reads REST replay, masking the bug —
+> exactly the regression Bug 3 in CLAUDE.md "post-9g bug-fix sweep"
+> caught). Audit both lists against `grep -rn '"kind":\|"kind"=' src/`
+> when adding a new event kind. The single vitest setup hook
+> (`frontend/tests/setup.ts`) swallows ONLY `ApiError`-shaped
+> unhandled rejections from Pinia Colada queries that 4xx on mount
+> (commit a9813f1); anything else still fails CI.

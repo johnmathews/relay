@@ -563,29 +563,92 @@ phase by design (per ADR-15, it is the primary control plane).
 
 Not part of the MVP plan, but architecturally enabled:
 
-### Phase 9a–9f — fanout-join (post-MVP) — **in progress**
+### Phase 9a–9g — fanout-join + session-ended persistence (post-MVP) — **complete**
 
 Out-of-band from the original sketch: the **post-MVP** orchestrator
 gained parallel-iter fanout/join via the proposal at
 `docs/proposals/parallel-iters-fanout-join.md`. The slot was previously
-projected as "subagent dispatch" (Phase 13 below); the fanout-join
-arc absorbed it and was tracked as sub-phases of 9 to keep the work
-visibly sequential against Phases 0–8.
+projected as "subagent dispatch" (Phase 13 below, now superseded); the
+fanout-join arc absorbed it and was tracked as sub-phases of 9 to keep
+the work visibly sequential against Phases 0–8.
 
-- **9a** (PR #2, 4ebb1f8 / ADR-34) — schema + events: `awaiting_children`
-  status, `child_runs_resolved` kind, cascade-cancel helper.
-- **9b** (PR #3, 381c147 / ADR-35) — fanout dispatch: sentinel parser,
-  child-run creation, concurrency semaphore, depth bound.
-- **9c** (PR #4, 37b8cb7 / ADR-36) — join watcher + synthesizer iter.
-- **9d** (PR #5, 4a910b4 / ADR-37) — runtime cancel-cascade.
-- **9e** (PR #6, in review) — dashboard "Children" pane + Parent chip +
-  Show-child-runs toggle + Cancel cascade copy.
-- **9f** — OTel span parenting across runs (next).
+- **9a** (ADR-34) — schema + events: `awaiting_children` status,
+  `child_runs_resolved` kind, startup cascade-cancel helper.
+- **9b** (ADR-35) — fanout dispatch: sentinel parser
+  (`[[engteam:fanout-start]]…[[engteam:fanout-end]]` JSON + closing
+  `[[engteam:fanout]]` verb), child-run creation, concurrency
+  semaphore, depth bound.
+- **9c** (ADR-36) — join watcher + synthesizer iter. `subagent_return`
+  + `child_runs_resolved` emitted on parent; parent re-enqueues with
+  `compose_join_prompt` body + `RELAY_CHILD_RESULTS:` trailer.
+- **9d** (ADR-37) — runtime cancel-cascade. Parent-first ordering;
+  in-flight descendants get fire-and-forget signals; DB-only
+  descendants get direct status flips.
+- **9e** — dashboard "Children" pane + Parent chip + Show-child-runs
+  toggle + Cancel cascade copy.
+- **9f** (ADR-38) — OTel span parenting across runs: one connected
+  trace tree in Langfuse. Automated `InMemorySpanExporter` test +
+  manual live-Langfuse-UI acceptance (gated like `PI_INTEGRATION=1`,
+  journal-attested per ADR-30).
+- **9g** (ADR-39) — `harness_session_ended` persisted as an event row
+  (closes the latent ADR-10 gap that `SessionEnded` was captured by
+  Option-D and surfaced to OTel but never written to the events
+  table). New event kind in spec §3.2; `UsageRow.vue` renders
+  stop_reason + summed token counts inline in the timeline.
 
-Below entries ("Phase 9 — remote access" onward) are pre-existing
-post-MVP sketches and were NOT renumbered when the fanout-join arc
-took the 9a-9f sub-numbering; "remote access" is functionally Phase
-10-ish now.
+**Post-9g bug-fix sweep (2026-05-23).** Three independent regressions
+filed in the 9f live-acceptance journal; each shipped as its own
+commit chain. (1) `UsageRow.vue` was reading Anthropic-API token
+names; fixed to pi-flavoured ADR-18 keys (`input`/`output`/
+`cacheRead`/`cacheWrite`/`totalTokens` + `cost.total`). (2)
+`provision_workspace` was using `settings.data_dir` for the worktree
+path (spec §3.3 violation); fixed to `<project_root>/.relay/...` via
+`project_data_dir`. (3) `KNOWN_EVENT_TYPES` was missing
+`harness_session_ended` + `child_runs_resolved`; the browser
+`EventSource` only fires listeners for registered named events, so
+live events of those kinds were silently dropped (refresh worked
+because it hit REST replay — masking the bug). The dual-list
+invariant (`KNOWN_EVENT_TYPES` + `INVALIDATING_KINDS` must agree)
+is now documented in `docs/dashboard.md`. No new ADR — all three
+are pure bug fixes restoring existing contracts.
+
+### Phase 14a–14f — pause-for-review (post-MVP) — **complete**
+
+The pause-for-review arc landed on top of the existing `pause` /
+`resume` mechanism. Source proposal: `docs/proposals/pause-for-review.md`.
+
+- **14a** (ADR-40) — `PUT /api/runs/:id/artifacts/{path}` write
+  endpoint + `artifact_edited` event kind + `PauseReviewError` codes
+  → HTTP mapping. Single write entry point on the run artifacts dir;
+  coupled to `paused` + `signal_args.review_path` (set by 14b).
+- **14b** (ADR-40 grammar half) — sentinel parser gains the optional
+  `review_path="<rel>"` attribute on `pause-for-input` lines.
+- **14c** — dashboard `PauseAnswerForm` inline review pane: textarea
+  + lazy markdown preview + Save button + 404 "Create at this path"
+  / 415 binary branches.
+- **14d** — engteam Phase-2 template emits
+  `review_path="improvement-plan.md"` on its closing pause sentinel
+  (skill-template + journal only; no backend / frontend change).
+- **14e** — audit polish: `[ Preview | Diff ]` toggle on the right
+  pane; timeline `artifact_edited` rows click-to-navigate;
+  `relay.pause.artifacts_edited_count` scalar OTel attribute on the
+  resumed iter span; engteam Phase-2 → fanout reference cross-link
+  (closes deferred 9e follow-up).
+- **14f** (ADR-41) — plural `review_paths` via repeated-attribute
+  grammar; dashboard renders a tab per path when N > 1 (per-tab
+  dirty state, single Save in flight at a time); engteam template
+  unchanged (still emits a single `review_path` — plural is opt-in
+  for future skills or non-engteam callers).
+
+### Numbering note
+
+The entries below ("Phase 9 — remote access" onward) are
+pre-existing post-MVP sketches and were NOT renumbered when the
+fanout-join arc took the 9a–9g sub-numbering; "remote access" is
+functionally Phase 10-ish now. Phase 13 (subagent dispatch) is
+**superseded by 9a–9g**. Phase 14 (pause-for-review) is **shipped
+as 14a–14f**. The sketch below preserves the original numbering for
+the items that have not been started.
 
 ### Phase 9 — remote access (1 week)
 
@@ -617,23 +680,17 @@ Goal: "drive relay from any device; laptop-sleep doesn't kill runs."
 - Cron-style schedule definition
 - The data model already separates "submit a run" from "execute a run"
 
-### Phase 13 — subagent dispatch (medium-term)
+### Phase 13 — subagent dispatch (medium-term) — **SUPERSEDED**
 
-- Add `subagent_dispatch` signal handling
-- Orchestrator spawns child runs with `parent_run_id`
-- Dashboard renders subagent runs as collapsible children
-- Skill regains v1's research/planning subagent patterns
+Superseded by Phase 9a–9g (fanout-join). The `subagent_dispatch` /
+`subagent_return` / `child_runs_resolved` events are live; the
+orchestrator spawns child runs with `parent_run_id`; the dashboard
+Children pane renders them; the engteam skill can adopt the fanout
+sentinel when ready (currently opt-in).
 
-### Phase 14 — pause-for-review (medium-term)
+### Phase 14 — pause-for-review (medium-term) — **SHIPPED**
 
-- Extend `pause` signal: in addition to a question, the agent can ask
-  the human to *review and optionally edit a document* (typically a
-  generated plan) before continuing.
-- The dashboard renders the document, supports inline editing, and
-  resumes the run with the edited version becoming the next-iter
-  prompt.
-- Builds on the pause/resume mechanism and the file-viewer / markdown
-  pipeline that already exist in the MVP.
+Shipped as Phase 14a–14f. See above.
 
 ### Phase 15 — prompt library UI (later)
 

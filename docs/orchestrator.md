@@ -108,7 +108,11 @@ the matching event, so the log alone reconstructs a run.
 
 Event kinds emitted (spec.md §3.2): `run_started`, `iter_started`,
 `assistant_text`, `tool_use_start`, `tool_use_end`, `signal_emit`,
-`iter_ended`, `pause_requested`, `pause_resolved`, `run_ended`.
+`iter_ended`, `pause_requested`, `pause_resolved`, `run_ended`,
+`harness_session_ended` (9g — close-time `SessionEnded` mirror, ADR-39),
+`artifact_edited` (14a — paused-iter artifact write, ADR-40),
+`subagent_dispatch` / `subagent_return` / `child_runs_resolved` (9a–9c —
+fanout-join, ADR-34/35/36).
 
 ## Pause / resume (ADR-20)
 
@@ -123,11 +127,77 @@ duplicate resume from spawning two loops for one run.
 ## Workspace (ADR-13, spec.md §3.3)
 
 `start_run` always creates `RELAY_RUN_DIR`
-(`<data_dir>/runs/<run_id>/`, sibling of the worktree). A per-run git
-worktree (`<data_dir>/worktrees/<run_id>/`, branch `relay/<run_id>`) is
-provisioned best-effort; when the project root is not a git work tree it
-degrades to running in the project root with `worktree_path=NULL`. The
-loop's `cwd` is `worktree_path or project_root` either way.
+(`<project_root>/.relay/runs/<run_id>/`, sibling of the worktree). A
+per-run git worktree (`<project_root>/.relay/worktrees/<run_id>/`,
+branch `relay/<run_id>`) is provisioned best-effort; when the project
+root is not a git work tree it degrades to running in the project
+root with `worktree_path=NULL`. The loop's `cwd` is `worktree_path or
+project_root` either way.
+
+> **Path note (post-9g bug-fix sweep, 2026-05-23).** The worktree
+> moved from `<data_dir>/worktrees/<run_id>/` (relay-global) to
+> `<project_root>/.relay/worktrees/<run_id>/` (per-project), matching
+> spec §3.3. `provision_workspace` no longer takes a `data_dir`
+> argument. The single resolver `RelayCore.get_run_artifacts_dir
+> (run_id)` is the one place routes / MCP tools call for the artifacts
+> root. `data_dir` now holds only the multi-tenant `relay.db`.
+
+## Fanout-join (9a–9f, ADR-34/35/36/37/38)
+
+Fanout dispatch + the synthesizer join landed post-MVP as the 9a–9f
+arc. The orchestrator-level moving parts:
+
+- **Status `awaiting_children`** (9a) — not terminal; a paused parent
+  awaiting child runs. `runs.parent_run_id` ties children to parent.
+- **`RelayCore._dispatch_children`** (9b) — spawns N child runs whose
+  worktrees branch off the parent's worktree HEAD (via
+  `provision_workspace(..., parent_worktree_path=…)`). The dispatch
+  pass is two-step: create ALL child rows + `subagent_dispatch` events
+  first, THEN enqueue (so a fast scripted harness can't let child A
+  finish before B's row exists — the join watcher's "all terminal?"
+  check would short-circuit on the partial set). Concurrency capped
+  by `asyncio.Semaphore(max_fanout_concurrent)`; depth bounded by
+  `max_fanout_depth` (ADR-35).
+- **`RelayCore._maybe_resume_parent`** (9c, ADR-36) — fired from each
+  child's `_run` finally block under `_enqueue_lock`. When every
+  sibling reaches terminal, emits one `subagent_return` per child +
+  one `child_runs_resolved`, transitions parent
+  `awaiting_children → running`, re-enqueues with a synthesizer
+  `RunContext` whose body is `compose_join_prompt(join_prompt,
+  child_results)`. The synthesizer iter runs on the parent's
+  existing worktree (no new worktree for the join). The watcher
+  fires BEFORE `state.settled.set()` so a caller awaiting a child's
+  `wait_for_run()` then immediately the parent's cannot race.
+- **`RelayCore._cascade_cancel_runtime`** (9d, ADR-37) — runtime
+  cancel-cascade. `cancel_run` on an `awaiting_children` parent flips
+  the parent to `cancelled` *first* (parent-first ordering — required
+  to close the watcher race), then cascades depth-first to
+  descendants. In-flight descendants get a fire-and-forget signal
+  (`cancel_event.set()` + `session.cancel()`); DB-only descendants
+  get `set_run_status(cancelled, ended=True)` + `run_ended` directly.
+- **Orphan recovery** (`_recover_orphans` + ADR-31 / 32 / 34) —
+  startup sweep: cascade `awaiting_children` parents first (with
+  descendants), then finalise any leftover `running` rows from a
+  prior process. Single-user / single-process MVP means a `running`
+  row at startup must come from a dead prior process and can never
+  resume. ADR-34 carry-over: recovering an in-flight fanout across
+  a restart is a deliberate V1 non-goal.
+
+## Pause-for-review write endpoint (14a, ADR-40)
+
+`RelayCore.write_artifact(run_id, rel_path, content, *, editor)` is
+the **single write entry point** on the run artifacts dir. Coupled
+to `runs.status == 'paused'` AND set-membership of the requested
+path in the paused iter's `signal_args.review_paths` (14f / ADR-41;
+legacy scalar `review_path` is read as a one-element list during
+the migration window). Failures map to `PauseReviewError` codes
+(`unknown_run` / `not_paused` / `no_review_path` / `path_mismatch` /
+`too_large` / `binary` / `missing_parent_dir`); REST adapter
+translates each to the right HTTP status. On success: an atomic
+write (tempfile-in-same-dir + `Path.replace`) and one
+`artifact_edited` event (iter-scoped to the paused iter) with pre/
+post sha256 + size + editor tag. Content lives on disk per ADR-25;
+the event carries hashes for integrity, not the bytes (ADR-40 §B1).
 
 ## Testing
 

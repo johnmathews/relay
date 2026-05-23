@@ -59,6 +59,19 @@ No `agent_end` in the stream (crash / timeout / cancel) → `events()`
 ends without a `SessionEnded`; `PiSession.wait()` synthesizes the
 terminal event with the appropriate non-`clean` `stop_reason`.
 
+**Option-D lookahead (Phase 7, ADR-29).** The orchestrator detects
+the terminal sentinel in `turn_end` text and stops the iter before
+`agent_end` (the only carrier of `messages[].usage`) would normally
+be read. To preserve usage on the terminal close path,
+`PiSession.events()` holds the most recent `AssistantText` by one
+event so `agent_end` is consumed — and `messages` captured — *before*
+the sentinel text reaches the orchestrator. Harness-internal,
+order-preserving; the event store / SSE / MCP surfaces are unchanged.
+Tests: `tests/harness/test_pi_session_lookahead.py` (offline fake
+process). The usage payload flows into OTel via the iter span
+(`docs/observability.md`) and, since 9g (ADR-39), is also persisted
+as a `harness_session_ended` event row by `loop._finish_iter`.
+
 ### Invocation
 
 `PI_AGENT_SDK=1 pi -p <prompt> --mode json --provider <p> --model <m>
@@ -81,6 +94,21 @@ normalized `SignalEmitted(kind, args)` either way.
   are ported verbatim; `MarkerError` carries the headline + repair
   recipe. v1's 30 synthetic fixtures are ported to
   `tests/harness/test_signaling_sentinels.py`.
+  - **Pause attributes** (14b/14f) — `pause-for-input` accepts an
+    optional `review_path="<rel>"` attribute that may **repeat on the
+    same line** to declare multiple reviewable artifacts (ADR-41).
+    `extract_pause_review_paths` collects all values via
+    `re.finditer`; each is validated by `_validate_review_path`
+    (empty / NUL / absolute / `..` → `MarkerError`).
+    `detect_in_text` writes `signal_args.review_paths: list[str]`
+    (plural); the legacy scalar `review_path` shim
+    (`extract_pause_review_path`) returns the first value or `None`.
+  - **Fanout** (9b) — `extract_fanout_payload` parses the JSON between
+    `[[engteam:fanout-start]]` and `[[engteam:fanout-end]]` markers
+    that precede the `[[engteam:fanout]]` closing verb;
+    `FanoutPayload` (Pydantic) validates `children: [{role, prompt}]
+    + join_prompt`. `FanoutParseError` propagates to the loop's
+    `_drive_iter` catch clause.
 - **`mcp_tools`** — stub. Selecting it raises `NotImplementedError`
   (needs the `pi-mcp-adapter` extension; post-MVP).
 
