@@ -66,7 +66,7 @@ history-mode `StaticFiles` catch-all at `/` in the lifespan *after*
 byte-for-byte unchanged; spec §11.2); a multi-stage `Dockerfile` +
 `.dockerignore` + `docker-compose.example.yml`; and
 `.github/workflows/ci.yml` (full Python **and** frontend gate + GHCR
-publish to `ghcr.io/johnmathews/relay-v2` on push to `main`,
+publish to `ghcr.io/johnmathews/relay` on push to `main`,
 `workflow_dispatch`). The Phase-8 verification split is ADR-30
 (automated CI for the deterministic half — ruff/mypy/pytest + `npm run
 check` + `docker build`; manual journal-attested for the real-pi e2e
@@ -821,7 +821,7 @@ implementation:
   — points at `docs/langfuse-compose.example.yml`).
   `.github/workflows/ci.yml` runs the **full** gate (Python
   `ruff`/`mypy`/`pytest` **and** `frontend/ npm run check`) and
-  publishes to `ghcr.io/johnmathews/relay-v2` on push to `main` via
+  publishes to `ghcr.io/johnmathews/relay` on push to `main` via
   `${{ github.token }}` (`workflow_dispatch` present). The prod
   frontend is served by FastAPI via the additive conditional
   `relay_v2.api.static.mount_frontend` (no-op without a build) — spec

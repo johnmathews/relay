@@ -526,7 +526,7 @@ covers install + run.
 - `README.md` rewrite covering install, run, dashboard URL, MCP setup.
 - `Dockerfile` + `docker-compose.example.yml` (with Langfuse compose).
 - `.github/workflows/ci.yml`: pytest + ruff + mypy + Docker build &
-  publish to `ghcr.io/johnmathews/relay-v2` (per user's global Docker
+  publish to `ghcr.io/johnmathews/relay` (per user's global Docker
   policy).
 - `journal/` initial entry per global instructions.
 - Final review pass on all phase 0–7 deliverables.

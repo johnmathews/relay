@@ -8,8 +8,10 @@
 # manual + journal-attested (ADR-30, mirroring ADR-28 §3 / ADR-29);
 # pytest's 3 pi-e2e tests stay gated (PI_INTEGRATION is NOT set here).
 #
-# On push to main the image is published to ghcr.io/johnmathews/
-# relay-v2 with GITHUB_TOKEN, per the global Docker/CI policy. Only
+# On push to main the image is published to ghcr.io/johnmathews/relay
+# with GITHUB_TOKEN, per the global Docker/CI policy (`ghcr.io/
+# johnmathews/<repo-name>` — the repo is `johnmathews/relay`, not
+# `relay-v2`; the package name follows the repo). Only
 # trusted contexts (github.token/actor/sha/ref) are interpolated — no
 # untrusted event input reaches any run: step.
 
@@ -81,5 +83,5 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/johnmathews/relay-v2:latest
-            ghcr.io/johnmathews/relay-v2:${{ github.sha }}
+            ghcr.io/johnmathews/relay:latest
+            ghcr.io/johnmathews/relay:${{ github.sha }}

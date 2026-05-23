@@ -190,7 +190,7 @@ Or pull the CI-published image (note: the package is private by default
 until you flip it at <https://github.com/users/johnmathews/packages/container/relay-v2/settings>):
 
 ```bash
-docker pull ghcr.io/johnmathews/relay-v2:latest
+docker pull ghcr.io/johnmathews/relay:latest
 ```
 
 The image runs as a non-root user and serves both the REST/MCP API and
@@ -213,7 +213,7 @@ the built Vue SPA from one process at `:7800` (spec §11.2, ADR-30).
    editing config; verify the URL is `http://127.0.0.1:7800/mcp` (note
    the trailing `/mcp`, not `/api/mcp`); confirm the backend log shows
    the `/mcp` mount on startup.
-5. **`docker pull ghcr.io/johnmathews/relay-v2:latest` returns 401** —
+5. **`docker pull ghcr.io/johnmathews/relay:latest` returns 401** —
    the package is private; either log in (`docker login ghcr.io` with
    a PAT carrying `read:packages`) or flip the package to public in
    GHCR settings.

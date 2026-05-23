@@ -124,7 +124,7 @@ the full procedure and the manual trace-tree acceptance check.
 
 A multi-stage image builds the Vue frontend and serves it from the
 FastAPI backend (spec §11.2). Published to
-`ghcr.io/johnmathews/relay-v2` by CI on push to `main`.
+`ghcr.io/johnmathews/relay` by CI on push to `main`.
 
 ```bash
 docker build -t relay-v2 .

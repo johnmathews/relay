@@ -14,7 +14,7 @@ services:
   relay:
     build: .
     # Or pull the published image instead of building:
-    # image: ghcr.io/johnmathews/relay-v2:latest
+    # image: ghcr.io/johnmathews/relay:latest
     ports:
       - "7800:7800"
     environment:

@@ -997,7 +997,7 @@ Pi-side env vars (passed through to subprocess):
   or `pipx`. Console script: `relay`.
 - Frontend: `frontend/package.json`. Build to `frontend/dist/` and
   serve as static via FastAPI's `StaticFiles`.
-- Container image: published to `ghcr.io/johnmathews/relay-v2` via
+- Container image: published to `ghcr.io/johnmathews/relay` via
   GitHub Actions, per the user's global Docker/CI policy.
 
 > **Phase-8 implementation note (ADR-30).** The static-serving and
