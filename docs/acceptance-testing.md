@@ -364,14 +364,19 @@ MVP-acceptance phase with no open doc gaps.
   echo $?)` — never pipe `npm run check` to `tail`; redirect to a
   file and inspect (the pipe-tail footgun in `~/.claude/projects/.../
   memory/exit-code-via-pipe-tail.md`).
-- **PI integration tests:** `PI_INTEGRATION=1 uv run pytest tests/
-  -k pi_e2e`. Without the env var, the three pi-e2e tests are
-  skipped; this is the gate for the engteam end-to-end runs.
+- **PI integration tests:** `PI_INTEGRATION=1 uv run pytest`. The
+  three gated tests (1 in `tests/harness/test_pi_integration.py`, 2
+  in `tests/orchestrator/test_pi_e2e.py`) activate via a `skipif`
+  decorator on the env var; **no `-k` filter is needed** — `-k
+  pi_e2e` would actually miss the harness test (its name is
+  `pi_integration`, not `pi_e2e`).
 - **Langfuse self-host:** `docs/langfuse-compose.example.yml`.
 - **MCP client config:** `docs/mcp-config.example.json`.
 - **Operational refs:** `docs/harness.md`, `docs/orchestrator.md`,
   `docs/api.md`, `docs/dashboard.md`, `docs/mcp.md`, `docs/skills.md`,
-  `docs/observability.md`.
+  `docs/observability.md`, `docs/fanout.md` (operator runbook —
+  consult during §2.3 fanout exercises for troubleshooting + the
+  lifecycle diagram).
 - **Canonical design:** `docs/spec.md` (current contract);
   `docs/decisions.md` (ADR-1 through ADR-41).
 - **The plan (post-MVP roadmap):** `docs/plan.md` Phases 9 onward
