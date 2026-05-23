@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     # Known-good pi pin (OQ-5). Mirrors `.tool-versions`; a mismatch is
     # logged (non-fatal) at first spawn, never enforced.
     pi_expected_version: str = "0.74.0"
+    # asyncio StreamReader buffer size for pi's stdout. Pi emits one JSON
+    # object per line; large tool results (file reads, verbose Bash,
+    # agent_end.messages with long content) can exceed asyncio's 64 KiB
+    # default and crash the read with LimitOverrunError. 8 MiB is generous
+    # and bounded; raise via RELAY_PI_STDOUT_LIMIT if needed.
+    pi_stdout_limit: int = 8 * 1024 * 1024
 
     max_iters: int = 12
     iter_timeout: int = 1800  # seconds

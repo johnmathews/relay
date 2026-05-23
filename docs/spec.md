@@ -1001,6 +1001,7 @@ Per ADR-10.
 | `RELAY_PI_EXPECTED_VERSION` | `0.74.0` | pinned pi version (OQ-5). `PiHarness.spawn` warns when the installed pi reports a different version; relay does not refuse to run. |
 | `RELAY_PI_MODEL` | `claude-sonnet-4-6` | default model |
 | `RELAY_PI_PROVIDER` | `anthropic` | default provider |
+| `RELAY_PI_STDOUT_LIMIT` | `8388608` (8 MiB) | asyncio `StreamReader` buffer size for pi's stdout. Pi emits one JSON object per line; a large tool result or `agent_end.messages` payload can exceed asyncio's 64 KiB default and crash the read with `LimitOverrunError`. Raise if pi emits even larger lines. |
 | `RELAY_MAX_ITERS` | `12` | default per-run iter cap |
 | `RELAY_ITER_TIMEOUT` | `1800` | per-iter wall-clock cap (seconds) |
 | `RELAY_OTEL_EXPORT` | `none` | `langfuse` or `none` |

@@ -410,12 +410,16 @@ class PiHarness:
             resume_from,
         )
         full_env = {**os.environ, **env, "PI_AGENT_SDK": "1"}
-        # exec form: argv list, no shell — not subject to shell injection.
+        # argv list, no shell — not subject to injection.
+        # limit= raises the StreamReader buffer above asyncio's 64 KiB
+        # default so a large pi JSONL line (tool result, agent_end.messages)
+        # does not crash readline() with LimitOverrunError.
         proc = await asyncio.create_subprocess_exec(
             *argv,
             cwd=str(cwd),
             env=full_env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=self._settings.pi_stdout_limit,
         )
         return PiSession(proc, session_hint=resume_from or "")
