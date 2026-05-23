@@ -20,10 +20,14 @@ skills/engineering-team/          canonical source (repo root, spec §12)
     │   ├── phase-3-development.md
     │   └── phase-4-wrap-up.md
     └── references/
-        ├── sentinels.md          verbatim v1 grammar (spec §12)
+        ├── sentinels.md          verbatim v1 grammar (spec §12) — also
+        │                         documents pause-attribute review_paths
+        │                         (14b/14f) and fanout markers (9b)
         ├── team-structure.md     roles as single-session lenses
         ├── workflows.md
         ├── worktree.md           relay provisions it; skill does not
+        ├── fanout.md             phase-level fanout reference (9e/14e
+        │                         follow-up — cross-linked from phase-1/2/3)
         ├── discussion.md
         └── general-guidelines.md
 ```
@@ -98,6 +102,12 @@ load-bearing "the user may have edited it" instruction so the
 ADR-20 fresh-context-per-iter mechanism picks up the edits). Phase
 2 also gains a blockquote cross-link to `references/fanout.md`
 (14e — closes the deferred 9e follow-up).
+
+The harness-side grammar supports a **plural** `review_paths` storage
+shape (14f / ADR-41): repeating the `review_path="..."` attribute on
+the same line declares multiple reviewable artifacts, and the
+dashboard renders one tab per path. The bundled engteam Phase-2
+template emits exactly one — plural is opt-in for future skills.
 
 ## Verification
 

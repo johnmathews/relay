@@ -34,7 +34,18 @@ The one in-process object every write flows through. Phase 2 surface:
   enqueues the run.
 - `cancel_run(run_id)` — flag + cancel the in-flight session.
 - `resume_run(run_id, answer)` — recompose + re-enqueue a paused run.
-- `store_event`, `list_runs`, `get_run` — service reads/writes.
+- `store_event`, `list_runs`, `get_run`, `list_children` — service
+  reads/writes. `list_runs(..., include_children=False)` hides child
+  rows from top-level listings by default (9e); `list_children(run_id)`
+  returns direct children ordered by `started_at`.
+- `preview_run(project_id, prompt_body, *, max_iters?, iter_timeout?)`
+  — no-side-effect renderer of the prompt + preamble that *would* be
+  sent (used by the dashboard's New-Run wizard).
+- `write_artifact(run_id, rel_path, content, *, editor)` — the single
+  write entry point on the run artifacts dir (see "Pause-for-review
+  write endpoint" below). Sibling resolver
+  `get_run_artifacts_dir(run_id)` is the one place routes / MCP tools
+  call for the artifacts root.
 - `wait_for_run(run_id) -> LoopResult` — deterministic await point for
   tests/automation (not a route).
 - `start()` / `aclose()` — lifecycle, driven by FastAPI's `lifespan`.
@@ -85,8 +96,15 @@ the spec elides live in `_drive_iter` so the loop stays readable:
   permanently `running` with no closing event.
 
 `run_loop` returns a `LoopResult(status, reason, summary, question,
-next_prompt, pause_id)`; `RelayCore` maps it to the run's final status +
-the closing run-level event.
+next_prompt, pause_id, fanout_payload, fanout_parent_ctx)`;
+`RelayCore._apply_result` maps it to the run's final status + the
+closing run-level event — or, when `status == "awaiting_children"`,
+routes to `_dispatch_children` (no `run_ended` for the parent; the
+join watcher resumes it later).
+`fanout_payload` carries the parsed `[[engteam:fanout]]` JSON marker
+block (children + join_prompt); `fanout_parent_ctx: IterSpanContext`
+is the live OTel span context of the closing fanout iter, threaded
+into each child's run span for cross-run trace parenting (9f, ADR-38).
 
 ## EventStore (ADR-10)
 
@@ -102,9 +120,13 @@ the matching event, so the log alone reconstructs a run.
 - Tool-result truncation lives here, not in the harness (plan.md Phase 1
   follow-up): `tool_use_end.result` over `TOOL_RESULT_CAP` (16 KiB) is
   replaced with a bounded preview + size marker.
-- `ToolUseUpdate` and `SessionStarted`/`SessionEnded` are not persisted
-  here — the loop records iter lifecycle as `iter_*` events; spec.md
-  §3.2 has no kind for tool-update partials.
+- `ToolUseUpdate` and `SessionStarted` are not persisted here — the
+  loop records iter lifecycle as `iter_*` events; spec.md §3.2 has no
+  kind for tool-update partials. `SessionEnded` is also dropped by the
+  `EventStore` harness-event mapper, but the loop's `_finish_iter`
+  writes a dedicated `harness_session_ended` event (9g, ADR-39) BEFORE
+  the paired `iter_ended` on every close path — so replay consumers
+  still see the close-time `{stop_reason, messages, summary}` payload.
 
 Event kinds emitted (spec.md §3.2): `run_started`, `iter_started`,
 `assistant_text`, `tool_use_start`, `tool_use_end`, `signal_emit`,
@@ -142,10 +164,12 @@ project_root` either way.
 > (run_id)` is the one place routes / MCP tools call for the artifacts
 > root. `data_dir` now holds only the multi-tenant `relay.db`.
 
-## Fanout-join (9a–9f, ADR-34/35/36/37/38)
+## Fanout-join (9a–9g, ADR-34/35/36/37/38/39)
 
-Fanout dispatch + the synthesizer join landed post-MVP as the 9a–9f
-arc. The orchestrator-level moving parts:
+Fanout dispatch + the synthesizer join landed post-MVP as the 9a–9g
+arc (9g adds the `harness_session_ended` close-time persistence in
+the same close-path code touched by the fanout lifecycle). The
+orchestrator-level moving parts:
 
 - **Status `awaiting_children`** (9a) — not terminal; a paused parent
   awaiting child runs. `runs.parent_run_id` ties children to parent.
@@ -176,12 +200,17 @@ arc. The orchestrator-level moving parts:
   (`cancel_event.set()` + `session.cancel()`); DB-only descendants
   get `set_run_status(cancelled, ended=True)` + `run_ended` directly.
 - **Orphan recovery** (`_recover_orphans` + ADR-31 / 32 / 34) —
-  startup sweep: cascade `awaiting_children` parents first (with
-  descendants), then finalise any leftover `running` rows from a
-  prior process. Single-user / single-process MVP means a `running`
-  row at startup must come from a dead prior process and can never
-  resume. ADR-34 carry-over: recovering an in-flight fanout across
-  a restart is a deliberate V1 non-goal.
+  startup sweep: cascade `awaiting_children` parents first (the
+  sibling helper `_cascade_cancel_descendants` is the startup-only
+  variant; `_cascade_cancel_runtime` is the runtime equivalent —
+  both walk descendants depth-first, the runtime variant has the
+  fire-and-forget in-flight branch), then finalise any leftover
+  `running` rows from a prior process (pass 2 catches non-fanout
+  orphans; descendants of awaiting parents are already finalised
+  by pass 1's cascade). Single-user / single-process MVP means a
+  `running` row at startup must come from a dead prior process and
+  can never resume. ADR-34 carry-over: recovering an in-flight
+  fanout across a restart is a deliberate V1 non-goal.
 
 ## Pause-for-review write endpoint (14a, ADR-40)
 
@@ -206,6 +235,11 @@ the event carries hashes for integrity, not the bytes (ADR-40 §B1).
   fully offline). It covers every plan.md Phase 2 criterion plus
   `max_iters`, timeout, and cancel. Pi e2e stays gated behind
   `PI_INTEGRATION=1` (harness suite).
+- Post-MVP coverage lives in the same dir: `test_cancel_cascade.py`,
+  `test_fanout_{dispatch,integration,loop,join_integration}.py`,
+  `test_join_watcher.py`, `test_lifecycle{,_join,_child_worktree}.py`,
+  `test_project_data_dir.py`, `test_relay_core.py`,
+  `test_sentinels_fanout.py`.
 - Tests live under `tests/orchestrator/` (not the
   `src/.../orchestrator/tests/` path plan.md sketched) to match the
   established Phase 0/1 `testpaths=["tests"]` convention.

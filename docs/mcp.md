@@ -27,9 +27,14 @@ Claude Desktop) can drive relay runs through it.
 | `relay__read_artifact` | `(run_id: str, path: str) -> str` | sandboxed read of `<project_root>/.relay/runs/<run_id>/` (per-project, ADR-25; corrected from the pre-9g `<data_dir>/...` path in the post-9g bug-fix sweep) |
 
 `project_root` is resolved to a registered project by exact `root_path`
-match, then `Path.resolve()`-normalised match. An unknown root, unknown
+match, then `Path.expanduser().resolve()`-normalised match (so a `~/…`
+project root supplied by a tool caller resolves the same way as a
+project registered against an absolute path). An unknown root, unknown
 run, or a not-paused run for `pause_response`, is returned as a tool
 error (mirrors the REST 404/409 intent without HTTP status codes).
+`relay__cancel_run` on an unknown run raises a tool error rather than
+silently no-op'ing — divergent from the REST endpoint's idempotent
+behaviour, deliberately so for programmatic callers.
 
 **Child runs.** `relay__list_runs` always passes `include_children=True`
 internally so a Claude-Code-driven user sees the full run tree — both

@@ -22,7 +22,7 @@ relay.run                       (one per run; RelayCore._run try/finally)
 | Span | Opened/closed | Key attributes |
 |---|---|---|
 | `relay.run` | `RelayCore._run()` `try/…/finally` — a crashed or cancelled run still closes its span (status `ERROR`) | `relay.run_id` |
-| `relay.iter` | per `run_loop` while-iteration | `relay.run_id`, `relay.iter_seq` (= the `iters` table `seq`), `relay.phase`, `relay.exit_reason`, GenAI/usage (below) |
+| `relay.iter` | per `run_loop` while-iteration | `relay.run_id`, `relay.iter_seq` (= the `iters` table `seq`); `relay.phase` (set only when a phase has been carried forward), `relay.exit_reason` (set by `set_exit()` on the signal-close path only — absent on crash/timeout iters), GenAI/usage (below) |
 | `relay.tool_call` | `_drive_iter` on `ToolUseEnd`, timed from event `ts` | `relay.tool_id`, `relay.tool_name`, `relay.tool_is_error`, `relay.tool_duration_ms` |
 
 `relay.iter_seq` is the same integer the dashboard timeline shows, so a

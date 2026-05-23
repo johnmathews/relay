@@ -13,7 +13,8 @@ FastAPI app (`relay_v2.app:create_app`). One process, bound to
 `127.0.0.1:7800` by default (ADR-12 — no auth, no multi-user;
 `user_id` stays the sentinel). `relay serve` runs it via uvicorn.
 Auto-generated OpenAPI 3.1 at `GET /openapi.json`, operations grouped by
-resource tag (`runs`, `projects`, `prompts`, `files`, `events`).
+resource tag (`runs`, `projects`, `prompts`, `files`, `events`,
+`artifacts`).
 
 **Every route is a thin adapter over the single shared `RelayCore`**
 (`app.state.core`, owned by the lifespan — ADR-07/15). Handlers resolve
@@ -37,7 +38,7 @@ models in `relay_v2.api.schemas` (response models use
 | GET | `/runs` | `list_runs` | query `project_id?, status?, limit=50, offset=0` (status filter + pagination applied in the handler — presentation only); query also accepts `include_children=false` (default — top-level runs only; pass `true` to include child runs from fanout, 9e) |
 | GET | `/runs/{run_id}` | `get_run` + `list_iters` | includes `iters[]` + current status; 404 if absent |
 | GET | `/runs/{run_id}/children` | `list_children` | direct children of a parent run (no recursion); `[]` when no fanout; 404 if `run_id` unknown (9e) |
-| POST | `/runs/{run_id}/cancel` | `cancel_run` | returns the updated run |
+| POST | `/runs/{run_id}/cancel` | `cancel_run` | returns the updated run; 404 if `run_id` unknown |
 | POST | `/runs/{run_id}/resume` | `resume_run` | body `{answer}`; not-paused / already-running → 409; unknown run or deleted project → 404 |
 | GET | `/runs/{run_id}/events` | `list_events` | paginated replay; query `after_seq=0, limit=100, offset=0` |
 | GET | `/runs/{run_id}/preview` | `preview_run` | **no side effects** — no run row, event, or dir. Path segment is the **project id** (the New-Run wizard previews a prospective run; no run exists yet — see "Preview" below). query `prompt_body? \| prompt_id?, phase?` |
@@ -87,9 +88,9 @@ gets a clean close (it reconnects and replay backfills).
 
 | Method | Path | RelayCore method | Notes |
 |---|---|---|---|
-| GET | `/runs/{id}/artifacts` | sandboxed list under `<project_root>/.relay/runs/<run_id>/`; same shape as the file-browser dir listing |
-| GET | `/runs/{id}/artifacts/{file_path:path}` | sandboxed file read; same 400 / 404 / 413 / 415 mapping as the project file-browser GET |
-| PUT | `/runs/{id}/artifacts/{file_path:path}` | `write_artifact` | body `{content: str, editor?: str}`. **Single write entry on the run artifacts dir.** Coupled to `run.status == 'paused'` AND set-membership in the paused iter's `signal_args.review_paths` (14b/14f). 200 `{path, size, sha256}`; 400 sandbox violation, 404 unknown run, 409 `not_paused` / `no_review_path` / `path_mismatch` / `missing_parent_dir`, 413 oversize, 415 binary or malformed body. Every success appends one `artifact_edited` event iter-scoped to the paused iter (§3.2) |
+| GET | `/runs/{id}/artifacts` | sandboxed list under `<project_root>/.relay/runs/<run_id>/`; same shape as the file-browser dir listing; 404 if the run has no artifacts dir |
+| GET | `/runs/{id}/artifacts/{file_path:path}` | sandboxed file read; same 400 / 404 / 413 / 415 mapping as the project file-browser GET (404 here also covers a run with no artifacts dir) |
+| PUT | `/runs/{id}/artifacts/{file_path:path}` | `write_artifact` | body `{content: str, editor?: str}`. **Single write entry on the run artifacts dir.** Coupled to `run.status == 'paused'` AND set-membership in the paused iter's `signal_args.review_paths` (14b/14f; legacy scalar `review_path` is read as a one-element list during the migration window). 200 `{path, size, sha256}`; 400 sandbox violation, 404 unknown run, 409 `not_paused` / `no_review_path` / `path_mismatch` / `missing_parent_dir`, 413 oversize, 415 binary or non-JSON / malformed body (also covers `content` not a string and `editor` not a string). Every success appends one `artifact_edited` event iter-scoped to the paused iter (§3.2) |
 
 **Sandbox.** All confinement is in one audited function,
 `relay_v2.api.files.resolve_within_sandbox(root, rel)`. It rejects (→

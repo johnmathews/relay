@@ -184,9 +184,9 @@ The `events.kind` column is a discriminator. Payloads are JSON.
 |---|---|---|
 | `run_started` | `relay start` | `{project_id, prompt_body, max_iters}` |
 | `iter_started` | iter N begins | `{seq, prompt, preamble, phase}` |
-| `assistant_text` | accumulated text from a turn | `{text, turn_seq}` |
+| `assistant_text` | accumulated text from a turn | `{text, turn_seq, kind}` — `kind ∈ {"text", "thinking"}` discriminator (ADR-18) so replay can distinguish visible assistant output from extended thinking |
 | `tool_use_start` | agent invokes a tool | `{tool_id, name, args}` |
-| `tool_use_end` | tool returns | `{tool_id, result, is_error, duration_ms}` |
+| `tool_use_end` | tool returns | `{tool_id, result, is_error, duration_ms}` — `result` is truncated to `TOOL_RESULT_CAP` (16 KiB) at write time; oversize content is preserved on the harness side but not in the event store |
 | `signal_emit` | parser detects handoff/done/pause/phase_start/etc. | `{kind, args}` |
 | `subagent_dispatch` | orchestrator spawns a subagent run | `{child_run_id, role, prompt}` |
 | `subagent_return` | subagent run finishes; emitted on the parent's stream by the join watcher (9c). | `{child_run_id, status, summary}` |
@@ -639,7 +639,7 @@ OpenAPI auto-generated. Routes:
 POST   /api/runs                  start a run        body: {project_id, prompt_body|prompt_id, max_iters?, iter_timeout?}
 GET    /api/runs?project_id=N     list runs          query: status, limit, offset, include_children (default false — child runs hidden)
 GET    /api/runs/:id              get run detail     includes iters[], current status
-GET    /api/runs/:id/children     list direct child runs  returns list[Run] ordered by created_at
+GET    /api/runs/:id/children     list direct child runs  returns list[Run] ordered by started_at
 POST   /api/runs/:id/cancel       cancel a run
 POST   /api/runs/:id/resume       resume a paused run  body: {answer}
 GET    /api/runs/:id/events       paginated events for replay
@@ -998,6 +998,7 @@ Per ADR-10.
 |---|---|---|
 | `RELAY_DATA_DIR` | `<cwd>/.relay` | server-global SQLite event store dir (relay.db lives here). Per-run worktrees & artifacts live under each project's own `<project_root>/.relay/` (§3.3), not here. |
 | `RELAY_PI_BIN` | `pi` | pi binary path (override for testing) |
+| `RELAY_PI_EXPECTED_VERSION` | `0.74.0` | pinned pi version (OQ-5). `PiHarness.spawn` warns when the installed pi reports a different version; relay does not refuse to run. |
 | `RELAY_PI_MODEL` | `claude-sonnet-4-6` | default model |
 | `RELAY_PI_PROVIDER` | `anthropic` | default provider |
 | `RELAY_MAX_ITERS` | `12` | default per-run iter cap |
@@ -1079,9 +1080,13 @@ Per ADR-14. The skill lives at `skills/engineering-team/` inside
 - **Phase docs** structure preserved.
 - **Subagent dispatch** — in v1 the lead engineer invokes the Task
   tool. In v2 (with pi), subagents are emitted as a signal that the
-  orchestrator catches and spawns a child run for. For MVP, the
-  engineering-team skill may operate without subagents and use a single
-  long-running session per iter. Subagent support is a follow-up.
+  orchestrator catches and spawns a child run for. The fanout-join
+  arc (phases 9a–9g, ADRs 34–39) shipped this: the closing sentinel
+  `[[engteam:fanout]]` paired with a `[[engteam:fanout-start]] … [[engteam:fanout-end]]`
+  JSON marker block drives `RelayCore._dispatch_children` →
+  per-child runs joined under the parent via `parent_run_id` →
+  synthesizer iter resumed with a `RELAY_CHILD_RESULTS:` trailer.
+  See `docs/fanout.md` for the operational reference.
 
 **Phase-6 implementation note (ADR-28).** The skill is built at
 `skills/engineering-team/` (repo root, outside the `src/relay_v2`
@@ -1092,8 +1097,11 @@ wheel; a hatch `force-include` maps it into built wheels as
 overrides, `--force` overwrites after backing the old copy up. Six
 deliberate port adaptations were applied (and are locked by
 `tests/skills/test_skill_structure.py`): (1) the v1 Task-tool subagent
-roles became single-session *analysis lenses* (no subagent dispatch in
-MVP — the orchestrator has no `subagent_dispatch` handler yet);
+roles became single-session *analysis lenses* in the initial Phase-6
+port; the fanout-join arc (9a–9g, ADRs 34–39) subsequently added a
+`subagent_dispatch` handler at the orchestrator layer
+(`RelayCore._dispatch_children`) and the Phase-2 template now emits
+`[[engteam:fanout]]` to drive it — see `docs/fanout.md`;
 (2) every artifact path moved to `$RELAY_RUN_DIR` =
 `.relay/runs/<run_id>/`; (3) Phase 3 no longer creates a worktree —
 relay's `provision_workspace` does (ADR-13: "no Phase-3-skill

@@ -2908,3 +2908,59 @@ the ADR log itself.
 
 **Related ADRs:** ADR-30 (CI gate + GHCR publish — the original
 decision whose image-tag line this ADR corrects).
+
+## ADR-43 — Run artifacts sandbox root: per-project, not per-data-dir
+
+**Status:** accepted (2026-05-24). Operational correction to ADR-25
+§Decision's sandbox-root line, applied under the append-only convention
+(CLAUDE.md "Documentation": "Never edit or delete an existing ADR").
+
+**Context.** ADR-25 §Decision (line 1016) states that the artifacts
+sandbox root is `settings.data_dir / "runs" / <run_id>`. That matched
+the Phase-3 implementation. The post-9g bug-fix sweep (2026-05-23,
+`journal/260523-9f-bug-fixes.md` Bug #2) discovered that
+`provision_workspace` was being called with `settings.data_dir`
+(the multi-tenant SQLite root) when it should have resolved the
+per-run workspace under each registered project's own `.relay/`
+directory — a spec §3.3 violation. The fix moved per-run artifacts
+**and** worktrees from `<data_dir>/runs|worktrees/<run_id>/` to
+`<project_root>/.relay/runs|worktrees/<run_id>/`, introduced the
+single resolver `RelayCore.get_run_artifacts_dir(run_id)`, and
+clarified that `data_dir` now holds only the multi-tenant `relay.db`.
+The sweep landed without a new ADR (CLAUDE.md: "pure bug fixes
+restoring existing contracts" — spec §3.3 had always been the truth),
+but ADR-25's prose still describes the pre-fix path. This ADR is the
+forward reference that closes the consistency gap.
+
+**Decision.** The artifacts sandbox root is
+`project_data_dir(project_root) / "runs" / <run_id>` where
+`project_data_dir(project_root) = project_root / ".relay"` (spec §3.3).
+The single resolver `RelayCore.get_run_artifacts_dir(run_id)` is the
+authoritative way for routes / MCP tools to compute the root — they no
+longer reach into `settings.data_dir`. Every other ADR-25 invariant
+(single audited `resolve_within_sandbox`, shared `serve_listing` /
+`serve_file` helpers, binary/oversize guards, read-only via REST GET +
+the ADR-40 PUT entry point) is preserved verbatim.
+
+**Consequences.**
+- Any ADR-25 reader who encounters `settings.data_dir / "runs" / …`
+  should read it as historical and consult this ADR for the current
+  path. The code (`RelayCore.get_run_artifacts_dir`,
+  `provision_workspace`, the artifacts / files / MCP routes) is the
+  operational source of truth.
+- Runs whose `worktree_path` rows still point at the old
+  relay-global location will 404 through the new resolvers —
+  acceptable for the single-user MVP per ADR-12.
+- spec §11.1's `RELAY_DATA_DIR` description was clarified during the
+  sweep (`data_dir` holds the multi-tenant `relay.db` only;
+  per-project artifacts and worktrees live under each
+  `<project_root>/.relay/`).
+- No code change is implied by this ADR — the sweep already shipped.
+  This ADR is documentation-only, restoring consistency between the
+  ADR log and the running code.
+
+**Related ADRs:** ADR-25 (the original artifacts-browser decision
+whose sandbox-root path this ADR corrects), ADR-13 (worktree
+provisioning — moved together with artifacts in the same sweep),
+ADR-40 (pause-for-review write entry, which inherits the corrected
+root via `get_run_artifacts_dir`).

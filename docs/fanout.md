@@ -149,8 +149,13 @@ Example failure mode and repair:
 ```
 
 This fails — the verb must come AFTER the marker block, not before.
-The parser searches backward from the closing verb for the marker
-pair; an inverted order leaves the verb with no matching block.
+`extract_fanout_payload` scans the iter text from the **end** looking
+for `[[engteam:fanout-end]]` and then further back for
+`[[engteam:fanout-start]]`; the parser does not anchor on the closing
+verb's position. The inverted-order case fails because
+`count_closing_sentinels(text)` selects `fanout` from the trailing
+verb but the extractor finds no marker block AFTER that verb's line —
+restoring the canonical "markers then verb" order is the fix.
 
 ## Dashboard
 

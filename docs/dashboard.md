@@ -59,7 +59,7 @@ The dashboard is a pure client of the Phase 3 REST surface
 | `lib/routes.ts` | vue-router v5, all views lazy-loaded |
 | `stores/` | Pinia = **ephemeral UI state only** (selection, toggles, the SSE event stream). Server data lives in Pinia Colada, never duplicated here (spec §9.2) |
 | `views/` | `HubView` `/`, `ProjectView` `/projects/:id`, `NewRunWizard` `/projects/:id/new-run`, `RunDetailView` `/runs/:id` |
-| `components/` | `runs/` (timeline, iters, artifacts, worktree, pause, wizard steps), `files/` (tree/viewer + render wrappers), `prompts/` (list/editor/versions), `projects/`, `shared/` (StatusBadge, ActionButton, AsyncBoundary) |
+| `components/` | `runs/` (timeline, iters, artifacts, worktree, pause, wizard steps, `ChildrenPane`, `UsageRow`, `SignalCard`, `ToolCallCard`), `files/` (tree/viewer + render wrappers), `prompts/` (list/editor/versions), `projects/`, `shared/` (StatusBadge, ActionButton, AsyncBoundary, `ParentRunChip`) |
 
 ## State model (spec §9.2)
 
@@ -176,9 +176,9 @@ npm run build                       # vue-tsc -b && vite build (must also pass)
 with `--max-warnings 0` so a warning fails it. vitest runs under jsdom
 with the v8 coverage provider. The eager first-load budget (Phase-4
 mandate; <800 KB gz) is met with wide margin; shiki grammars,
-mermaid, katex, cytoscape, diff2html, and the markdown render
-pipeline are all lazy chunks. Re-measure with `npm run build` after
-any new SFC adds a heavy dep.
+mermaid, diff2html, and the markdown render pipeline are all lazy
+chunks. Re-measure with `npm run build` after any new SFC adds a
+heavy dep.
 
 ## Pause-for-review (14a–14f) and the SSE event-kind contract
 

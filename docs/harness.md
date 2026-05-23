@@ -17,10 +17,15 @@ the orchestrator.
 src/relay_v2/harness/
 ├── protocol.py            Harness / HarnessSession protocols,
 │                          HarnessEvent hierarchy, SignalConfig, SignalEmitted
-├── pi.py                  PiHarness, PiSession, map_pi_events  (pi JSONL → events)
+├── pi.py                  PiHarness, PiSession, map_pi_events,
+│                          pi_version_mismatch_warning  (pi JSONL → events)
 └── signaling/
+    ├── __init__.py        public re-export surface
     ├── config.py          SignalConfig re-export
-    ├── sentinels.py       text_sentinels strategy (v1 parser port)
+    ├── sentinels.py       text_sentinels strategy (v1 parser port) — also
+    │                      hosts the pause-attribute and fanout-marker extractors
+    ├── fanout.py          FanoutPayload / FanoutChild / FanoutParseError
+    │                      (9b — extract_fanout_payload lives in sentinels.py)
     └── mcp_tools.py       mcp_tools strategy — MVP stub (raises NotImplementedError)
 ```
 
@@ -92,8 +97,9 @@ normalized `SignalEmitted(kind, args)` either way.
   non-closing one (`phase_start` / `unit_*`). The prompt-marker
   extraction and the v1 grammar (including exact error/repair strings)
   are ported verbatim; `MarkerError` carries the headline + repair
-  recipe. v1's 30 synthetic fixtures are ported to
-  `tests/harness/test_signaling_sentinels.py`.
+  recipe. v1's synthetic-fixture port lives in
+  `tests/harness/test_signaling_sentinels.py` (the suite grew with
+  14b + 14f and now covers ~47 cases).
   - **Pause attributes** (14b/14f) — `pause-for-input` accepts an
     optional `review_path="<rel>"` attribute that may **repeat on the
     same line** to declare multiple reviewable artifacts (ADR-41).
@@ -117,7 +123,9 @@ normalized `SignalEmitted(kind, args)` either way.
 - Unit tests run **fully offline** against
   `scratch/pi_derisk_workdir/*.jsonl` (committed ground truth):
   `tests/harness/test_protocol.py`, `test_pi_event_mapping.py`,
-  `test_signaling_sentinels.py`, `test_signaling_mcp_stub.py`.
+  `test_signaling_sentinels.py`, `test_signaling_mcp_stub.py`,
+  `test_pi_version_check.py`, `test_pi_session_lookahead.py`
+  (Option-D, Phase 7).
 - `tests/harness/test_pi_integration.py` invokes a real pi and is
   **skipped unless `PI_INTEGRATION=1`**. pi is never spawned by the
   default suite.
