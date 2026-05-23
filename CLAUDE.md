@@ -4,112 +4,39 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**Phases 0–8 are complete — the MVP is done.** Phase 0 scaffold + Phase 1 harness layer +
-Phase 2 orchestrator (`RelayCore`, append-only `EventStore`, chained-iter
-`run_loop`, run lifecycle, `RELAY_*` preamble). Phase 3 adds the **REST
-API + persistence** (`src/relay_v2/api/`, `src/relay_v2/sse.py`): every
-spec §7 endpoint (runs create/list/get/cancel/resume/events/preview; SSE
-live stream; projects CRUD; sandboxed read-only file browser; versioned
-prompts CRUD), Pydantic v2 schemas, and the SSE broadcaster (in-process
-post-commit fan-out + DB-tail `Last-Event-ID` replay/cutover). Every
-route is a thin adapter over the single shared `RelayCore` (ADR-07/15);
-new capability was added as `RelayCore` service methods, not route
-logic. SSE only tails the event store (ADR-10). Auto-generated OpenAPI
-3.1 validated. Phase 4 adds the **Vue 3 dashboard MVP** (`frontend/`):
-the primary control plane per ADR-15/spec §9 — Hub, Project view
-(runs/prompts/files panes), 4-step New-Run wizard with side-effect-free
-preview, Run-detail with a live SSE timeline + iters/artifacts/worktree
-panes, prompts CRUD, project register/unregister. A typed
-`openapi-fetch` client is generated from `/openapi.json`; Pinia Colada
-is the REST cache (SSE pushes coalesce cache invalidations); the file
-render pipeline is markdown-it + lazily-loaded shiki + dynamic-import
-mermaid + diff2html. The Worktree pane is deliberately degraded to
-read-only `worktree_path`/`branch` (live git status/diff is a named
-post-MVP gap — Phase-4 scoping decision). Verified against a
-scripted-harness double + the running backend; `uv run pytest` green
-(142 passed, 3 pi-e2e gated behind `PI_INTEGRATION=1`), `ruff`/`mypy
---strict` clean, backend coverage 92%; the frontend gate (`npm run
-check` = eslint `--max-warnings 0` + `vue-tsc` + vitest, 136 passed)
-is green, eager bundle ~41 KB gz (heavy renderers lazy). Phase 5 adds
-the **MCP server** (`src/relay_v2/mcp/`): a FastMCP server mounted at
-`/mcp` on the same app, whose seven spec §8 tools
-(`relay__list_runs/get_run/start_run/cancel_run/pause_response/
-tail_events/read_artifact`) are thin adapters over the single shared
-`RelayCore`, reusing the REST `api/schemas.py` Pydantic models
-(ADR-07/15) — no proxying, no new core capability. Mounted in the app
-lifespan with `async with mcp.session_manager.run():` (the #1367
-footgun: a mounted sub-app's lifespan is not auto-run). Phase 6 adds
-the **engineering-team skill port** (`skills/engineering-team/`, 11
-docs) + `relay install-skill` (`src/relay_v2/cli/install_skill.py`):
-the v1 skill ported faithfully with six deliberate adaptations
-(single-session/no-subagent-dispatch, `.relay/runs` paths,
-relay-provisioned worktree, inlined Phase-4 gate replacing
-`/done`+`/merge-push`, repointed sentinel pointers, `uv run`
-examples) — sentinel grammar verbatim (ADR-28). Skill+CLI only; no
-orchestrator/REST/SSE/MCP contract changed. Phase 7 adds the **OTel
-mirror** (`src/relay_v2/observability/`): an opt-in
-`relay.run`→`relay.iter`→`relay.tool_call` span tree mirroring the
-event store (ADR-10 — never a second source), exported OTLP/HTTP to
-self-hosted Langfuse when `RELAY_OTEL_EXPORT=langfuse`, a strict
-literal no-op (no provider/exporter/network) when `none`. GenAI/usage
-attributes come from pi's verbatim `SessionEnded.messages[].usage`
-(ADR-18); recovering them on the terminal-sentinel close path needed a
-one-event `AssistantText` lookahead in `PiSession.events()` —
-**Option D**, harness-only (ADR-04), order-preserving, deterministic,
-no loop/event-store contract change (ADR-29). Phase 8 adds the
-**verification & polish** layer (ADR-30): a rewritten `README.md`
-(Phases 0–8; install/run/dashboard/MCP/observability/Docker); an
-**additive, conditional** production frontend mount
-(`src/relay_v2/api/static.py` — `mount_frontend` appends a vue-router
-history-mode `StaticFiles` catch-all at `/` in the lifespan *after*
-`/mcp`, a literal no-op when `frontend/dist/` is absent so dev/test is
-byte-for-byte unchanged; spec §11.2); a multi-stage `Dockerfile` +
-`.dockerignore` + `docker-compose.example.yml`; and
-`.github/workflows/ci.yml` (full Python **and** frontend gate + GHCR
-publish to `ghcr.io/johnmathews/relay` on push to `main`,
-`workflow_dispatch`). The Phase-8 verification split is ADR-30
-(automated CI for the deterministic half — ruff/mypy/pytest + `npm run
-check` + `docker build`; manual journal-attested for the real-pi e2e
-demo, "image pulls and runs", "MCP from Claude Code", live-Langfuse
-tree — gated like `PI_INTEGRATION=1`, mirroring ADR-24/28 §3/29).
-`uv run pytest` green (**194 passed**, 3 pi-e2e gated),
-`ruff`/`mypy --strict` clean (**38** source files), backend coverage
-93%; `docker build` + container-boot smoke verified locally. **Two
-follow-ups remain open, deliberately not closed by Phase 8** (closing
-either is a contract change): the live-Langfuse-UI acceptance was
-never run (manual, journal-attested when done); and the latent ADR-10
-gap that `agent_end`/`SessionEnded` is never persisted as an `events`
-row on the sentinel-close path (its own ADR + spec §6 change —
-ADR-29/30). Operational refs: `docs/harness.md`,
-`docs/orchestrator.md`, `docs/api.md`, `docs/dashboard.md`,
-`docs/mcp.md`, `docs/skills.md`, `docs/observability.md` (Phase 7;
-the OTel mirror + Langfuse wiring + the manual trace-tree acceptance
-procedure; `docs/langfuse-compose.example.yml` is the self-host
-pointer; `docs/mcp-config.example.json` is the MCP client
-registration snippet; `frontend/README.md` is the dev quick-start).
-Design docs (`docs/`) and the pi de-risking `scratch/` dir remain the
-canonical context. New ADRs: ADR-19/20/21 (Phase 2 — orchestrator
-runtime, pause/resume, async DB), ADR-22 (resume forward-progress,
-pre-Phase-3 hardening), ADR-23 (SSE broadcaster + Last-Event-ID
-cutover), ADR-24 (API test toolchain), ADR-25 (run-artifacts second
-sandboxed root), ADR-26 (Phase-4 frontend toolchain mandates), ADR-27
-(Phase-5 MCP toolchain: bundled SDK, `mcp>=1.27.1,<2` pin, lifespan
-session-manager wiring), ADR-28 (Phase-6 skill port: single-session,
-repo-root + wheel force-include, manual behavioral verification),
-ADR-29 (Phase-7 OTel mirror: self-owned non-global TracerProvider,
-deferred literal no-op, `opentelemetry-*>=1.27,<2` pins, Option-D
-pi-harness lookahead so terminal-sentinel iters still recover usage,
-automated span-structure tests + manual Langfuse-UI acceptance),
-ADR-31 (post-MVP bugfix: a non-Cancelled exception out of the loop
-or `_apply_result` is finalised as `failed` + `run_ended`
-`internal_error: …` instead of leaving the run permanently
-`running` — paired with an `expanduser` + existence check in
-`register_project` so `~/...` no longer lurks as a literal path;
-extended in the same iter with a startup-time orphan sweep in
-`RelayCore.start()` and a `cancel_run` safety net that finalise any
-'running' row whose owning process is gone — single-user/-process
-MVP per ADR-12, so a 'running' row at startup must come from a
-prior process and can never resume). **Phase 9a** then adds the
+**MVP is done — Phases 0–8 complete (2026-05-19, ADR-30).** Per-phase
+plans live in `docs/plans/`; ADR rationale in `docs/decisions.md`.
+
+- **0** — scaffold (uv/ruff/mypy --strict/pytest/py.typed).
+- **1** — `harness/`: pi event mapping (ADR-04/18) + text-sentinel signaling (ADR-05).
+- **2** — `orchestrator/` + `core.py`: `RelayCore` + EventStore + chained-iter loop + RELAY_* preamble + pause/resume (ADR-07/10/15/17/19–22).
+- **3** — `api/` + `sse.py`: spec §7 REST + SSE broadcaster (post-commit fan-out + `Last-Event-ID` replay) — ADR-23/24/25.
+- **4** — `frontend/`: Vue 3 dashboard, primary control plane (ADR-15/26).
+- **5** — `mcp/`: FastMCP at `/mcp`, seven `relay__*` tools as `RelayCore` adapters; #1367 lifespan footgun handled — ADR-27.
+- **6** — `skills/engineering-team/pi/` + `relay install-skill` (ADR-28/33).
+- **7** — `observability/`: opt-in OTel → Langfuse, strict no-op when off; Option-D `AssistantText` lookahead for terminal-sentinel usage — ADR-29.
+- **8** — README + `api/static.py` (prod SPA mount) + Dockerfile + CI (Python+frontend gate + GHCR publish to `ghcr.io/johnmathews/relay`); ADR-30 = automated-vs-manual split.
+
+**ADR-31 (still load-bearing)** — non-`Cancelled` exception out of the
+loop / `_apply_result` finalises as `failed` + `run_ended
+internal_error: …` (no permanently-running rows); `register_project`
+`expanduser`+exists check; startup orphan sweep + `cancel_run` safety
+net for stuck 'running' rows (single-user/-process per ADR-12).
+
+**Two post-MVP arcs then shipped on top, both complete:** fanout-join
+(9a–9g, ADRs 34–39) and pause-for-review (14a–14f, ADRs 40–41). The
+codebase is now in an **MVP-acceptance-testing phase** — feature work
+is parked until the gates close (`docs/acceptance-testing.md`). Counts:
+**342 backend + 3 pi-e2e gated**, **186 frontend**, **42 ADRs**, **39
+source files**, **`ruff`/`mypy --strict` clean**, **94% backend
+coverage**.
+
+Operational refs:
+`docs/{harness,orchestrator,api,dashboard,mcp,skills,observability,fanout,acceptance-testing}.md`,
+`frontend/README.md`. Canonical context: design docs in `docs/` + pi
+de-risking `scratch/`.
+
+**Phase 9a** then adds the
 defensive plumbing for the post-MVP fanout-join feature
 (`docs/proposals/parallel-iters-fanout-join.md`,
 `docs/plans/2026-05-21-fanout-join-9a.md`): a new
