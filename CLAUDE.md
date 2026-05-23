@@ -560,16 +560,21 @@ save-PUT/saved-badge/resume-disable/404-create/415-binary/
 `tests/events.store.spec.ts` emitting ONLY `artifact_edited` and
 asserting both delivery + the artifacts-cache invalidation; the
 existing coalesced-flush test bumped from 3 → 4 invalidate calls
-because the artifacts prefix joined the flush set). One non-fatal
-vitest warning persists ("1 error — Unhandled Rejection: ApiError:
-not found") from the 404 case — Pinia Colada surfaces the query's
+because the artifacts prefix joined the flush set). One unhandled
+vitest rejection ("1 error — Unhandled Rejection: ApiError: not
+found") fires from the 404 case — Pinia Colada surfaces the query's
 rejected promise as an unhandled rejection before the SFC's lazy
-`loadError` computed first evaluates; the gate (`npm run check`)
-exits 0 and the existing `queries.spec.ts` 404 test stays clean
-because it reads `error.value` synchronously in the test body. ADR
-unchanged (the A1/B1 decisions are recorded in ADR-40 from 14a; no
-new ADR — 14c is the UX implementation of those locks). No new
-modules, no new event kinds, no new sentinel grammar.
+`loadError` computed first evaluates; the existing `queries.spec.ts`
+404 test stays clean because it reads `error.value` synchronously in
+the test body. CONTRARY to the original 14c claim, this DOES fail
+the gate (CI exited 1 for two days; local checks that piped
+`npm run check` to `tail` lost the real exit code and looked green).
+Fixed in commit `a9813f1` via `frontend/tests/setup.ts`, a
+narrow duck-typed `unhandledRejection` listener that swallows only
+`{ name: 'ApiError', status: <number> }` rejections (anything else
+still fails). ADR unchanged (the A1/B1 decisions are recorded in
+ADR-40 from 14a; no new ADR — 14c is the UX implementation of those
+locks). No new modules, no new event kinds, no new sentinel grammar.
 **Phase 14d** (2026-05-23,
 [docs/plans/2026-05-22-pause-for-review-14d.md](docs/plans/2026-05-22-pause-for-review-14d.md),
 [skills/engineering-team/pi/phases/phase-2-planning.md](skills/engineering-team/pi/phases/phase-2-planning.md),
