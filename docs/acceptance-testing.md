@@ -308,14 +308,11 @@ When all six are true:
 
 ---
 
-## Known doc gaps (deferred, not blocking)
+## Known doc gaps (closed)
 
-These were identified in the 2026-05-23 documentation sweep. The
-first three were closed in a follow-up pass the same day; the
-remaining item is low-priority and revisitable after the
-MVP-acceptance phase closes.
-
-**Closed (2026-05-23 follow-up):**
+All four items from the 2026-05-23 audit are closed. Recorded here
+as a forward-reference for future readers; entering the
+MVP-acceptance phase with no open doc gaps.
 
 - ~~No standalone `docs/fanout.md` operational runbook.~~ Closed —
   `docs/fanout.md` written: lifecycle, sentinel grammar, dashboard,
@@ -331,14 +328,10 @@ MVP-acceptance phase closes.
   ADR-42 appended documenting the GHCR repo + image rename
   `relay-v2 → relay` under the append-only convention; ADR-30 is
   left as-is per CLAUDE.md.
-
-**Still open (low priority):**
-
-- **`docs/motivation.md` Goal 3 doesn't reflect inline-editor
-  workflow.** The dashboard is now a second-class artifact editor
-  during pauses (14a–14f), not just a viewer. The motivation
-  framing is still accurate; the goal text could be sharpened
-  later. Revisit when motivation.md gets its next refresh.
+- ~~`docs/motivation.md` Goal 3 doesn't reflect inline-editor
+  workflow.~~ Closed — Goal 3 rephrased to name the 14a–14f review
+  pane explicitly and change the cycle from
+  "browse-render-review-start" to "browse-render-review-edit-resume".
 
 ## Appendix — quick refs
 
