@@ -296,9 +296,10 @@ def test_pause_then_resume(tmp_path: Path) -> None:
 
 def test_pause_signal_args_carries_review_path(tmp_path: Path) -> None:
     """14b — a pause sentinel with review_path="..." threads the attribute
-    through the loop into the paused iter's signal_args (ADR-40). The
-    attribute is opt-in: omitting it must leave the key absent (covered
-    by ``test_pause_then_resume`` above)."""
+    through the loop into the paused iter's signal_args. Storage shape is
+    plural (14f / ADR-41): ``signal_args.review_paths`` is a list even for
+    the single-path case. The attribute is opt-in: omitting it leaves the
+    key absent (covered by ``test_pause_then_resume`` above)."""
     settings = _settings(tmp_path)
     harness = ScriptedHarness([TextScript(PAUSE_BLOCK_WITH_REVIEW)])
 
@@ -318,7 +319,8 @@ def test_pause_signal_args_carries_review_path(tmp_path: Path) -> None:
         assert len(iters) == 1
         assert iters[0].signal_kind == "pause"
         assert iters[0].signal_args is not None
-        assert iters[0].signal_args["review_path"] == "improvement-plan.md"
+        assert iters[0].signal_args["review_paths"] == ["improvement-plan.md"]
+        assert "review_path" not in iters[0].signal_args
         # The pre-14b keys still travel unchanged alongside the new one.
         assert iters[0].signal_args["id"] == "P1"
         assert "Re-read improvement-plan.md" in (

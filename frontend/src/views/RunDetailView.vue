@@ -108,25 +108,37 @@ const pauseQuestion = computed(() => {
 })
 
 /**
- * The reviewable artifact path declared on the paused iter (14c —
- * ADR-40). `null` for any paused iter that didn't carry a `review_path`
- * (every pre-14b run, and any 14b skill that omitted the attribute);
- * PauseAnswerForm treats null as "render the existing minimal form".
- * Walks iters newest-first like `pauseQuestion` so a resumed-then-
- * paused-again run picks the latest pause.
+ * The reviewable artifact paths declared on the paused iter (14c +
+ * 14f — ADR-40/ADR-41). Empty array for any paused iter that didn't
+ * carry the attribute (every pre-14b run, and any 14b skill that
+ * omitted it); PauseAnswerForm treats an empty array as "render the
+ * existing minimal form". Walks iters newest-first like `pauseQuestion`
+ * so a resumed-then-paused-again run picks the latest pause.
+ *
+ * Migration fallback: a paused iter under 14a–14d carries only the
+ * scalar `signal_args.review_path` key (no plural key). We read it as
+ * a one-element list so an iter that survives a process restart into
+ * the 14f code keeps working. New 14f emits land with the plural key
+ * only (14f's sentinel parser stopped writing the scalar key).
  */
-const pauseReviewPath = computed<string | null>(() => {
+const pauseReviewPaths = computed<string[]>(() => {
   for (let i = iters.value.length - 1; i >= 0; i--) {
     const it = iters.value[i]!
     if (it.signal_kind === 'pause' && it.signal_args != null) {
-      const rp = it.signal_args.review_path
-      if (typeof rp === 'string' && rp !== '') return rp
-      // Found the latest pause iter; if it has no review_path, stop —
+      const rps = (it.signal_args as Record<string, unknown>).review_paths
+      if (Array.isArray(rps)) {
+        return rps.filter(
+          (v): v is string => typeof v === 'string' && v !== '',
+        )
+      }
+      const legacy = (it.signal_args as Record<string, unknown>).review_path
+      if (typeof legacy === 'string' && legacy !== '') return [legacy]
+      // Found the latest pause iter; if it has no review_path(s), stop —
       // we don't fall back to an older pause's value.
-      return null
+      return []
     }
   }
-  return null
+  return []
 })
 
 /**
@@ -339,7 +351,7 @@ onBeforeUnmount(() => {
           v-if="isPaused"
           :run-id="detail.id"
           :question="pauseQuestion"
-          :review-path="pauseReviewPath"
+          :review-paths="pauseReviewPaths"
           @resumed="onResumed"
         />
 

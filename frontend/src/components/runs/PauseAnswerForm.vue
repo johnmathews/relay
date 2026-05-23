@@ -6,20 +6,21 @@
 // inline; on success the parent refetches detail and reopens the live
 // stream.
 //
-// The question text comes from the run-detail `iters[]`: the paused
-// iter has `signal_kind === 'pause'` and `signal_args.question`. The
-// parent locates it and passes it as a prop. The OPTIONAL `reviewPath`
-// prop (14c — ADR-40) comes from the same iter's `signal_args.review_path`
-// when the agent declared a reviewable artifact via the 14b sentinel
-// attribute. When present, a richer review pane renders ABOVE the
-// existing question/answer block: it fetches the artifact, exposes a
-// textarea + lazy markdown preview, and a Save button that fires
-// `PUT /api/runs/:id/artifacts/{path}`. The Resume button is
-// independent — it stays present and labelled "Resume run" — and is
-// disabled ONLY while a Save is in flight (proposal §"Tradeoffs"
-// choice (a)). When `reviewPath` is absent (any pre-14b paused run, or
-// a 14b skill that didn't opt in) the form is byte-for-byte the
-// previous minimal contract: question pre + answer textarea + submit.
+// The OPTIONAL `reviewPaths` prop (14c + 14f — ADR-40/ADR-41) comes
+// from the paused iter's `signal_args.review_paths` when the agent
+// declared one or more reviewable artifacts via the 14b sentinel
+// attribute. When non-empty, a richer review pane renders ABOVE the
+// existing question/answer block: it fetches the active artifact,
+// exposes a textarea + lazy markdown preview, and a Save button that
+// fires `PUT /api/runs/:id/artifacts/{path}`. Length 1 renders the
+// existing single-pane layout (no tab bar, byte-identical to 14c);
+// length > 1 renders a tab bar across the top — one tab per path,
+// per-tab dirty state, one Save in flight at a time across the
+// component. The Resume button stays present and is disabled only
+// while a Save is in flight on the active tab (the soft-warning for
+// unsaved changes on non-active tabs is rendered separately and does
+// not block Resume — per plan's notes: an abandoned dirty tab must
+// not strand the operator).
 
 import { computed, ref, watch } from 'vue'
 import ActionButton from '@/components/shared/ActionButton.vue'
@@ -38,9 +39,10 @@ const props = defineProps<{
   runId: string
   /** The agent's pause question (from the paused iter's signal_args). */
   question: string
-  /** From the paused iter's signal_args; absent when the agent did
-   *  not declare a reviewable artifact (14b). */
-  reviewPath?: string | null
+  /** From the paused iter's signal_args.review_paths (14f — ADR-41).
+   *  Empty array means the agent did not declare any reviewable
+   *  artifact — the form falls back to the minimal pre-14c contract. */
+  reviewPaths?: string[]
 }>()
 
 const emit = defineEmits<{
@@ -52,50 +54,88 @@ const answer = ref('')
 const inlineError = ref<string | null>(null)
 const resume = useResumeRunMutation()
 
-// ── 14c review pane state ────────────────────────────────────────────
-//
-// All review-pane state is gated on a non-empty `reviewPath` — when the
-// prop is null/empty the form falls back to the minimal pre-14c
-// behaviour. The Colada query for the artifact is `enabled` only when
-// `reviewPath` is a non-empty string, so a non-review pause makes no
-// extra network call.
+// ── review-pane state (per-path records, 14f) ──────────────────────────
 
-/** True iff the agent declared a reviewable artifact for this pause. */
-const hasReviewPath = computed(
-  () =>
-    typeof props.reviewPath === 'string' && props.reviewPath.length > 0,
+const paths = computed<string[]>(() => props.reviewPaths ?? [])
+const hasReviewPath = computed(() => paths.value.length > 0)
+const isMulti = computed(() => paths.value.length > 1)
+
+/** Currently-visible tab. Defaults to paths[0] when non-empty. */
+const activeTab = ref<string>('')
+watch(
+  paths,
+  (next) => {
+    if (next.length === 0) {
+      activeTab.value = ''
+      return
+    }
+    // Keep the existing active tab if still present (e.g. a runtime
+    // re-render that adds a new path shouldn't yank focus to the first
+    // tab); otherwise fall back to the first path.
+    if (!next.includes(activeTab.value)) {
+      activeTab.value = next[0]!
+    }
+  },
+  { immediate: true },
 )
 
-const reviewPathValue = computed(() =>
-  hasReviewPath.value ? (props.reviewPath as string) : null,
+const activePath = computed<string | null>(() =>
+  activeTab.value === '' ? null : activeTab.value,
 )
 
 const content = useArtifactContentQuery(
   () => props.runId,
-  reviewPathValue,
+  activePath,
   hasReviewPath,
 )
 
 const artifactWrite = useArtifactWriteMutation()
 
-/** Last loaded server-side content; the "clean" baseline for the
- *  textarea. `null` until the first GET resolves. */
-const loadedContent = ref<string | null>(null)
-/** Editor buffer (v-model on the textarea). */
-const dirty = ref<string>('')
-/** True between Save click and the PUT response; gates Resume. */
+/** Last loaded server-side content per path; the "clean" baseline. */
+const loadedBaselines = ref<Record<string, string>>({})
+/** Editor buffer per path (textarea v-model on the active tab). */
+const dirtyByPath = ref<Record<string, string>>({})
+/** "Edited at HH:MM:SS" badge text per path; null after a discard
+ *  or before any save lands. */
+const savedAtByPath = ref<Record<string, string | null>>({})
+/** Per-path save error (mapped from ApiError statuses). */
+const saveErrorByPath = ref<Record<string, string | null>>({})
+/** Per-path view mode (preview vs diff). Defaults to preview. */
+const viewModeByPath = ref<Record<string, 'preview' | 'diff'>>({})
+
+/** True between Save click and the PUT response. Single global flag —
+ *  one save in flight at a time across tabs (plan §"locked decisions"). */
 const saving = ref(false)
-/** Inline error for the save action (mapped from ApiError statuses). */
-const saveError = ref<string | null>(null)
-/** "Edited at HH:MM:SS" badge after a successful save. */
-const savedAt = ref<string | null>(null)
-/** The first error from the GET, used to switch into 404/415 states. */
+
+/** Current active tab's loaded baseline, or empty string. */
+const loadedContent = computed<string | null>(() => {
+  const p = activeTab.value
+  if (p === '') return null
+  return loadedBaselines.value[p] ?? null
+})
+
+/** v-model target for the active tab's textarea. Writes propagate
+ *  back into the per-path record. */
+const dirty = computed<string>({
+  get() {
+    const p = activeTab.value
+    if (p === '') return ''
+    return dirtyByPath.value[p] ?? ''
+  },
+  set(value: string) {
+    const p = activeTab.value
+    if (p === '') return
+    dirtyByPath.value = { ...dirtyByPath.value, [p]: value }
+  },
+})
+
+/** ApiError for the active tab's GET, if any. */
 const loadError = computed<ApiError | null>(() =>
   content.error.value instanceof ApiError ? content.error.value : null,
 )
 
 /**
- * Three reviewable states:
+ * Three reviewable states for the active tab:
  *   'binary' — GET returned 415; textarea hidden, download link shown.
  *   '404'    — GET returned 404; empty textarea + "create at this path".
  *   'editor' — content loaded (or other error) → render the editor.
@@ -107,25 +147,41 @@ const reviewState = computed<'binary' | '404' | 'editor'>(() => {
   return 'editor'
 })
 
-/** Whether the local buffer differs from the loaded baseline. */
-const isDirty = computed(() => dirty.value !== (loadedContent.value ?? ''))
+/** Whether the local buffer for a given path differs from its loaded
+ *  baseline. Used both for the active tab's button gating and for the
+ *  per-tab `*` marker in the tab bar. */
+function isPathDirty(p: string): boolean {
+  return (dirtyByPath.value[p] ?? '') !== (loadedBaselines.value[p] ?? '')
+}
+const isDirty = computed(() => {
+  const p = activeTab.value
+  return p !== '' && isPathDirty(p)
+})
 
-// ── 14e Preview/Diff view-mode toggle ────────────────────────────────
-//
-// Right pane switches between markdown Preview (the loaded view) and a
-// unified-diff render of dirty-vs-loadedBaseline. Diff is disabled while
-// the textarea is clean (the diff would be empty). The renderer is the
-// existing lazy `DiffRender.vue` entry (which dynamic-imports diff2html
-// on first render — no eager bundle weight). Baseline updates on Save
-// per OQ-5 (locked decisions): single-user MVP means there is no other
-// writer, so "dirty-vs-server-current" and "dirty-vs-loaded-baseline"
-// collapse to one comparison.
-const viewMode = ref<'preview' | 'diff'>('preview')
+/** Soft warning: how many non-active tabs have unsaved changes. */
+const otherDirtyCount = computed<number>(() =>
+  paths.value.filter((p) => p !== activeTab.value && isPathDirty(p)).length,
+)
+
+const viewMode = computed<'preview' | 'diff'>({
+  get() {
+    const p = activeTab.value
+    if (p === '') return 'preview'
+    return viewModeByPath.value[p] ?? 'preview'
+  },
+  set(value: 'preview' | 'diff') {
+    const p = activeTab.value
+    if (p === '') return
+    viewModeByPath.value = { ...viewModeByPath.value, [p]: value }
+  },
+})
+
 const diffDisabled = computed(() => !isDirty.value)
-// When the operator dirties the textarea, the Diff tab becomes
-// available but we keep whatever mode they chose. When the textarea
-// returns to clean (via Discard or Save), force Preview — otherwise
-// the right pane would render an empty disabled-Diff state.
+// When the operator dirties the active tab, the Diff tab becomes
+// available but we keep whatever mode they chose. When the active
+// textarea returns to clean (via Discard or Save), force its mode
+// back to Preview — otherwise the right pane would render an empty
+// disabled-Diff state.
 watch(isDirty, (nowDirty) => {
   if (!nowDirty) viewMode.value = 'preview'
 })
@@ -140,70 +196,74 @@ const saveDisabled = computed(() => {
 /** Discard is disabled when buffer matches the loaded baseline. */
 const discardDisabled = computed(() => !isDirty.value)
 
-/** Direct-bytes URL for the binary fallback link. */
+const saveError = computed<string | null>(() => {
+  const p = activeTab.value
+  if (p === '') return null
+  return saveErrorByPath.value[p] ?? null
+})
+
+const savedAt = computed<string | null>(() => {
+  const p = activeTab.value
+  if (p === '') return null
+  return savedAtByPath.value[p] ?? null
+})
+
+/** Direct-bytes URL for the binary fallback link (active tab). */
 const downloadHref = computed(() =>
-  hasReviewPath.value
-    ? artifactRawUrl(props.runId, props.reviewPath as string)
-    : '#',
+  activeTab.value !== '' ? artifactRawUrl(props.runId, activeTab.value) : '#',
 )
 
-// When the GET resolves, capture the content as the new baseline and
-// seed the editor buffer. A 404/415 also lands here (data.value stays
-// null in that case); only a successful read seeds the buffer.
-//
-// Operator-edit preservation: we want a cache refetch (SSE-driven, or
-// triggered by our own write mutation's onSuccess) to NOT clobber an
-// in-progress edit. The right invariant: only seed `dirty` when it
-// matches the *previous* baseline (i.e. the operator hasn't typed
-// anything that diverges from the last loaded view). Critically, we
-// check this BEFORE updating `loadedContent` — otherwise the
-// freshly-set baseline would make `isDirty` true and seeding would be
-// skipped on the very first load (when `dirty` is empty and there's no
-// prior baseline). This was the case-2 regression in the 14c vitest
-// suite — see "review pane fetches and renders the artifact on mount".
+// When the active tab's GET resolves, capture the content as the new
+// baseline and seed the editor buffer iff the buffer hasn't been
+// touched relative to its prior baseline (see 14c comment).
 watch(
   () => content.data.value,
   (data) => {
     if (data == null) return
-    const previousBaseline = loadedContent.value ?? ''
-    if (dirty.value === previousBaseline) {
-      dirty.value = data.content
+    const p = activeTab.value
+    if (p === '') return
+    const previousBaseline = loadedBaselines.value[p] ?? ''
+    const currentDirty = dirtyByPath.value[p] ?? ''
+    if (currentDirty === previousBaseline) {
+      dirtyByPath.value = { ...dirtyByPath.value, [p]: data.content }
     }
-    loadedContent.value = data.content
+    loadedBaselines.value = { ...loadedBaselines.value, [p]: data.content }
   },
   { immediate: true },
 )
 
-// 404 path: `content.data.value` stays null, so the data watcher above
-// never seeds `dirty` — it remains the initial empty string, which is
-// exactly the buffer we want for a "create at this path" save.
-//
-// 415 path: same — `dirty` stays empty, but the template branches to
-// `pause-review-binary` so the textarea is never rendered; nothing to
-// reset.
+function setSaveError(p: string, msg: string | null): void {
+  saveErrorByPath.value = { ...saveErrorByPath.value, [p]: msg }
+}
 
 async function onSave(): Promise<void> {
-  if (!hasReviewPath.value) return
-  saveError.value = null
+  const p = activeTab.value
+  if (p === '') return
+  setSaveError(p, null)
   saving.value = true
   try {
     const result = await artifactWrite.mutateAsync({
       runId: props.runId,
-      path: props.reviewPath as string,
-      content: dirty.value,
+      path: p,
+      content: dirtyByPath.value[p] ?? '',
     })
-    loadedContent.value = dirty.value
-    savedAt.value = new Date().toLocaleTimeString([], {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    })
-    // Touching `result` so a future change (e.g. surfacing sha256 in
-    // the badge) doesn't need a structural rewrite.
+    loadedBaselines.value = {
+      ...loadedBaselines.value,
+      [p]: dirtyByPath.value[p] ?? '',
+    }
+    savedAtByPath.value = {
+      ...savedAtByPath.value,
+      [p]: new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      }),
+    }
     void result
   } catch (e) {
     if (e instanceof ApiError) {
-      saveError.value =
+      setSaveError(
+        p,
         e.status === 409
           ? `Cannot save: ${e.message}`
           : e.status === 413
@@ -212,9 +272,10 @@ async function onSave(): Promise<void> {
               ? 'Content rejected (binary or invalid).'
               : e.status === 400
                 ? `Sandbox violation: ${e.message}`
-                : e.message || 'Save failed.'
+                : e.message || 'Save failed.',
+      )
     } else {
-      saveError.value = 'Save failed.'
+      setSaveError(p, 'Save failed.')
     }
   } finally {
     saving.value = false
@@ -222,8 +283,13 @@ async function onSave(): Promise<void> {
 }
 
 function onDiscard(): void {
-  saveError.value = null
-  dirty.value = loadedContent.value ?? ''
+  const p = activeTab.value
+  if (p === '') return
+  setSaveError(p, null)
+  dirtyByPath.value = {
+    ...dirtyByPath.value,
+    [p]: loadedBaselines.value[p] ?? '',
+  }
 }
 
 async function onSubmit(): Promise<void> {
@@ -266,17 +332,47 @@ async function onSubmit(): Promise<void> {
       Run paused — answer to continue
     </h3>
 
-    <!-- 14c review pane: renders only when the paused iter declared a
-         `review_path`. Independent of the answer block below — the
-         operator may save zero, one, or many times before resuming. -->
+    <!-- 14c/14f review pane: renders only when the paused iter declared
+         at least one `review_path`. Independent of the answer block
+         below — the operator may save zero, one, or many times before
+         resuming. -->
     <section
       v-if="hasReviewPath"
       class="pause-review"
       data-testid="pause-review-pane"
     >
+      <!-- 14f: tab bar only when N > 1. N == 1 keeps the single-pane
+           layout byte-identical to 14c. -->
+      <div
+        v-if="isMulti"
+        class="pause-review__tabs"
+        role="tablist"
+        aria-label="Reviewable artifacts"
+        data-testid="pause-review-tabs"
+      >
+        <button
+          v-for="p in paths"
+          :key="p"
+          type="button"
+          role="tab"
+          class="pause-review__tab"
+          :class="{ 'pause-review__tab--active': p === activeTab }"
+          :aria-selected="p === activeTab"
+          :data-testid="`pause-review-tab-${p}`"
+          @click="activeTab = p"
+        >
+          <span class="pause-review__tab-label">{{ p }}</span>
+          <span
+            v-if="isPathDirty(p)"
+            class="pause-review__tab-dirty"
+            aria-label="unsaved changes"
+          >*</span>
+        </button>
+      </div>
+
       <header class="pause-review__header">
         <span class="pause-form__label">Reviewing</span>
-        <code class="pause-review__path">{{ reviewPath }}</code>
+        <code class="pause-review__path">{{ activeTab }}</code>
         <span
           v-if="savedAt"
           class="pause-review__badge"
@@ -365,7 +461,7 @@ async function onSubmit(): Promise<void> {
           <DiffRender
             :old-text="loadedContent ?? ''"
             :new-text="dirty"
-            :filename="reviewPath ?? ''"
+            :filename="activeTab"
           />
         </div>
       </div>
@@ -400,6 +496,16 @@ async function onSubmit(): Promise<void> {
         data-testid="pause-review-error"
       >
         {{ saveError }}
+      </p>
+
+      <p
+        v-if="isMulti && otherDirtyCount > 0"
+        class="pause-review__warning"
+        data-testid="pause-review-other-dirty"
+      >
+        Unsaved changes on {{ otherDirtyCount }} other
+        {{ otherDirtyCount === 1 ? 'tab' : 'tabs' }} —
+        Resume will not save them.
       </p>
     </section>
 
@@ -504,6 +610,39 @@ async function onSubmit(): Promise<void> {
   margin-bottom: 0.5rem;
 }
 
+.pause-review__tabs {
+  display: flex;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 0.3rem;
+}
+
+.pause-review__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.25rem 0.7rem;
+  border: 1px solid var(--color-border);
+  border-radius: 4px 4px 0 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 0.84em;
+  font-family: var(--font-mono);
+  cursor: pointer;
+}
+
+.pause-review__tab--active {
+  background: rgba(224, 179, 65, 0.18);
+  border-color: #e0b341;
+}
+
+.pause-review__tab-dirty {
+  color: #e0b341;
+  font-weight: bold;
+}
+
 .pause-review__header {
   display: flex;
   align-items: baseline;
@@ -599,6 +738,15 @@ async function onSubmit(): Promise<void> {
   display: flex;
   gap: 0.5rem;
   flex-wrap: wrap;
+}
+
+.pause-review__warning {
+  margin: 0.3rem 0 0;
+  padding: 0.4rem 0.6rem;
+  border-radius: 4px;
+  background: rgba(224, 179, 65, 0.10);
+  color: var(--color-text-dim);
+  font-size: 0.85em;
 }
 
 @media (max-width: 800px) {

@@ -984,25 +984,29 @@ class RelayCore:
                 )
 
         paused = await latest_paused_iter(self._sm, run_id)
-        if (
-            paused is None
-            or paused.signal_args is None
-            or "review_path" not in paused.signal_args
-        ):
+        # 14f / ADR-41: paths-as-list is the new shape; the singular key
+        # is read as a one-element fallback so iters paused under 14a–14d
+        # survive a process restart into the 14f code.
+        review_paths: list[str] = []
+        if paused is not None and paused.signal_args is not None:
+            raw_paths = paused.signal_args.get("review_paths")
+            if isinstance(raw_paths, list):
+                review_paths = [str(p) for p in raw_paths]
+            elif "review_path" in paused.signal_args:
+                review_paths = [str(paused.signal_args["review_path"])]
+        if paused is None or not review_paths:
             raise PauseReviewError(
                 "no_review_path",
                 f"run {run_id}'s paused iter has no review_path; "
                 "no edit target was declared",
             )
-        expected = _normalise_review_path(
-            str(paused.signal_args["review_path"])
-        )
+        allowed = {_normalise_review_path(p) for p in review_paths}
         requested = _normalise_review_path(rel_path)
-        if expected != requested:
+        if requested not in allowed:
             raise PauseReviewError(
                 "path_mismatch",
-                f"requested path {requested!r} does not match the "
-                f"paused iter's review_path {expected!r}",
+                f"requested path {requested!r} is not among the paused "
+                f"iter's review_paths {sorted(allowed)!r}",
             )
 
         body_bytes = content.encode("utf-8")

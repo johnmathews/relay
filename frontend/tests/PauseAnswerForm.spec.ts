@@ -49,7 +49,11 @@ function errResp(
 interface FormProps {
   runId: string
   question: string
+  /** 14c-era single-path shape — translated to a one-element
+   *  `reviewPaths` array internally. Kept for test ergonomics; the
+   *  component prop itself is plural (14f / ADR-41). */
   reviewPath?: string | null
+  reviewPaths?: string[]
 }
 
 function mountForm(
@@ -58,8 +62,15 @@ function mountForm(
     question: 'Which DB should I use?',
   },
 ): ReturnType<typeof mount> {
+  const { reviewPath, reviewPaths, ...rest } = props
+  const paths: string[] =
+    reviewPaths != null
+      ? reviewPaths
+      : typeof reviewPath === 'string' && reviewPath !== ''
+        ? [reviewPath]
+        : []
   return mount(PauseAnswerForm, {
-    props,
+    props: { ...rest, reviewPaths: paths },
     global: { plugins: [createPinia(), PiniaColada] },
   })
 }
@@ -517,5 +528,202 @@ describe('PauseAnswerForm — Diff toggle (14e)', () => {
       false,
     )
     expect(w.find('[data-testid="pause-review-binary"]').exists()).toBe(true)
+  })
+})
+
+// ── 14f — Plural review_paths via tab layout (ADR-41) ───────────────
+//
+// Single-path renders byte-identical to 14c (no tab bar — guarded by
+// the first case). N > 1 renders a tab bar; per-tab dirty state is
+// independent; Save targets the active tab; Resume is NOT blocked by
+// dirty state on non-active tabs (plan §"notes for executing
+// session": "abandoned tab should soft-warn but not block Resume").
+
+describe('PauseAnswerForm — multi-path tabs (14f)', () => {
+  let originalFetch: typeof globalThis.fetch | undefined
+  const fetchMock = vi.fn()
+
+  beforeEach(() => {
+    POST.mockReset()
+    GET.mockReset()
+    fetchMock.mockReset()
+    originalFetch = globalThis.fetch
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch
+  })
+
+  afterEach(() => {
+    if (originalFetch != null) globalThis.fetch = originalFetch
+  })
+
+  it('renders NO tab bar when only one review path is declared', async () => {
+    // Byte-identical-to-14c regression: a single-path pause must not
+    // silently render a 1-tab bar (plan §"notes for executing session").
+    GET.mockResolvedValue(
+      ok({ path: 'only.md', content: 'x', size: 1, modified: 1 }),
+    )
+    const w = mountForm({
+      runId: 'run-1',
+      question: 'q?',
+      reviewPaths: ['only.md'],
+    })
+    await flushPromises()
+    expect(w.find('[data-testid="pause-review-pane"]').exists()).toBe(true)
+    expect(w.find('[data-testid="pause-review-tabs"]').exists()).toBe(false)
+  })
+
+  it('renders a tab per path when N > 1; first tab active by default', async () => {
+    // The component re-fetches when the active tab changes; mock returns
+    // the right content per path.
+    GET.mockImplementation((_route: string, opts: { params: { path: { file_path: string } } }) => {
+      const fp = opts.params.path.file_path
+      return Promise.resolve(
+        ok({ path: fp, content: `# ${fp}\n`, size: 1, modified: 1 }),
+      )
+    })
+    const w = mountForm({
+      runId: 'run-1',
+      question: 'q?',
+      reviewPaths: ['a.md', 'b.md'],
+    })
+    await flushPromises()
+    expect(w.find('[data-testid="pause-review-tabs"]').exists()).toBe(true)
+    const tabA = w.find('[data-testid="pause-review-tab-a.md"]')
+    const tabB = w.find('[data-testid="pause-review-tab-b.md"]')
+    expect(tabA.exists()).toBe(true)
+    expect(tabB.exists()).toBe(true)
+    expect(tabA.attributes('aria-selected')).toBe('true')
+    expect(tabB.attributes('aria-selected')).toBe('false')
+    const ta = w.find('[data-testid="pause-review-textarea"]')
+      .element as HTMLTextAreaElement
+    expect(ta.value).toBe('# a.md\n')
+  })
+
+  it('switching tabs re-fetches content for the newly-active path', async () => {
+    GET.mockImplementation((_route: string, opts: { params: { path: { file_path: string } } }) => {
+      const fp = opts.params.path.file_path
+      return Promise.resolve(
+        ok({ path: fp, content: `# ${fp}\n`, size: 1, modified: 1 }),
+      )
+    })
+    const w = mountForm({
+      runId: 'run-1',
+      question: 'q?',
+      reviewPaths: ['a.md', 'b.md'],
+    })
+    await flushPromises()
+    await w.find('[data-testid="pause-review-tab-b.md"]').trigger('click')
+    await flushPromises()
+    const ta = w.find('[data-testid="pause-review-textarea"]')
+      .element as HTMLTextAreaElement
+    expect(ta.value).toBe('# b.md\n')
+    // Active aria-selected flipped.
+    expect(
+      w.find('[data-testid="pause-review-tab-b.md"]').attributes('aria-selected'),
+    ).toBe('true')
+  })
+
+  it('per-tab dirty state: a dirty B and clean A renders the * marker on B only', async () => {
+    GET.mockImplementation((_route: string, opts: { params: { path: { file_path: string } } }) => {
+      const fp = opts.params.path.file_path
+      return Promise.resolve(
+        ok({ path: fp, content: 'orig', size: 4, modified: 1 }),
+      )
+    })
+    const w = mountForm({
+      runId: 'run-1',
+      question: 'q?',
+      reviewPaths: ['a.md', 'b.md'],
+    })
+    await flushPromises()
+    // Switch to B, dirty it, switch back to A.
+    await w.find('[data-testid="pause-review-tab-b.md"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="pause-review-textarea"]').setValue('edited')
+    await w.find('[data-testid="pause-review-tab-a.md"]').trigger('click')
+    await flushPromises()
+
+    const tabAText = w
+      .find('[data-testid="pause-review-tab-a.md"]')
+      .text()
+    const tabBText = w
+      .find('[data-testid="pause-review-tab-b.md"]')
+      .text()
+    expect(tabAText).not.toContain('*')
+    expect(tabBText).toContain('*')
+    // A's textarea still shows its clean baseline (not B's dirty buffer).
+    const ta = w.find('[data-testid="pause-review-textarea"]')
+      .element as HTMLTextAreaElement
+    expect(ta.value).toBe('orig')
+  })
+
+  it('Save targets the active tab and clears only that tab\'s dirty state', async () => {
+    GET.mockImplementation((_route: string, opts: { params: { path: { file_path: string } } }) => {
+      const fp = opts.params.path.file_path
+      return Promise.resolve(
+        ok({ path: fp, content: 'orig', size: 4, modified: 1 }),
+      )
+    })
+    fetchMock.mockResolvedValue(
+      fetchOk({ path: 'a.md', size: 1, sha256: 'x' }),
+    )
+    const w = mountForm({
+      runId: 'run-1',
+      question: 'q?',
+      reviewPaths: ['a.md', 'b.md'],
+    })
+    await flushPromises()
+    // Dirty A, switch to B and dirty B too, switch back to A and save.
+    await w.find('[data-testid="pause-review-textarea"]').setValue('A-edited')
+    await w.find('[data-testid="pause-review-tab-b.md"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="pause-review-textarea"]').setValue('B-edited')
+    await w.find('[data-testid="pause-review-tab-a.md"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="pause-review-save"]').trigger('click')
+    await flushPromises()
+
+    // PUT was sent to a.md (the active tab), NOT b.md.
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url] = fetchMock.mock.calls[0]!
+    expect(url).toBe('/api/runs/run-1/artifacts/a.md')
+
+    // A is now clean; B remains dirty.
+    expect(
+      w.find('[data-testid="pause-review-tab-a.md"]').text(),
+    ).not.toContain('*')
+    expect(w.find('[data-testid="pause-review-tab-b.md"]').text()).toContain(
+      '*',
+    )
+  })
+
+  it('Resume is NOT blocked by unsaved changes on a non-active tab', async () => {
+    // The plan rejects "block Resume if any tab is dirty" — an
+    // abandoned dirty tab must not strand the operator.
+    GET.mockImplementation((_route: string, opts: { params: { path: { file_path: string } } }) => {
+      const fp = opts.params.path.file_path
+      return Promise.resolve(
+        ok({ path: fp, content: 'orig', size: 4, modified: 1 }),
+      )
+    })
+    const w = mountForm({
+      runId: 'run-1',
+      question: 'q?',
+      reviewPaths: ['a.md', 'b.md'],
+    })
+    await flushPromises()
+    // Dirty B but stay on A.
+    await w.find('[data-testid="pause-review-tab-b.md"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="pause-review-textarea"]').setValue('dirty')
+    await w.find('[data-testid="pause-review-tab-a.md"]').trigger('click')
+    await flushPromises()
+
+    const submit = w.find('[data-testid="pause-resume-submit"]')
+      .element as HTMLButtonElement
+    expect(submit.disabled).toBe(false)
+    // The soft warning is visible.
+    expect(
+      w.find('[data-testid="pause-review-other-dirty"]').exists(),
+    ).toBe(true)
   })
 })

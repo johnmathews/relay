@@ -655,6 +655,49 @@ acceptance; 3 pi-e2e still gated), `ruff`/`mypy --strict` clean
 cases — default Preview / disabled-while-clean / enabled-on-dirty /
 back-to-Preview-on-Save-or-Discard / no-toggle-on-binary; 2
 TimelinePane click-target cases — basic + create-path).
+**Phase 14f** (2026-05-23,
+[docs/plans/2026-05-23-pause-for-review-14f.md](docs/plans/2026-05-23-pause-for-review-14f.md),
+ADR-41) extends pause-for-review from a single `review_path` to a
+list via the repeated-attribute grammar
+(`review_path="a.md" review_path="b.md"` on the same `pause-for-input`
+line). The line-anchored `_PAUSE_RE` is unchanged; collection moves
+from `re.search` (first match) to `re.finditer` (all matches) in a
+new `extract_pause_review_paths(text) -> list[str]`. Per-value
+validation reuses the 14b `_validate_review_path` helper unchanged
+(empty / NUL / absolute / traversal → `MarkerError` naming the
+offending value). Storage shape changes:
+`signal_args.review_paths: list[str]` replaces the scalar
+`signal_args.review_path` key — `detect_in_text` writes ONLY the
+plural key on new emits. Readers (write endpoint, dashboard) fall
+back to the scalar key during the migration window so iters paused
+under 14a–14d survive a process restart cleanly. The 14b shim
+`extract_pause_review_path` stays as a one-liner returning the first
+value or `None` until no caller remains. `RelayCore.write_artifact`'s
+coupling check generalises from exact-match to set-membership against
+the normalised `signal_args.review_paths`; `PauseReviewError` codes
+and HTTP status mapping are unchanged. `PauseAnswerForm.vue` renders
+a tab per path when N > 1 (per-tab dirty state, per-tab
+`*` marker, one Save in flight at a time targeting the active tab;
+Resume disabled only while that Save is in flight, NOT while a
+non-active tab is dirty — an abandoned tab must not strand the
+operator, soft warning rendered separately); N == 1 (or absent) is
+byte-identical to 14c (no tab bar). The component prop renames
+`reviewPath: string | null` → `reviewPaths: string[]`;
+`RunDetailView.vue`'s `pauseReviewPaths` computed reads the plural
+key first and falls back to the legacy scalar. Engteam Phase-2
+template **not** modified — still emits exactly one `review_path`;
+plural is opt-in for future skills or non-engteam callers. ADR-41
+records the storage shape change, the grammar choice (rejected
+JSON-in-attribute and CSV), and the membership coupling.
+342 backend tests pass (328 + 14 new from 14f: 8 sentinel parser
+plural / single / repeat / per-value-validation / shim / order-agnostic
++ 4 artifacts_write plural / empty / legacy-fallback / multi-path
+membership; 3 pi-e2e still gated), `ruff`/`mypy --strict` clean
+(**39** source files, no new modules), backend coverage 94%; 186
+frontend tests pass (180 + 6 new: PauseAnswerForm tabs — single-path
+no-tab-bar regression / N>1 renders tabs / switch-tab refetches /
+per-tab dirty marker / Save targets active tab / Resume not blocked
+by abandoned-tab dirty).
 
 ## What relay v2 is
 

@@ -376,14 +376,21 @@ remains the mechanism for carrying the next-iter prompt before `handoff`
 and `pause`. See `references/signaling.md` (TBD).
 
 `pause-for-input` accepts an **optional** `review_path="<relative-path>"`
-attribute (added 14b, ADR-40). When present, the orchestrator stores it
-as `signal_args["review_path"]` on the paused iter; the dashboard's
-`PauseAnswerForm` (14c) reads it to switch to inline-editor mode. The
-path is **relative to `$RELAY_RUN_DIR`**; absolute paths, `..`
-components, empty strings, or NUL bytes are rejected at parse time with
-`MarkerError`. Omitting the attribute is byte-identical to the pre-14b
-grammar — skills emitting plain `pause-for-input` continue to work
-unchanged.
+attribute (added 14b, ADR-40). The attribute **may repeat on the same
+line** (14f, ADR-41) to declare multiple reviewable artifacts:
+`review_path="a.md" review_path="b.md"`. The line-anchored `_PAUSE_RE`
+is unchanged; the parser collects all matches via `re.finditer` and
+stores them as `signal_args["review_paths"]: list[str]` on the paused
+iter. The dashboard's `PauseAnswerForm` (14c/14f) reads it to switch to
+inline-editor mode — single-path is a single-pane layout, multi-path
+adds a tab bar with per-tab dirty state. Each path is **relative to
+`$RELAY_RUN_DIR`**; absolute paths, `..` components, empty strings, or
+NUL bytes are rejected at parse time with `MarkerError` naming the
+offending value. Omitting the attribute is byte-identical to the
+pre-14b grammar — skills emitting plain `pause-for-input` continue to
+work unchanged. Iters paused under 14a–14d carry the legacy scalar
+`signal_args["review_path"]` key; readers fall back to that key during
+the migration window when the plural key is absent.
 
 ### 5.2 `mcp_tools` (alternative; not built in MVP)
 
@@ -652,15 +659,16 @@ GET    /api/runs/:id/artifacts    list artifact files  query: path=<relative> (d
 GET    /api/runs/:id/artifacts/*  get an artifact's content  text only; 415 for binary
                                                      sandbox root = <project_root>/.relay/runs/<run_id>/ (spec §3.3),
                                                      reuses the §7 file-browser audited resolver (ADR-25)
-PUT    /api/runs/:id/artifacts/*  write text content to a sandboxed artifact (pause-for-review, §6.2, ADR-40)
+PUT    /api/runs/:id/artifacts/*  write text content to a sandboxed artifact (pause-for-review, §6.2, ADR-40/ADR-41)
                                                      body: {content: str, editor?: str}
                                                      returns 200 {path, size, sha256}; 400 sandbox violation,
                                                      404 unknown run, 409 not paused / no review_path /
                                                      path mismatch / missing parent dir, 413 oversize,
                                                      415 binary or malformed body. Single write entry on the
                                                      artifacts dir; coupled to runs.status == 'paused' AND
-                                                     iters.signal_args.review_path (set by 14b). Every
-                                                     successful write appends one `artifact_edited` event
+                                                     set-membership in iters.signal_args.review_paths (14b/14f;
+                                                     legacy scalar review_path read as a one-element list).
+                                                     Every successful write appends one `artifact_edited` event
                                                      (§3.2) iter-scoped to the paused iter.
 
 # Prompts ─────────────────────────────────────────────────────────────
@@ -678,17 +686,17 @@ return 415 (frontend offers a download instead). Markdown and code are
 returned verbatim — rendering happens client-side.
 
 `PUT /api/runs/:id/artifacts/*` is the **single write entry point** on
-the run artifacts dir (ADR-40). It is strictly coupled to `runs.status
-== 'paused'` AND the latest paused iter's
-`iters.signal_args.review_path` — writes are only permitted during a
-declared pause review. The event store records every write as an
+the run artifacts dir (ADR-40/ADR-41). It is strictly coupled to
+`runs.status == 'paused'` AND the requested path being a member of the
+latest paused iter's `iters.signal_args.review_paths` (14f, plural —
+the legacy scalar `review_path` is read as a one-element list during
+the migration window). Writes are only permitted during a declared
+pause review. The event store records every write as an
 `artifact_edited` event (§3.2) with content hashes; the file content
 itself lives on disk (the artifacts dir is the authoritative artifact
 store per ADR-25, not the event store). Replay can verify *that* an
 edit happened and the integrity hashes; the content at replay time may
-differ if the file was edited again or removed out of band. Until 14b
-populates `signal_args.review_path`, every real-world caller of this
-endpoint will see 409 — that is the documented interim state.
+differ if the file was edited again or removed out of band.
 
 The `GET /api/events/:run_id` SSE feed is a passive post-commit tail of
 the event store (ADR-10 — it never writes). Its exact replay/cutover/
@@ -811,16 +819,23 @@ artifacts, managing prompts, and registering projects.
   - **Pause action** (when status=paused) — the agent's question is
     shown rendered; the answer textarea supports markdown; submit
     → POST `/api/runs/:id/resume`. When the paused iter's
-    `signal_args.review_path` is present (14b), the answer form
+    `signal_args.review_paths` is non-empty (14b/14f), the answer form
     renders an inline review pane above the question/answer block:
-    it fetches the named artifact via `GET /api/runs/:id/artifacts/{path}`,
-    shows a textarea (left) and the existing markdown/shiki/mermaid
-    preview pipeline (right), and exposes a Save button that fires
-    `PUT /api/runs/:id/artifacts/{path}` (ADR-40). The Resume button
-    remains operational and is disabled only while a Save is in
-    flight; the answer textarea is unaffected. The pane is absent
-    (and the existing minimal form renders unchanged) when the
-    paused iter does not declare a `review_path`. Each save lands an
+    it fetches the active artifact via
+    `GET /api/runs/:id/artifacts/{path}`, shows a textarea (left) and
+    the existing markdown/shiki/mermaid preview pipeline (right), and
+    exposes a Save button that fires
+    `PUT /api/runs/:id/artifacts/{path}` (ADR-40/ADR-41). For a single
+    review path the layout is one pane (no tab bar — byte-identical to
+    14c). For multiple review paths (14f) a tab bar across the top
+    renders one tab per path with independent per-tab dirty state;
+    `*` flags an unsaved tab. One Save is in flight at a time and
+    targets the active tab; the Resume button is disabled only while
+    that Save is in flight. Unsaved changes on non-active tabs surface
+    as a soft warning but **do not block Resume** (an abandoned tab
+    must not strand the operator). The pane is absent (and the
+    existing minimal form renders unchanged) when the paused iter does
+    not declare any review path. Each save lands an
     `artifact_edited` event row in the timeline (path + pre/post
     sha256 short hashes + editor). 14e: the right pane of the review
     block carries a `[ Preview | Diff ]` toggle — Diff is disabled

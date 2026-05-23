@@ -71,13 +71,16 @@ async def _seed_run(
     project_id: int,
     *,
     status: str,
-    review_path: str | None,
+    review_path: str | None = None,
+    review_paths: list[str] | None = None,
 ) -> tuple[str, int | None]:
-    """Insert a Run row and (when ``review_path`` is not ``None``) a
-    paired paused Iter row directly. Returns ``(run_id, iter_id)``.
+    """Insert a Run row and (when at least one of ``review_path`` /
+    ``review_paths`` is set) a paired paused Iter row directly. Returns
+    ``(run_id, iter_id)``.
 
-    Used to skip the full loop drive and synthesise the post-14b world
-    where ``signal_args.review_path`` is populated.
+    ``review_path`` (singular) seeds the legacy 14a–14d ``signal_args``
+    key — exercises the 14f migration-fallback read path. ``review_paths``
+    (plural) seeds the post-14f primary key.
     """
     run_id = core._new_run_id()  # noqa: SLF001 — test-only helper
     iter_id: int | None = None
@@ -98,7 +101,9 @@ async def _seed_run(
             "question": "Approve?",
             "id": "P1",
         }
-        if review_path is not None:
+        if review_paths is not None:
+            signal_args["review_paths"] = review_paths
+        elif review_path is not None:
             signal_args["review_path"] = review_path
         # Only attach a paused iter when the test wants one (the
         # "no_review_path" case omits it entirely to exercise the
@@ -560,6 +565,129 @@ def test_put_leaves_no_tmp_siblings(tmp_path: Path) -> None:
             assert r.status_code == 200, r.text
             siblings = list(artifacts.iterdir())
             assert siblings == [artifacts / "plan.md"], siblings
+
+    asyncio.run(body())
+
+
+# ── 14f / ADR-41: plural review_paths ──────────────────────────────────
+
+
+def test_put_accepts_either_of_two_review_paths(tmp_path: Path) -> None:
+    """A paused iter with ``signal_args.review_paths = ["a.md", "b.md"]``
+    accepts PUT to either path; PUT to a third → 409 ``path_mismatch``."""
+    s = _settings(tmp_path)
+    proj_root = tmp_path / "proj"
+    proj_root.mkdir()
+
+    async def body() -> None:
+        async with _client_with_core(s) as (ac, core):
+            project_id = await _register_project(ac, proj_root)
+            run_id, _ = await _seed_run(
+                core,
+                project_id,
+                status="paused",
+                review_paths=["frontend-audit.md", "backend-audit.md"],
+            )
+            _make_artifacts_dir(proj_root, run_id)
+
+            r = await ac.put(
+                f"/api/runs/{run_id}/artifacts/frontend-audit.md",
+                json={"content": "front\n"},
+            )
+            assert r.status_code == 200, r.text
+
+            r = await ac.put(
+                f"/api/runs/{run_id}/artifacts/backend-audit.md",
+                json={"content": "back\n"},
+            )
+            assert r.status_code == 200, r.text
+
+            r = await ac.put(
+                f"/api/runs/{run_id}/artifacts/third.md",
+                json={"content": "nope"},
+            )
+            assert r.status_code == 409, r.text
+            assert "review_paths" in r.json()["detail"]
+
+    asyncio.run(body())
+
+
+def test_put_409_review_paths_empty_list(tmp_path: Path) -> None:
+    """A paused iter with ``signal_args.review_paths = []`` is treated
+    the same as a paused iter with no review_path attribute — 409
+    ``no_review_path`` for every write."""
+    s = _settings(tmp_path)
+    proj_root = tmp_path / "proj"
+    proj_root.mkdir()
+
+    async def body() -> None:
+        async with _client_with_core(s) as (ac, core):
+            project_id = await _register_project(ac, proj_root)
+            run_id, _ = await _seed_run(
+                core, project_id, status="paused", review_paths=[]
+            )
+            _make_artifacts_dir(proj_root, run_id)
+
+            r = await ac.put(
+                f"/api/runs/{run_id}/artifacts/plan.md",
+                json={"content": "x"},
+            )
+            assert r.status_code == 409, r.text
+            assert "review_path" in r.json()["detail"]
+
+    asyncio.run(body())
+
+
+def test_put_legacy_singular_review_path_still_works(tmp_path: Path) -> None:
+    """Migration fallback: a paused iter whose ``signal_args`` carries
+    ONLY the legacy scalar ``review_path`` key (no plural key) still
+    accepts the PUT — handles iters paused under 14a–14d that survive
+    a process restart into the 14f code."""
+    s = _settings(tmp_path)
+    proj_root = tmp_path / "proj"
+    proj_root.mkdir()
+
+    async def body() -> None:
+        async with _client_with_core(s) as (ac, core):
+            project_id = await _register_project(ac, proj_root)
+            run_id, _ = await _seed_run(
+                core, project_id, status="paused", review_path="legacy.md"
+            )
+            artifacts = _make_artifacts_dir(proj_root, run_id)
+
+            r = await ac.put(
+                f"/api/runs/{run_id}/artifacts/legacy.md",
+                json={"content": "ok\n"},
+            )
+            assert r.status_code == 200, r.text
+            assert (artifacts / "legacy.md").read_text() == "ok\n"
+
+    asyncio.run(body())
+
+
+def test_put_plural_review_paths_primary(tmp_path: Path) -> None:
+    """A paused iter seeded with the plural key (a single-element list)
+    exercises the 14f primary read path; the singular key is absent."""
+    s = _settings(tmp_path)
+    proj_root = tmp_path / "proj"
+    proj_root.mkdir()
+
+    async def body() -> None:
+        async with _client_with_core(s) as (ac, core):
+            project_id = await _register_project(ac, proj_root)
+            run_id, _ = await _seed_run(
+                core,
+                project_id,
+                status="paused",
+                review_paths=["only.md"],
+            )
+            _make_artifacts_dir(proj_root, run_id)
+
+            r = await ac.put(
+                f"/api/runs/{run_id}/artifacts/only.md",
+                json={"content": "x"},
+            )
+            assert r.status_code == 200, r.text
 
     asyncio.run(body())
 

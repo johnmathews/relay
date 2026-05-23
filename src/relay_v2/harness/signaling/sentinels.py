@@ -33,6 +33,7 @@ __all__ = [
     "extract_pause_question",
     "extract_pause_id",
     "extract_pause_review_path",
+    "extract_pause_review_paths",
     "extract_phase_start",
     "extract_fanout_payload",
     "detect_in_text",
@@ -255,21 +256,34 @@ _REVIEW_PATH_REPAIR = (
 )
 
 
-def extract_pause_review_path(text: str) -> str | None:
-    """First pause sentinel's ``review_path`` attribute, or ``None`` when
-    absent. Raises :class:`MarkerError` on syntactically invalid values
-    (empty / absolute / ``..``-bearing / NUL byte). Per ADR-40 the value
-    is interpreted relative to ``$RELAY_RUN_DIR`` at write time; this
-    parser performs syntactic validation only — no filesystem check."""
+def extract_pause_review_paths(text: str) -> list[str]:
+    """All ``review_path`` attribute values on the first pause sentinel
+    line, in order. Empty list when the attribute is absent. Per ADR-41
+    (14f) the attribute may repeat on the same pause line to declare
+    multiple files for review. Each value is validated independently via
+    :func:`_validate_review_path` (empty / absolute / ``..``-bearing /
+    NUL byte → :class:`MarkerError` naming the offending value). Per
+    ADR-40 each value is interpreted relative to ``$RELAY_RUN_DIR`` at
+    write time; this parser performs syntactic validation only."""
     for line in text.split("\n"):
         if _PAUSE_RE.match(line):
-            m = _REVIEW_PATH_RE.search(line)
-            if m is None:
-                return None
-            value = m.group(1).replace('\\"', '"')
-            _validate_review_path(value)
-            return value
-    return None
+            values: list[str] = []
+            for m in _REVIEW_PATH_RE.finditer(line):
+                value = m.group(1).replace('\\"', '"')
+                _validate_review_path(value)
+                values.append(value)
+            return values
+    return []
+
+
+def extract_pause_review_path(text: str) -> str | None:
+    """Back-compat shim for the 14b single-value extractor (ADR-41).
+
+    Returns the first ``review_path`` value or ``None`` when the
+    attribute is absent. Prefer :func:`extract_pause_review_paths` for
+    new callers."""
+    paths = extract_pause_review_paths(text)
+    return paths[0] if paths else None
 
 
 def _validate_review_path(value: str) -> None:
@@ -410,9 +424,13 @@ def detect_in_text(text: str, config: SignalConfig) -> SignalEmitted | None:
             "question": extract_pause_question(text),
             "id": extract_pause_id(text),
         }
-        review_path = extract_pause_review_path(text)
-        if review_path is not None:
-            args["review_path"] = review_path
+        # 14f / ADR-41: write the plural key. Readers (write endpoint,
+        # dashboard) fall back to the legacy scalar ``review_path`` iff
+        # the plural key is absent — that handles iters paused under
+        # 14a–14d that survive a process restart into the 14f code.
+        review_paths = extract_pause_review_paths(text)
+        if review_paths:
+            args["review_paths"] = review_paths
         return SignalEmitted(kind="pause", args=args)
     if counts.get("fanout"):
         # FanoutParseError and MarkerError propagate to the loop's

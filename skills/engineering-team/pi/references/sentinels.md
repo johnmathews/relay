@@ -255,3 +255,16 @@ alongside `id`, `question`, and `next_prompt`. The file does **not**
 need to be present on disk at the moment the sentinel is parsed — the
 dashboard 404s and offers a "Create at this path" state if the agent
 declared a path it never wrote.
+
+The `review_path=` attribute may be **repeated on the same pause line**
+to declare multiple files for review (14f / ADR-41):
+
+    [[engteam:pause-for-input id="P1" question="Approve both audits?" review_path="frontend-audit.md" review_path="backend-audit.md"]]
+
+The dashboard renders a tab per path with independent dirty state and
+per-tab Save. Each path is validated independently; a single invalid
+path raises `MarkerError` naming the offender. Storage:
+`signal_args.review_paths: list[str]` (the singular `review_path` key
+from earlier docs is migration-fallback only — new emit paths use the
+plural key). The single-path layout is unchanged from 14c (no tab bar
+appears when only one `review_path` is declared).

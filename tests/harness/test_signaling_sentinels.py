@@ -22,6 +22,7 @@ from relay_v2.harness.signaling.sentinels import (
     extract_pause_prompt,
     extract_pause_question,
     extract_pause_review_path,
+    extract_pause_review_paths,
     extract_phase_start,
     validate_done_no_prompt_markers,
 )
@@ -617,20 +618,106 @@ def test_extract_pause_review_path_rejects_nul() -> None:
     assert "NUL" in ei.value.headline
 
 
-def test_detect_in_text_pause_includes_review_path_when_present() -> None:
+def test_detect_in_text_pause_includes_review_paths_when_present() -> None:
+    # 14f / ADR-41: detect_in_text writes the plural key, NOT the
+    # singular legacy key (load-bearing for write_artifact's
+    # no_review_path 409 branch when the attribute is absent).
     text = _rp_block('review_path="improvement-plan.md"')
     s = detect_in_text(text, SENTINELS)
     assert s is not None and s.kind == "pause"
-    assert s.args["review_path"] == "improvement-plan.md"
+    assert s.args["review_paths"] == ["improvement-plan.md"]
+    assert "review_path" not in s.args
     # The pre-14b keys are still there unchanged.
     assert s.args["id"] == "P1"
     assert s.args["question"] == "Approve plan?"
     assert "Re-read $RELAY_RUN_DIR/improvement-plan.md" in s.args["next_prompt"]
 
 
-def test_detect_in_text_pause_omits_review_path_when_absent() -> None:
-    # Backwards-compat regression: skills not on 14b grammar produce
-    # signal_args with NO "review_path" key (absent, not None).
+def test_detect_in_text_pause_omits_review_paths_when_absent() -> None:
+    # Backwards-compat regression: skills not on the 14b grammar produce
+    # signal_args with NEITHER ``review_paths`` NOR ``review_path``
+    # (absent, not None — load-bearing).
     s = detect_in_text(_RP_BLOCK_NO_RP, SENTINELS)
     assert s is not None and s.kind == "pause"
+    assert "review_paths" not in s.args
+    assert "review_path" not in s.args
+
+
+# --- 14f / ADR-41: plural review_paths via repeated attribute ----------
+
+
+def test_extract_pause_review_paths_absent() -> None:
+    assert extract_pause_review_paths(_RP_BLOCK_NO_RP) == []
+
+
+def test_extract_pause_review_paths_single() -> None:
+    text = _rp_block('review_path="improvement-plan.md"')
+    assert extract_pause_review_paths(text) == ["improvement-plan.md"]
+
+
+def test_extract_pause_review_paths_two() -> None:
+    text = _rp_block(
+        'review_path="frontend-audit.md" review_path="backend-audit.md"'
+    )
+    assert extract_pause_review_paths(text) == [
+        "frontend-audit.md",
+        "backend-audit.md",
+    ]
+
+
+def test_extract_pause_review_paths_three() -> None:
+    text = _rp_block(
+        'review_path="a.md" review_path="b.md" review_path="c.md"'
+    )
+    assert extract_pause_review_paths(text) == ["a.md", "b.md", "c.md"]
+
+
+def test_extract_pause_review_paths_validates_each_value() -> None:
+    # An invalid value anywhere in the list raises, naming the
+    # offending value. Order-independence: the bad one is second.
+    text = _rp_block('review_path="ok.md" review_path="/abs.md"')
+    with pytest.raises(MarkerError) as ei:
+        extract_pause_review_paths(text)
+    assert "/abs.md" in ei.value.headline
+    assert "absolute" in ei.value.headline
+
+
+def test_extract_pause_review_paths_validates_first_traversal() -> None:
+    text = _rp_block('review_path="../bad.md" review_path="ok.md"')
+    with pytest.raises(MarkerError) as ei:
+        extract_pause_review_paths(text)
+    assert "'..'" in ei.value.headline
+    assert "../bad.md" in ei.value.headline
+
+
+def test_extract_pause_review_paths_order_agnostic_with_id_question() -> None:
+    # Mixed attribute order: id/review_path/question/review_path. The
+    # parser collects all review_path values regardless of position.
+    line = (
+        '[[engteam:pause-for-input id="P1" review_path="a.md" '
+        'question="Approve both?" review_path="b.md"]]'
+    )
+    text = (
+        "Plan saved.\n\n"
+        "[[engteam:prompt-start]]\n"
+        "Body.\n"
+        "[[engteam:prompt-end]]\n"
+        f"{line}"
+    )
+    assert extract_pause_review_paths(text) == ["a.md", "b.md"]
+
+
+def test_extract_pause_review_path_shim_returns_first() -> None:
+    # The 14b single-value extractor stays as a back-compat shim
+    # returning the first value (or None when absent).
+    text = _rp_block('review_path="a.md" review_path="b.md"')
+    assert extract_pause_review_path(text) == "a.md"
+    assert extract_pause_review_path(_RP_BLOCK_NO_RP) is None
+
+
+def test_detect_in_text_pause_with_two_review_paths() -> None:
+    text = _rp_block('review_path="a.md" review_path="b.md"')
+    s = detect_in_text(text, SENTINELS)
+    assert s is not None and s.kind == "pause"
+    assert s.args["review_paths"] == ["a.md", "b.md"]
     assert "review_path" not in s.args

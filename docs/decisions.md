@@ -2773,3 +2773,94 @@ manual acceptances — 14d follows this pattern), ADR-39 (most recent
 event-taxonomy extension — `artifact_edited` mirrors its shape),
 `docs/proposals/pause-for-review.md`,
 `docs/plans/2026-05-22-pause-for-review-14a.md`.
+
+## ADR-41 — Pause-for-review: plural `review_paths` via repeated attribute, `signal_args` shape change to list
+
+**Status:** accepted (2026-05-23). Lands with Phase 14f
+(`docs/plans/2026-05-23-pause-for-review-14f.md`). Extends ADR-40
+along the previously-deferred OQ-2 axis.
+
+**Context.** ADR-40 §A1 introduced the `review_path` sentinel attribute
+on `pause-for-input` as a scalar, with OQ-2 ("Multiple reviewable
+paths in one pause") deferred: "scalar in v1 (matches today's use);
+plural is additive later (`review_paths` array attribute, or repeat
+the attribute)". This ADR records the plural extension.
+
+**Decision 1 — Grammar: repeat the attribute, do not introduce
+JSON-in-attribute-value.** A pause line may carry `review_path=`
+multiple times on the same line:
+
+```
+[[engteam:pause-for-input id="P1"
+                          question="Approve both?"
+                          review_path="a.md"
+                          review_path="b.md"]]
+```
+
+The line-anchored `_PAUSE_RE` is unchanged; collection moves from
+`re.search` (first match) to `re.finditer` (all matches). Per-value
+validation reuses the 14b `_validate_review_path` helper unchanged
+(empty / NUL / absolute / traversal → `MarkerError` with the
+existing `_REVIEW_PATH_REPAIR` recipe, naming the offending value).
+
+Rejected alternatives:
+
+- **JSON-array attribute value** (`review_paths=["a","b"]`) — novel
+  for line attrs; the existing parser uses simple `key="value"` with
+  `\"`-unescape. Introducing JSON parsing inside attribute values
+  brings escaping complexity (esc-quote inside esc-quote, multi-line
+  values) precisely the kind of pain the marker-bracketed fanout
+  payload was designed to avoid (per ADR-35 / `sentinels.md` §"Pairing
+  rules"). The repeated-attribute form sidesteps this entirely.
+- **CSV** (`review_paths="a.md,b.md"`) — simplest split, but commas
+  are valid filename characters on every relay-supported platform.
+  The dashboard's only current callers use markdown filenames where
+  commas are unusual, but encoding the assumption in the grammar
+  is a hidden footgun for non-engteam callers. Rejected.
+
+**Decision 2 — Storage shape: `signal_args.review_paths: list[str]`
+replaces the scalar `signal_args.review_path` key.** New paused iters
+land with the plural key only. Readers (write endpoint, dashboard)
+fall back to the scalar key iff `review_paths` is absent, handling
+iters paused under 14a–14d that survive a process restart into the
+14f code. The fallback is a migration-window concern only; future
+audits / cleanup can drop the fallback once the database contains
+no rows with the singular key.
+
+**Decision 3 — Coupling generalises from exact-match to
+set-membership.** `RelayCore.write_artifact` normalises the requested
+path and checks set-membership against the normalised
+`signal_args.review_paths`. Mismatch / not-paused / unknown-run
+return the same `PauseReviewError` codes ADR-40 §Decision-3 named;
+HTTP status mapping is unchanged. The strict-coupling intent of
+ADR-40 §OQ-1 is preserved: writes are allowed only to paths the
+agent declared on the paused iter.
+
+**Decision 4 — Engteam Phase-2 template is not modified by 14f.**
+The skill continues to emit exactly one `review_path` (the lone
+`improvement-plan.md`). Plural is opt-in for future skills, variants,
+or non-engteam callers. This keeps 14d's live-acceptance baseline
+stable.
+
+**Decision 5 — MCP tool surface stays frozen.** No new tool;
+`relay__pause_response` signature is unchanged. Operators using MCP
+to drive a paused run cannot edit artifacts via MCP (this matches
+ADR-40's choice — agents do not edit their own artifacts mid-pause).
+
+**Consequences.** Sentinel grammar extends along a previously-
+anticipated axis; storage shape changes (one breaking-ish detail in
+the orchestrator's internal contract, mitigated by the migration
+fallback); dashboard gains a tab layout for N > 1, byte-identical
+behaviour for N == 1 or absent. ADR-40 §B1 (content on disk + hash-
+bearing event) is unchanged; per-edit events still scope to a single
+path. ADR-29's OTel mirror is unchanged (the 14e scalar attribute
+counts events across paths in the pause window, which is the right
+shape — "how much editing happened during this pause").
+
+**Forward-compatibility.** The plural shape leaves room for OQ-4
+(`compose_resume_prompt` annotation) to attach per-path entries iff
+that question reopens, without further grammar change.
+
+**Related ADRs:** ADR-20 (pause/resume; `signal_args` shape), ADR-25
+(sandbox resolver), ADR-29 (OTel mirror), ADR-40 (the pause-for-review
+contract this ADR extends).

@@ -99,10 +99,13 @@ async def put_artifact(
 
     Body: ``{"content": str, "editor"?: str}``. The endpoint is the
     **single write entry point** on the run artifacts dir; it requires
-    the run to be ``paused`` AND the requested path to equal the latest
-    paused iter's ``signal_args.review_path`` (set by 14b). On success
-    the event store gains one ``artifact_edited`` event with the
-    pre/post SHA-256 hashes and sizes — the audit trail per ADR-10.
+    the run to be ``paused`` AND the requested path to be a member of
+    the latest paused iter's ``signal_args.review_paths`` (set by 14b,
+    plural per 14f / ADR-41; a paused iter from 14a–14d that carries
+    only the legacy scalar ``review_path`` is read as a one-element
+    list for migration). On success the event store gains one
+    ``artifact_edited`` event with the pre/post SHA-256 hashes and
+    sizes — the audit trail per ADR-10.
 
     Status mapping:
 
