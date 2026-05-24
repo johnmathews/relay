@@ -28,6 +28,7 @@ def include_api_routers(app: FastAPI) -> None:
     from relay_v2.api.projects import router as projects_router
     from relay_v2.api.prompts import router as prompts_router
     from relay_v2.api.runs import router as runs_router
+    from relay_v2.api.system import router as system_router
 
     app.include_router(runs_router)
     app.include_router(projects_router)
@@ -35,6 +36,7 @@ def include_api_routers(app: FastAPI) -> None:
     app.include_router(files_router)
     app.include_router(events_router)
     app.include_router(artifacts_router)
+    app.include_router(system_router)
 
 
 __all__ = ["include_api_routers"]

@@ -24,7 +24,7 @@
 // panes) is still OUT OF SCOPE here — clearly-marked placeholder
 // sections are left for it.
 
-import { computed, onBeforeUnmount, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import AsyncBoundary from '@/components/shared/AsyncBoundary.vue'
 import StatusBadge from '@/components/shared/StatusBadge.vue'
 import ActionButton from '@/components/shared/ActionButton.vue'
@@ -259,6 +259,26 @@ async function onResumed(): Promise<void> {
 const eventList = computed(() => eventsStore.events)
 const renderedCount = computed(() => eventsStore.renderedCount)
 
+const showPrompt = ref(false)
+
+/**
+ * The most recent non-empty `assistant_text` event payload, surfaced as
+ * a "what's the agent doing right now" peek above the timeline. Returns
+ * `null` when no assistant text has streamed yet — the section then
+ * stays hidden so the layout doesn't reserve dead space.
+ */
+const latestActivity = computed<string | null>(() => {
+  const evs = eventsStore.events
+  for (let i = evs.length - 1; i >= 0; i--) {
+    const ev = evs[i]!
+    if (ev.kind === 'assistant_text') {
+      const t = ev.payload.text
+      if (typeof t === 'string' && t.trim() !== '') return t
+    }
+  }
+  return null
+})
+
 onBeforeUnmount(() => {
   eventsStore.reset()
   currentRun.reset()
@@ -346,6 +366,29 @@ onBeforeUnmount(() => {
             {{ failureInfo.hint }}
           </p>
         </aside>
+
+        <details
+          class="run-detail__prompt"
+          :open="showPrompt"
+          @toggle="showPrompt = ($event.target as HTMLDetailsElement).open"
+        >
+          <summary class="run-detail__prompt-summary">
+            Prompt
+          </summary>
+          <pre class="run-detail__prompt-body">{{ detail.prompt_body }}</pre>
+        </details>
+
+        <div
+          v-if="latestActivity != null"
+          class="run-detail__activity"
+          data-testid="latest-activity"
+          aria-label="Latest agent output"
+        >
+          <span class="run-detail__activity-label">agent</span>
+          <p class="run-detail__activity-text">
+            {{ latestActivity }}
+          </p>
+        </div>
 
         <PauseAnswerForm
           v-if="isPaused"
@@ -488,5 +531,62 @@ onBeforeUnmount(() => {
 .run-detail__failure-marker code {
   font-family: var(--font-mono);
   font-size: 0.85em;
+}
+
+.run-detail__prompt {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface);
+}
+
+.run-detail__prompt-summary {
+  padding: 0.5rem 0.75rem;
+  cursor: pointer;
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-dim);
+  user-select: none;
+}
+
+.run-detail__prompt-summary:hover {
+  color: var(--color-text);
+}
+
+.run-detail__prompt-body {
+  margin: 0;
+  padding: 0.6rem 0.75rem 0.75rem;
+  border-top: 1px solid var(--color-border);
+  font-family: var(--font-mono);
+  font-size: 0.82em;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--color-text);
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.run-detail__activity {
+  border: 1px solid var(--color-border);
+  border-left: 3px solid var(--color-accent, #4a90d9);
+  border-radius: 6px;
+  padding: 0.55rem 0.75rem;
+  background: var(--color-surface);
+}
+
+.run-detail__activity-label {
+  font-size: 0.7em;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-dim);
+}
+
+.run-detail__activity-text {
+  margin: 0.2rem 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.9em;
+  max-height: 120px;
+  overflow-y: auto;
 }
 </style>

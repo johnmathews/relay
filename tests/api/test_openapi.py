@@ -34,6 +34,7 @@ EXPECTED_PATHS = {
     "/api/prompts",
     "/api/prompts/{prompt_id}",
     "/api/prompts/{prompt_id}/versions",
+    "/api/system/browse",
 }
 
 

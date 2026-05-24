@@ -103,4 +103,26 @@ describe('RegisterProjectForm', () => {
     await flushPromises()
     expect(state.mutateAsync).not.toHaveBeenCalled()
   })
+
+  it('mounts the directory picker next to the root_path input and the submit button says Create', async () => {
+    const w = mount(RegisterProjectForm)
+    // Picker trigger sits in the same row as the root_path input.
+    expect(w.find('.register-form__path-row').exists()).toBe(true)
+    expect(w.find('.dir-picker__trigger').exists()).toBe(true)
+    expect(w.get('button[type="submit"]').text()).toBe('Create')
+  })
+
+  it('fills the root_path input when the directory picker emits select', async () => {
+    state.mutateAsync.mockResolvedValue({ id: 1 })
+    const w = mount(RegisterProjectForm)
+    // Emit directly from the picker component to avoid driving its
+    // internal fetch — the picker's own behaviour is covered in
+    // DirectoryPicker.spec.ts.
+    const picker = w.findComponent({ name: 'DirectoryPicker' })
+    picker.vm.$emit('select', '/picked/path')
+    await flushPromises()
+    expect(
+      (w.get('input[name="root_path"]').element as HTMLInputElement).value,
+    ).toBe('/picked/path')
+  })
 })

@@ -10,6 +10,7 @@
 
 import { ref, computed } from 'vue'
 import ActionButton from '@/components/shared/ActionButton.vue'
+import DirectoryPicker from '@/components/projects/DirectoryPicker.vue'
 import {
   useRegisterProjectMutation,
   ApiError,
@@ -63,14 +64,17 @@ async function onSubmit(): Promise<void> {
   >
     <label class="register-form__field">
       <span class="register-form__label">Root path</span>
-      <input
-        v-model="rootPath"
-        type="text"
-        name="root_path"
-        placeholder="/abs/path/to/project"
-        autocomplete="off"
-        required
-      >
+      <div class="register-form__path-row">
+        <input
+          v-model="rootPath"
+          type="text"
+          name="root_path"
+          placeholder="/abs/path/to/project"
+          autocomplete="off"
+          required
+        >
+        <DirectoryPicker @select="(p) => (rootPath = p)" />
+      </div>
     </label>
     <label class="register-form__field">
       <span class="register-form__label">Name</span>
@@ -96,7 +100,7 @@ async function onSubmit(): Promise<void> {
         :loading="submitting"
         :disabled="!canSubmit"
       >
-        Register
+        Create
       </ActionButton>
       <button
         type="button"
@@ -130,6 +134,17 @@ async function onSubmit(): Promise<void> {
 .register-form__label {
   font-size: 0.82em;
   color: var(--color-text-dim);
+}
+
+.register-form__path-row {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.register-form__path-row input {
+  flex: 1;
+  min-width: 0;
 }
 
 .register-form input {

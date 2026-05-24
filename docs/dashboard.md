@@ -97,6 +97,41 @@ abstraction serves both the project Files pane and the run Artifacts
 pane (mirrors ADR-25's single-sourced backend — no duplicate
 tree/viewer).
 
+## Register-project directory picker
+
+The "New project" affordance on `HubView` opens `RegisterProjectForm`
+with a `📂` directory-picker trigger next to the `Root path` input
+(`components/projects/DirectoryPicker.vue`). The picker is a popover
+that walks the local filesystem via `GET /api/system/browse?path=…`
+(see `docs/api.md` → "System"); clicking a folder navigates in, the
+header carries an "↑ up" affordance and the current path, and "Select
+this folder" emits `select` with the resolved absolute path which the
+form writes back into the `root_path` input. The picker uses raw
+`fetch()` (the endpoint has no OpenAPI body model so the typed client
+would offer no ergonomic win — same pattern as the 14c artifact write
+mutation). The picker performs **no** sandboxing — picking a project
+root is exactly the use case that needs full-FS access; the backend
+endpoint is the single audit point.
+
+## Run-detail prompt + activity peek
+
+`RunDetailView` carries two small live-feedback affordances above the
+Timeline so an operator can answer "did anything happen?" without
+scrolling:
+
+- **`<details>` Prompt block.** Collapsed by default; the body is the
+  raw `detail.prompt_body` in a monospace `<pre>` capped at `40vh`
+  with scroll. Click-to-expand persists for the view lifetime via a
+  local `showPrompt` ref. Closes the third user ask in the field
+  report ("see the prompt that started the run").
+- **Latest-activity peek (`[data-testid="latest-activity"]`).** Walks
+  `eventsStore.events` newest-first for the most recent non-empty
+  `assistant_text` payload and renders its `text` inline (capped at
+  `120px` with scroll). Hidden until at least one non-empty
+  `assistant_text` lands — the layout doesn't reserve dead space on a
+  brand-new run. This is a peek, not a replacement for the Timeline:
+  the full event stream still renders below.
+
 ## Worktree pane — MVP degradation
 
 The Worktree pane shows read-only `worktree_path` + `branch` from the

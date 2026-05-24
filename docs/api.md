@@ -77,6 +77,12 @@ gets a clean close (it reconnects and replay backfills).
 | GET | `/projects/{id}` | `get_project` | 404 if absent |
 | DELETE | `/projects/{id}` | `delete_project` | unregister only — **never deletes files on disk**; 204, or 404 if unknown |
 
+### System
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/system/browse` | Read-only directory listing for the dashboard's register-project directory picker. Query `path=` (default `~`). Returns `{path, parent, entries:[{name,path}]}` — entries are subdirectories only, sorted case-insensitive by name; `parent` is `null` at the filesystem root. **NOT sandboxed** (single-user, localhost MVP per ADR-12 — picking a project root inherently needs full-FS access). `path` is `expanduser`-ed then `resolve`d; missing path or non-directory → **404**; permission denied → **403**. |
+
 ### File browser (read-only, sandboxed)
 
 | Method | Path | Notes |

@@ -214,6 +214,79 @@ describe('RunDetailView', () => {
     expect(w.find('[data-testid="worktree-pane"]').exists()).toBe(true)
   })
 
+  it('renders a collapsible Prompt block carrying the run prompt_body', async () => {
+    GET.mockImplementation((path: string) => {
+      if (path === '/api/runs/{run_id}')
+        return Promise.resolve(
+          ok(detail({ status: 'done', prompt_body: 'do something useful' })),
+        )
+      return Promise.resolve(
+        ok({ events: [], after_seq: 0, limit: 500, offset: 0 }),
+      )
+    })
+    const w = mountView()
+    await flushPromises()
+    const det = w.find('details.run-detail__prompt')
+    expect(det.exists()).toBe(true)
+    expect(det.find('summary').text()).toBe('Prompt')
+    expect(det.find('pre').text()).toBe('do something useful')
+  })
+
+  it('shows the latest assistant_text as the activity peek when present', async () => {
+    // Terminal status uses REST replay (no SSE), so the event list is
+    // populated synchronously from the events endpoint.
+    GET.mockImplementation((path: string) => {
+      if (path === '/api/runs/{run_id}')
+        return Promise.resolve(ok(detail({ status: 'done' })))
+      return Promise.resolve(
+        ok({
+          events: [
+            {
+              id: 1,
+              run_id: 'run-1',
+              iter_id: 1,
+              seq: 1,
+              ts: '2026-05-24T22:00:00Z',
+              kind: 'assistant_text',
+              payload: { text: 'first thought' },
+            },
+            {
+              id: 2,
+              run_id: 'run-1',
+              iter_id: 1,
+              seq: 2,
+              ts: '2026-05-24T22:00:01Z',
+              kind: 'assistant_text',
+              payload: { text: 'latest thought' },
+            },
+          ],
+          after_seq: 2,
+          limit: 500,
+          offset: 0,
+        }),
+      )
+    })
+    const w = mountView()
+    await flushPromises()
+    const peek = w.find('[data-testid="latest-activity"]')
+    expect(peek.exists()).toBe(true)
+    expect(peek.text()).toContain('latest thought')
+    expect(peek.text()).not.toContain('first thought')
+  })
+
+  it('hides the activity peek when no assistant_text has streamed', async () => {
+    GET.mockImplementation((path: string) => {
+      if (path === '/api/runs/{run_id}')
+        return Promise.resolve(ok(detail({ status: 'done' })))
+      return Promise.resolve(
+        ok({ events: [], after_seq: 0, limit: 500, offset: 0 }),
+      )
+    })
+    const w = mountView()
+    await flushPromises()
+    expect(w.find('[data-testid="latest-activity"]').exists()).toBe(false)
+  })
+
   it('shows a failure banner with a friendly explanation for agent_end_no_signal', async () => {
     // Field bug: a fresh "Hello, this is a test" prompt → pi replies
     // without emitting any [[engteam:...]] closing sentinel. The loop

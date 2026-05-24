@@ -24,7 +24,7 @@ const { registerFormOpen } = storeToRefs(ui)
         class="hub__register-toggle"
         @click="ui.toggleRegisterForm()"
       >
-        {{ registerFormOpen ? 'Close' : 'Register project' }}
+        {{ registerFormOpen ? 'Close' : 'New project' }}
       </button>
     </header>
 
