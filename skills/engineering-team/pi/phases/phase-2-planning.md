@@ -233,7 +233,7 @@ Phase 2 is complete. The improvement plan is at
 `$RELAY_RUN_DIR/improvement-plan.md`. Re-read it in full — the user may
 have edited it. Then begin Phase 3 (development) by emitting
 `phase-start phase="development"` and following
-`~/.claude/skills/engineering-team/phases/phase-3-development.md`.
+`phases/phase-3-development.md` in this skill directory.
 [[engteam:prompt-end]]
 
 [[engteam:pause-for-input id="P1" question="Approve plan in $RELAY_RUN_DIR/improvement-plan.md and proceed to Phase 3 (development)?" review_path="improvement-plan.md"]]
@@ -246,9 +246,10 @@ Notes:
   session, not for the user — write it as instructions to your future self.
 - Increment the `P<n>` id if this run has already paused before; for the
   first pause in a run, `P1` is correct.
-- The `~/.claude/skills/engineering-team/...` path is the default
-  `relay install-skill` target. If the skill was installed with
-  `--project`, substitute that project's `.claude/skills/...` path.
+- `phases/phase-3-development.md` is **relative to the skill root** —
+  same convention as SKILL.md's phase-router. Pi loads the skill from
+  the bundled path injected by relay's `--skill` flag (ADR-44); the
+  agent reads siblings via that same root, no absolute path needed.
 - The `review_path="improvement-plan.md"` attribute (sentinel grammar
   from sub-phase 14b) tells relay's dashboard which file the operator
   should review inline. The dashboard renders a textarea + markdown
@@ -296,7 +297,7 @@ Template (copy-paste, fill in the prompt body):
 Phase 2 is complete. The improvement plan is at
 `$RELAY_RUN_DIR/improvement-plan.md`. Begin Phase 3 (development) by
 emitting `phase-start phase="development"` and following
-`~/.claude/skills/engineering-team/phases/phase-3-development.md`.
+`phases/phase-3-development.md` in this skill directory.
 
 The user pre-approved this plan — proceed without further confirmation.
 [[engteam:prompt-end]]

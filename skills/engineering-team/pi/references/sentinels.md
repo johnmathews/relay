@@ -145,7 +145,7 @@ Example stderr for a handoff parse error:
 
 [[engteam:prompt-start]]
 Phase 4 wrap-up — emit phase-start phase="wrap-up" and follow
-~/.claude/skills/engineering-team/phases/phase-4-wrap-up.md.
+phases/phase-4-wrap-up.md in this skill directory.
 
 Run the final gate:
 

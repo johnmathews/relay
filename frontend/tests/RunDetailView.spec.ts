@@ -293,8 +293,10 @@ describe('RunDetailView', () => {
     // correctly fails the run with exit_reason="agent_end_no_signal",
     // but the dashboard rendered no diagnostic — the user saw only a
     // failed status badge and a JSON-dumped run_ended boundary row.
-    // The banner surfaces the reason inline with a "did you install
-    // the engineering-team skill?" hint so the user knows why.
+    // The banner surfaces the reason inline with an explanation that
+    // the bundled skill is auto-injected (ADR-44 — earlier copy
+    // pointed at the now-deleted `relay install-skill`) and what
+    // could still cause this (e.g. agent abort).
     GET.mockImplementation((path: string) => {
       if (path === '/api/runs/{run_id}')
         return Promise.resolve(

@@ -406,9 +406,19 @@ src/relay_v2/mcp/
 
 ## Phase 6 — engineering-team skill port (3 days)
 
-**Goal.** A v2-flavored `engineering-team` skill, installable via
-`relay install-skill`, that runs a real evaluation + plan + develop
-cycle against a fixture project.
+> **Superseded delivery model (2026-05-25, ADR-44).** This phase
+> originally shipped `relay install-skill` to copy the skill into
+> `<target>/.claude/skills/`. That path is a Claude Code discovery
+> root pi never reads — the command was silently inert. Relay now
+> injects the bundled skill into pi via `pi --skill <bundled-path>`
+> at spawn time; `relay install-skill` was deleted outright. The
+> per-iter execution model below (RELAY_PHASE/RELAY_RUN_DIR
+> preamble, sentinel grammar, single-session-per-phase, worktree
+> provisioning) is unchanged.
+
+**Goal.** A v2-flavored `engineering-team` skill, bundled into the
+`relay` package and injected into pi automatically (ADR-44), that runs
+a real evaluation + plan + develop cycle against a fixture project.
 
 **Deliverables:**
 
@@ -429,10 +439,12 @@ relay-v2/skills/engineering-team/
 └── (v2 version of any phase-specific templates)
 ```
 
-Also:
+Also (current — ADR-44):
 
 ```
-src/relay_v2/cli/install_skill.py   # `relay install-skill` impl
+src/relay_v2/harness/skills.py      # bundled_skill_dir() resolver
+src/relay_v2/harness/pi.py          # _build_argv appends --skill <path>
+src/relay_v2/config.py              # Settings.pi_skill_paths + RELAY_PI_SKILLS env
 ```
 
 **Key implementation notes:**
@@ -446,8 +458,13 @@ src/relay_v2/cli/install_skill.py   # `relay install-skill` impl
   with one long iter per phase. (Subagent support is a post-MVP
   feature when relay's orchestrator gains the subagent_dispatch
   signal handler.)
-- `relay install-skill` copies the skill to `~/.claude/skills/engineering-team/`
-  by default; `--project /path` overrides; `--force` overwrites with backup.
+- Delivery (ADR-44): relay's pi harness appends one `--skill <path>`
+  pair per `Settings.pi_skill_paths` entry on every spawn; default is
+  the bundled tree at `skills/engineering-team/pi/` (resolved by
+  `bundled_skill_dir()`); env override `RELAY_PI_SKILLS` is
+  colon-separated; empty string opts out (pi then sees only its own
+  auto-discovered skills under `<cwd>/.pi/skills/` and
+  `~/.pi/agent/skills/`).
 
 **Verification:**
 - Run relay-v2 against the v1 demo fixture (the deliberately broken

@@ -48,12 +48,13 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/relay_v2"]
 
-# Phase 6 (ADR-28): the canonical engineering-team skill lives at the
-# repo root in `skills/` (spec.md §12), outside the `src/relay_v2`
-# package. force-include maps it into the wheel as `relay_v2/skills/`
-# so `relay install-skill` can resolve a bundled copy when relay-v2 is
-# installed from a wheel. Editable/source installs resolve the repo-root
-# tree directly (cli/install_skill.py:skill_source_dir).
+# The canonical engineering-team skill lives at the repo root in
+# `skills/` (spec.md §12), outside the `src/relay_v2` package.
+# force-include maps it into the wheel as `relay_v2/skills/` so
+# `harness.skills.bundled_skill_dir()` (ADR-44) can resolve a bundled
+# copy when relay is installed from a wheel — relay then injects that
+# path into pi via `pi --skill <path>` at spawn time. Editable/source
+# installs resolve the repo-root tree directly via the same resolver.
 [tool.hatch.build.targets.wheel.force-include]
 "skills" = "relay_v2/skills"
 
