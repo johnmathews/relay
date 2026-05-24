@@ -90,11 +90,12 @@ curl -sX POST http://127.0.0.1:7800/api/runs \
 curl -s http://127.0.0.1:7800/api/runs
 ```
 
-> **Note on the CLI.** `relay serve`, `relay --version`, and
-> `relay install-skill` are the only CLI subcommands implemented in
-> the MVP (see `spec.md` §11.3 accuracy note). `relay start` / `status`
-> / `cancel` are a post-MVP convenience; until then, use the dashboard,
-> REST, or MCP for run management.
+> **Note on the CLI.** `relay serve` and `relay --version` are the only
+> CLI subcommands implemented in the MVP (see `spec.md` §11.3 accuracy
+> note). `relay start` / `status` / `cancel` are a post-MVP convenience;
+> until then, use the dashboard, REST, or MCP for run management. The
+> earlier `relay install-skill` subcommand was retired by ADR-44 — the
+> bundled engineering-team skill is now injected into pi automatically.
 
 ## 5. Register the MCP server and smoke-test it
 
@@ -160,10 +161,11 @@ The shape:
 
 1. Seed the v1 demo fixture (deliberately broken `factorial(5)`
    returns 24): `~/projects/relay/relay-v1/fixtures/eng-team-demo-seed/reset.sh`
-2. `uv run relay install-skill --project <fixture-root>`
-3. Register the fixture as a project (step 4 above) and start a run
+2. Register the fixture as a project (step 4 above) and start a run
    with the prompt "evaluate, plan, and fix the bugs" — set
-   `PI_AGENT_SDK=1` in the `relay serve` environment.
+   `PI_AGENT_SDK=1` in the `relay serve` environment. The bundled
+   engineering-team skill is injected automatically (ADR-44); no
+   install step.
 4. Watch the dashboard: expect a clean four-phase timeline
    (`phase-start evaluation` → `planning` (with a `pause-for-input`
    gate) → `development` (`unit-start`/`unit-done` per work unit) →

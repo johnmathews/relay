@@ -30,16 +30,14 @@ the design rationale and rejected alternatives.
 A future second variant (e.g. `claude-code/`) would live as a sibling
 directory.
 
-## Installation
+## Delivery to the harness
 
-```
-relay install-skill                        # default: --harness pi
-relay install-skill --harness pi           # explicit
-relay install-skill --project PATH         # → PATH/.claude/skills/engineering-team/
-relay install-skill --force                # overwrite (existing copy backed up)
-```
-
-The install target is always `~/.claude/skills/engineering-team/`
-(or `<project>/.claude/skills/engineering-team/` with `--project`):
-the harness suffix exists only at the bundle layer, not at the
-install destination. Operational details: `docs/skills.md`.
+There is no install step. Relay's pi harness injects the bundled
+`pi/` variant into every pi spawn via `pi --skill <bundled-path>` —
+the path resolves to the wheel-bundled `relay_v2/skills/engineering-team/pi/`
+in deployed installs and the repo-root `skills/engineering-team/pi/` in
+editable installs. Override with `RELAY_PI_SKILLS=<path[:path...]>`
+or opt out entirely with `RELAY_PI_SKILLS=`. ADR-44 records the
+rationale (the earlier `relay install-skill` command was writing to
+`.claude/skills/`, a Claude Code discovery root pi never reads).
+Operational details: `docs/skills.md`.

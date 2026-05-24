@@ -388,6 +388,13 @@ class PiHarness:
             "--model",
             model,
         ]
+        # Bundled skill injection. Pi `--skill` is repeatable and accepts
+        # a file or directory; relay points at its bundled engineering-team
+        # skill so every spawn sees it regardless of CWD. Pi's own
+        # auto-discovery of `<cwd>/.pi/skills/` and `~/.pi/agent/skills/`
+        # remains on by default — explicit injection is additive.
+        for skill_path in self._settings.pi_skill_paths:
+            argv += ["--skill", str(skill_path)]
         if resume_from:
             # Crash recovery only -- never used for inter-iter chaining
             # (CLAUDE.md: fresh context per iter is the value prop).

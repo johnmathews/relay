@@ -80,8 +80,9 @@ frontend development Vite proxies `/api` to the backend — see
 `relay serve` creates `<cwd>/.relay/relay.db` (the SQLite event store)
 on first run. Configuration is env-driven via `RELAY_*` variables (see
 [`docs/spec.md`](docs/spec.md) §11), e.g. `RELAY_PORT=8080 uv run relay
-serve`. Implemented CLI subcommands: `relay serve`, `relay --version`,
-`relay install-skill` (`[--project PATH] [--force] [--harness NAME]`).
+serve`. Implemented CLI subcommands: `relay serve`, `relay --version`. The
+bundled engineering-team skill is injected into every pi spawn via
+`pi --skill` (ADR-44); no per-project install step is needed.
 In the MVP, runs
 are created and managed through the dashboard, the REST API
 ([`docs/api.md`](docs/api.md)), or the MCP server — not a `relay start`

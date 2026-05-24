@@ -13,7 +13,7 @@ plans live in `docs/plans/`; ADR rationale in `docs/decisions.md`.
 - **3** — `api/` + `sse.py`: spec §7 REST + SSE broadcaster (post-commit fan-out + `Last-Event-ID` replay) — ADR-23/24/25.
 - **4** — `frontend/`: Vue 3 dashboard, primary control plane (ADR-15/26).
 - **5** — `mcp/`: FastMCP at `/mcp`, seven `relay__*` tools as `RelayCore` adapters; #1367 lifespan footgun handled — ADR-27.
-- **6** — `skills/engineering-team/pi/` + `relay install-skill` (ADR-28/33).
+- **6** — `skills/engineering-team/pi/` bundled into the package; ADR-44 superseded the original `relay install-skill` delivery with `pi --skill <bundled-path>` injection at spawn time (ADR-28/33/44).
 - **7** — `observability/`: opt-in OTel → Langfuse, strict no-op when off; Option-D `AssistantText` lookahead for terminal-sentinel usage — ADR-29.
 - **8** — README + `api/static.py` (prod SPA mount) + Dockerfile + CI (Python+frontend gate + GHCR publish to `ghcr.io/johnmathews/relay`); ADR-30 = automated-vs-manual split.
 
@@ -551,12 +551,19 @@ implementation:
   `frontend/README.md` has the operational notes. The full gate is
   Python (`ruff`/`mypy`/`pytest`) **and** the frontend `npm run check`.
 - Console script: `relay`. Implemented today: `relay serve`,
-  `relay --version` (Phase 0), `relay install-skill`
-  (Phase 6 — `[--project PATH] [--force] [--harness NAME]`; ADR-28,
-  `docs/skills.md`). Skill source lives at
+  `relay --version` (Phase 0). The Phase-6 `relay install-skill`
+  subcommand was retired 2026-05-25 (ADR-44) — relay now injects the
+  bundled engineering-team skill into pi via `pi --skill
+  <bundled-path>` on every spawn (one `--skill` pair per
+  `Settings.pi_skill_paths` entry; default = `bundled_skill_dir()`
+  from `harness/skills.py`; env override `RELAY_PI_SKILLS`
+  colon-separated; empty string opts out so pi only sees its own
+  auto-discovered skills under `<cwd>/.pi/skills/` and
+  `~/.pi/agent/skills/`). Skill source lives at
   `skills/engineering-team/<harness>/` (variant directory, default
-  `pi`); the variant model is documented in ADR-33. `relay start` /
-  `status` / `cancel` arrive in later phases. Default bind
+  `pi`); the variant model is documented in ADR-33, the delivery
+  switch in ADR-44, operational notes in `docs/skills.md`. `relay
+  start` / `status` / `cancel` arrive in later phases. Default bind
   `127.0.0.1:7800`.
 - Pi integration tests are gated behind `PI_INTEGRATION=1`; harness
   unit tests run offline against the captured `scratch/*.jsonl` fixtures.

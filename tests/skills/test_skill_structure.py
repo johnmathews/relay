@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import pytest
 
-from relay_v2.cli.install_skill import skill_source_dir
+from relay_v2.harness.skills import bundled_skill_dir
 
-SKILL = skill_source_dir()
+SKILL = bundled_skill_dir()
 
 PHASE_DOCS = {
     "phases/phase-1-evaluation.md": "evaluation",

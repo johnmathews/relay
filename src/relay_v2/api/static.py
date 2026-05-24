@@ -31,7 +31,7 @@ from starlette.types import Scope
 def frontend_dist_dir() -> Path | None:
     """Locate the built frontend, or ``None`` if it has not been built.
 
-    Mirrors :func:`relay_v2.cli.install_skill.skill_source_dir`'s
+    Mirrors :func:`relay_v2.harness.skills.bundled_skill_dir`'s
     resolution order: the packaged location (a wheel that force-included
     the build) is preferred; the repo-root ``frontend/dist`` is the
     fallback for the source/editable layout the Docker image uses. Unlike

@@ -1,7 +1,10 @@
-# Engineering-team skill (Phase 6)
+# Engineering-team skill
 
-Operational reference for the bundled `engineering-team` skill and
-`relay install-skill`. Design authority: `spec.md §12`, ADR-14, ADR-28.
+Operational reference for the bundled `engineering-team` skill and how
+relay delivers it to pi. Design authority: `spec.md §12`, ADR-14,
+ADR-28 (original Phase-6 install model), **ADR-44 (current delivery
+model — supersedes the install-skill command).**
+
 The skill is the relay-v2 port of v1's mature engineering-team skill;
 it drives the evaluate → plan → develop → wrap-up cycle that relay
 chains across fresh pi sessions.
@@ -41,29 +44,43 @@ outside the `src/relay_v2` wheel package. A hatch `force-include`
 bundled; editable/source installs (the only mode used today) resolve
 the repo-root tree directly.
 
-## `relay install-skill`
+## How relay delivers the skill (ADR-44)
 
-```
-relay install-skill                       # → ~/.claude/skills/engineering-team/ (pi)
-relay install-skill --project PATH        # → PATH/.claude/skills/engineering-team/
-relay install-skill --force               # overwrite, backing the old copy up first
-relay install-skill --harness pi          # explicit variant selection (default)
-relay install-skill --harness claude-code # errors — variant not present today
-```
+Pi has a first-class skill system (`pi --skill <path>` is repeatable
+and accepts a file or directory containing `SKILL.md` + sibling
+files). Relay's harness uses this directly:
 
-Refuses to clobber an existing install unless `--force`; with `--force`
-the existing directory is moved to `engineering-team.bak-<utcstamp>`
-before the fresh copy is written. Source resolution lives in
-`src/relay_v2/cli/install_skill.py:skill_source_dir`.
+- **`src/relay_v2/harness/skills.py:bundled_skill_dir()`** is the single
+  resolver — tries the wheel-bundled location first
+  (`<site-packages>/relay_v2/skills/engineering-team/pi`), then falls
+  back to the repo-root source layout
+  (`<repo>/skills/engineering-team/pi`). Either is acceptable; raises
+  `FileNotFoundError` if neither is present (broken install).
+- **`Settings.pi_skill_paths`** (`src/relay_v2/config.py`) is a derived
+  property whose default is `[bundled_skill_dir()]`. Override via the
+  colon-separated env var `RELAY_PI_SKILLS`. Setting it to the **empty
+  string** explicitly opts out — pi then only sees auto-discovered
+  skills (see below).
+- **`PiHarness._build_argv`** (`src/relay_v2/harness/pi.py`) appends
+  one `--skill <abs-path>` pair per configured path on every spawn.
+  The skill content goes into pi's system prompt via the SDK's
+  `formatSkillsForPrompt`; the `phases/` and `references/` siblings
+  stay readable on disk for pi's `Read` tool — lazy load is preserved.
 
-`--harness <name>` selects the variant subdirectory under
-`skills/engineering-team/`; the install target path is unchanged
-(no `<name>` suffix at the destination) because the agent reads
-`engineering-team`, not `engineering-team-<harness>`. An unknown
-harness errors with a message listing the available variants. The
-variant-selector `README.md` (one level above the variant directory)
-is copied alongside the variant contents so humans inspecting the
-install can see what was deployed; agents never load it.
+**Pi's auto-discovery stays on.** Pi independently looks in
+`<cwd>/.pi/skills/` (project scope) and `~/.pi/agent/skills/` (user
+scope). Explicit `--skill` injection is **additive**, not exclusive
+— operators can drop a customised skill into either auto-discovered
+location without touching relay. The bundled engteam skill is
+guaranteed to load regardless because relay always injects it.
+
+> **Historical note.** Phase 6 (ADR-28) shipped a `relay install-skill`
+> command that copied the skill into `<target>/.claude/skills/`. That
+> path is a **Claude Code** discovery root, not a pi one — pi reads
+> `.pi/skills/`, not `.claude/skills/`. The install command was silently
+> inert: pi never saw the skill. ADR-44 records the discovery and the
+> switch to `--skill` injection; `relay install-skill` was deleted
+> outright on 2026-05-25.
 
 ## How relay drives the skill
 
@@ -113,8 +130,10 @@ template emits exactly one — plural is opt-in for future skills.
 
 **Automated (CI, deterministic):**
 
-- `tests/cli/test_install_skill.py` — source resolution, project /
-  home targets, `--force` backup, exit codes, arg wiring.
+- `tests/harness/test_pi_skills.py` — bundled-skill resolver works in
+  editable + packaged installs; `PiHarness._build_argv` emits one
+  `--skill <path>` pair per configured path; `RELAY_PI_SKILLS=` opts
+  out; colon-separated env values override.
 - `tests/skills/test_skill_structure.py` — locks the deliverable shape
   and the six ADR-28 port adaptations (file set, frontmatter, the
   seven-verb grammar + prompt markers, `.relay/runs` path migration,
@@ -122,22 +141,23 @@ template emits exactly one — plural is opt-in for future skills.
   inlined-gate / no-`/done` Phase-4 note).
 
 Run with the project gate: `uv run ruff check . && uv run mypy &&
-uv run pytest` (342 passed, 3 pi-e2e skipped; ADR-28 — count includes
-the 9a–9g + 14a–14f post-MVP additions).
+uv run pytest`.
 
 **Behavioral (manual, pi-gated — ADR-28).** The end-to-end acceptance
-(plan.md Phase 6) spawns real pi and is qualitative, so it is a manual
-procedure, gated exactly like the three `PI_INTEGRATION=1` e2e tests
-(non-deterministic, multi-minute, needs the Max-subscription pi auth):
+spawns real pi and is qualitative, so it is a manual procedure, gated
+exactly like the three `PI_INTEGRATION=1` e2e tests (non-deterministic,
+multi-minute, needs the Max-subscription pi auth):
 
 1. Seed the v1 demo fixture (deliberately broken task-tracker, e.g.
    `factorial(5)` returns 24):
    ```bash
    ~/projects/relay/relay-v1/fixtures/eng-team-demo-seed/reset.sh
    ```
-2. `relay install-skill` (or `--project` the fixture), then start a
-   relay run against the fixture root with an "evaluate, plan, and fix
-   the bugs" prompt and `PI_AGENT_SDK=1` set.
+2. Start `relay serve`. No skill install step needed — the bundled
+   skill is injected automatically. Open the dashboard, register the
+   fixture as a project, and start a run against it with an
+   "evaluate, plan, and fix the bugs" prompt prefixed `/engineering-team`.
+   `PI_AGENT_SDK=1` is injected by the harness.
 3. Watch the run in the dashboard: confirm a clean multi-phase
    timeline — `phase-start` evaluation → planning (`pause-for-input`
    gate) → development (`unit-start`/`unit-done` per work unit) →

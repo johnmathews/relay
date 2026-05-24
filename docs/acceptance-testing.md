@@ -113,8 +113,9 @@ context if a step below feels ambiguous.
 
 **Prerequisites:**
 - [ ] Pi v0.74.0 installed; `PI_AGENT_SDK=1` exported.
-- [ ] Engteam skill installed in target project (`relay install-skill
-      --project <path>`).
+- [ ] Engteam skill is injected by relay automatically (ADR-44) — no
+      per-project install needed; verify the bundled tree exists at
+      `skills/engineering-team/pi/SKILL.md`.
 - [ ] Self-hosted Langfuse running (optional, but recommended — both
       gates can be attested in one run).
 - [ ] A real project with at least one concrete improvement target.
@@ -278,8 +279,8 @@ For each item: tick when exercised, log any bug surfaced into §3.
 
 - [ ] `relay serve` starts the daemon on `127.0.0.1:7800`.
 - [ ] `relay --version` reports the right version.
-- [ ] `relay install-skill --project <path>` installs the engteam
-      skill into `<path>/.claude/skills/`.
+- [ ] `PiHarness._build_argv` emits `--skill <bundled-path>` on every
+      pi spawn (ADR-44; covered by `tests/harness/test_pi_skills.py`).
 
 ---
 

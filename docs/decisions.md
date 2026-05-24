@@ -2964,3 +2964,32 @@ whose sandbox-root path this ADR corrects), ADR-13 (worktree
 provisioning — moved together with artifacts in the same sweep),
 ADR-40 (pause-for-review write entry, which inherits the corrected
 root via `get_run_artifacts_dir`).
+
+
+## ADR-44 — Inject the bundled engineering-team skill via `pi --skill` at spawn time (supersedes ADR-28's `install-skill` delivery model)
+
+**Status.** Accepted, 2026-05-25. **Supersedes** ADR-28's `relay install-skill` delivery mechanism (ADR-28's port-adaptation rationale is preserved; only the *how-the-skill-reaches-pi* part is replaced). **Touches** ADR-33 (variant model) — variants still resolve by harness name, but the resolver now feeds `--skill` rather than a copy-target.
+
+**Context.** ADR-28 shipped a `relay install-skill [--project PATH] [--force] [--harness NAME]` command that copied the bundled engineering-team skill tree into `<target>/.claude/skills/engineering-team/`. The default target was `~/.claude/skills/`; `--project PATH` overrode to `<PATH>/.claude/skills/`.
+
+Empirical finding (2026-05-24 investigation, journal/260524-pi-skill-discovery.md): **pi does not read `.claude/skills/`**. Pi has its own native skill system (`packages/coding-agent/src/core/skills.ts`) which discovers skills from `<cwd>/.pi/skills/` (project scope) and `~/.pi/agent/skills/` (user scope), AND exposes a repeatable `--skill <path>` CLI flag that loads a skill file or directory from anywhere on disk. `.claude/skills/` is a *Claude Code* discovery root, not a pi one — the install command had been silently inert for the lifetime of Phase 6. A run starting with `/engineering-team …` against a project where `install-skill` had been run would still trigger `agent_end_no_signal` because pi never saw the sentinel grammar.
+
+Three delivery models considered:
+
+- **(a) Symlink/copy the bundle into each worktree's `.pi/skills/`** at workspace provisioning. Pi auto-discovers it as a project-scope skill. Pro: zero pi-flag changes. Con: duplicate trees in every worktree; staging is a new path with new failure modes.
+- **(b) Inline the SKILL.md content into the per-iter preamble.** Skips pi's skill system entirely. Pro: no on-disk staging anywhere. Con: loses the SKILL.md model where reference files are lazily `Read` by the agent — would require either inlining the whole tree (preamble bloat) or rewriting references to use absolute paths into a non-skill location.
+- **(c) Inject via `pi --skill <bundled-path>` on every spawn.** Pi's first-class mechanism, repeatable, file-or-dir. Pro: no copy, no staging, single canonical source, instantly updated when relay is updated. Con: pi-specific (other harnesses would need their own delivery mechanism — but that's already true for any harness-specific bundle).
+
+**Decision.** **Option (c).** `Settings.pi_skill_paths` is a derived property defaulting to `[bundled_skill_dir()]` (the resolver lives in `src/relay_v2/harness/skills.py`, tries the wheel-bundled `relay_v2/skills/engineering-team/pi` first, falls back to the repo-root source layout). Env override `RELAY_PI_SKILLS` is a colon-separated path list; the empty string is explicit opt-out (pi then sees only its own auto-discovered skills). `PiHarness._build_argv` appends one `--skill <abs-path>` pair per configured path on every spawn. Pi's auto-discovery (`<cwd>/.pi/skills/`, `~/.pi/agent/skills/`) stays on — explicit `--skill` injection is **additive** so operators get a customisation hook for free, and the bundled engteam skill is guaranteed to load regardless.
+
+`relay install-skill` (subcommand + `src/relay_v2/cli/install_skill.py` + `tests/cli/test_install_skill.py`) deleted outright on 2026-05-25 — no deprecation period because the command had never functionally worked. The `src/relay_v2/cli/` package itself was removed; future subcommands can re-add it.
+
+**Consequences.**
+- One line in `_build_argv` is now load-bearing: the `for skill_path in self._settings.pi_skill_paths: argv += ["--skill", str(skill_path)]` loop. Removing it returns the codebase to the broken pre-2026-05-25 state where pi cannot see the sentinel grammar.
+- The failure-banner copy in `frontend/src/views/RunDetailView.vue` for `agent_end_no_signal` no longer instructs the user to run `relay install-skill` — that string was misleading even when the command existed. New copy says "relay injects the skill automatically; if you still hit this, check the timeline for the agent aborting early."
+- ADR-28's six port adaptations (lock-tested by `tests/skills/test_skill_structure.py`) are unchanged. The structural test now imports `bundled_skill_dir` from `relay_v2.harness.skills` instead of the deleted `relay_v2.cli.install_skill`; resolver behaviour is identical.
+- The Dockerfile already `COPY skills/ ./skills/`, and `pyproject.toml`'s `[tool.hatch.build.targets.wheel.force-include]` already maps `skills/` into the wheel as `relay_v2/skills/`. No packaging change.
+- Operators with a pre-existing `<project>/.claude/skills/engineering-team/` install (from the old `install-skill` command) can delete it — it was never read. Operators who customise the skill should drop their version into `<project>/.pi/skills/engineering-team/` (auto-discovered, no flag) or set `RELAY_PI_SKILLS` to point at their fork.
+- Variant resolution (ADR-33) is unchanged: `bundled_skill_dir(harness='pi')` selects the per-harness subdirectory under `skills/engineering-team/`. A future second variant would land as a sibling and would need either its own setting (e.g. `Settings.pi_skill_paths` defaulting to `bundled_skill_dir('claude-code')` for that harness's harness module) or per-harness Settings methods — out of scope here; today pi is the only variant.
+
+**Related ADRs:** ADR-14 (skill port from v1 — preserved), ADR-28 (Phase 6 delivery via copy — superseded for the delivery part), ADR-33 (variant subdirectory model — preserved), ADR-04 (harness isolation — `harness/skills.py` is correctly inside the harness package), ADR-12 (single-user localhost — irrelevant here because the injection is process-local, not user-facing).

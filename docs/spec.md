@@ -1049,19 +1049,18 @@ relay serve                        # start the daemon
 relay start <prompt-file|->        # start a run in the current project
 relay status                       # show active runs
 relay cancel <run_id>              # cancel
-relay install-skill                # install engineering-team skill into ~/.claude/skills
 ```
 
-> **Accuracy note (Phase-8 review, ADR-30).** This is the *target*
-> command surface. As of the MVP, only `relay serve`,
-> `relay --version`, and `relay install-skill` are implemented in
+> **Accuracy note (Phase-8 review, ADR-30; updated 2026-05-25 for
+> ADR-44).** This is the *target* command surface. As of the MVP, only
+> `relay serve` and `relay --version` are implemented in
 > `relay_v2.__main__`. `relay start` / `status` / `cancel` are a
 > post-MVP CLI convenience — in the MVP, run create/list/cancel is
 > done through the dashboard, the REST API (§7), or the MCP server
-> (§8), which is the documented and tested path. The `docs/plan.md`
-> "what done with MVP looks like" `relay start prompt.md` bullet
-> should be read as "a run can be started against a real project"
-> (true via REST/dashboard/MCP), not as a shipped CLI subcommand.
+> (§8), which is the documented and tested path. The earlier
+> `relay install-skill` subcommand was retired by ADR-44 (relay now
+> injects the bundled engineering-team skill into pi via `--skill` at
+> spawn time — no per-project install needed).
 
 ## 12. Engineering-team skill port
 
@@ -1089,14 +1088,17 @@ Per ADR-14. The skill lives at `skills/engineering-team/` inside
   synthesizer iter resumed with a `RELAY_CHILD_RESULTS:` trailer.
   See `docs/fanout.md` for the operational reference.
 
-**Phase-6 implementation note (ADR-28).** The skill is built at
-`skills/engineering-team/` (repo root, outside the `src/relay_v2`
-wheel; a hatch `force-include` maps it into built wheels as
-`relay_v2/skills/`). It is deployed by `relay install-skill`
-(`src/relay_v2/cli/install_skill.py`): copies to
-`~/.claude/skills/engineering-team/` by default, `--project PATH`
-overrides, `--force` overwrites after backing the old copy up. Six
-deliberate port adaptations were applied (and are locked by
+**Phase-6 implementation note (ADR-28, delivery model superseded by
+ADR-44).** The skill is built at `skills/engineering-team/` (repo
+root, outside the `src/relay_v2` wheel; a hatch `force-include` maps
+it into built wheels as `relay_v2/skills/`). As of ADR-44 (2026-05-25)
+the skill is **injected directly into pi via `--skill <bundled-path>`**
+on every spawn — `Settings.pi_skill_paths` resolves to the bundled
+tree by default, `PiHarness._build_argv` appends one `--skill` pair
+per configured path, and the earlier `relay install-skill` command
+(which had been writing to `.claude/skills/` — a Claude Code
+discovery root pi never reads) was deleted outright. Six deliberate
+port adaptations were applied (and are locked by
 `tests/skills/test_skill_structure.py`): (1) the v1 Task-tool subagent
 roles became single-session *analysis lenses* in the initial Phase-6
 port; the fanout-join arc (9a–9g, ADRs 34–39) subsequently added a

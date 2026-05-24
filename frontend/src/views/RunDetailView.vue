@@ -181,9 +181,12 @@ const failureInfo = computed<{
     hint =
       'The agent finished its turn without emitting a closing sentinel ' +
       '([[engteam:done]], [[engteam:handoff]], or [[engteam:pause-for-input]]). ' +
-      'If you meant to drive a structured run, install the engineering-team ' +
-      'skill into the target project (`relay install-skill --project ' +
-      '<root>`) and start the prompt with `/engineering-team …`.'
+      'Relay bundles the engineering-team skill and injects it into every ' +
+      'pi spawn automatically (no per-project install needed). Start the ' +
+      'prompt with `/engineering-team …` to trigger it; if the skill is ' +
+      'already loaded but you got this error, the agent may have aborted ' +
+      'early (token budget, transient API failure) — check the timeline ' +
+      'for the last tool result.'
   } else if (reason === 'timeout') {
     hint =
       'The iter exceeded its wall-clock budget (iter_timeout). The next ' +

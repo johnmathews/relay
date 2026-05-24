@@ -13,6 +13,22 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from relay_v2.harness.skills import bundled_skill_dir
+
+
+def _default_pi_skill_paths() -> list[Path]:
+    """The single bundled engineering-team skill, by default.
+
+    A missing bundle (broken install) degrades silently to an empty list
+    so that misconfiguration in test/dev harnesses doesn't crash startup;
+    the agent will then exit with `agent_end_no_signal` and the dashboard
+    failure banner explains it.
+    """
+    try:
+        return [bundled_skill_dir()]
+    except FileNotFoundError:
+        return []
+
 
 class Settings(BaseSettings):
     """Runtime configuration. Field name ``foo`` ⇄ env var ``RELAY_FOO``."""
@@ -25,6 +41,15 @@ class Settings(BaseSettings):
     pi_bin: str = "pi"
     pi_model: str = "claude-sonnet-4-6"
     pi_provider: str = "anthropic"
+    # Colon-separated (POSIX path-list) directories or `SKILL.md` files
+    # passed to pi via `--skill` on every spawn (pi accepts the flag
+    # repeatedly). The env var name is ``RELAY_PI_SKILLS``. The empty
+    # string disables explicit injection entirely (the agent then only
+    # sees pi's auto-discovered skills under `<cwd>/.pi/skills/` and
+    # `~/.pi/agent/skills/`, which stay on by default — explicit injection
+    # is additive, not exclusive). Unset env → the bundled engineering-team
+    # skill is injected via ``pi_skill_paths`` (see :attr:`pi_skill_paths`).
+    pi_skills: str | None = None
     # Known-good pi pin (OQ-5). Mirrors `.tool-versions`; a mismatch is
     # logged (non-fatal) at first spawn, never enforced.
     pi_expected_version: str = "0.74.0"
@@ -53,6 +78,22 @@ class Settings(BaseSettings):
 
     host: str = "127.0.0.1"
     port: int = 7800
+
+    @property
+    def pi_skill_paths(self) -> list[Path]:
+        """Resolved list of skill paths passed to pi.
+
+        - Env unset (``pi_skills is None``) → the bundled engineering-team
+          skill (or empty list if the bundle isn't shipped — see
+          :func:`_default_pi_skill_paths`).
+        - Env set to an empty string → empty list (explicit opt-out;
+          rely on pi's auto-discovery only).
+        - Env set to a colon-separated path list → those paths verbatim
+          (no merging with the default — explicit overrides bundled).
+        """
+        if self.pi_skills is None:
+            return _default_pi_skill_paths()
+        return [Path(p) for p in self.pi_skills.split(":") if p]
 
     @property
     def db_path(self) -> Path:
