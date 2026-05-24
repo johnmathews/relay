@@ -2,7 +2,7 @@
 import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import type { IncomingMessage, ServerResponse } from 'node:http'
+import { mirrorSseHeaders } from './dev/sse-proxy-headers'
 
 // MANDATE 4 — SSE-safe dev proxy.
 // The backend SSE endpoint (GET /api/events/{run_id}) is a long-lived
@@ -10,9 +10,11 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 // buffering will stall the live tail in dev. We therefore:
 //   - set an explicit long proxyTimeout (1 hour) so the stream is not
 //     killed mid-run,
-//   - in a configure(proxy) hook, on proxyRes detect
-//     content-type: text/event-stream and disable buffering
-//     (flushHeaders + Connection: keep-alive, no compression/transform).
+//   - in a configure(proxy) hook, on proxyRes mirror the upstream
+//     `Content-Type: text/event-stream` and buffering hints onto the
+//     downstream response, then flush. The mirror+flush order is
+//     load-bearing — see `dev/sse-proxy-headers.ts` and its regression
+//     test for why.
 // Target defaults to the runtime default 127.0.0.1:7800 and is
 // overridable via VITE_API_PROXY_TARGET.
 const PROXY_TARGET = process.env.VITE_API_PROXY_TARGET ?? 'http://127.0.0.1:7800'
@@ -34,30 +36,9 @@ export default defineConfig({
         timeout: ONE_HOUR_MS,
         proxyTimeout: ONE_HOUR_MS,
         configure: (proxy) => {
-          proxy.on(
-            'proxyRes',
-            (
-              proxyRes: IncomingMessage,
-              _req: IncomingMessage,
-              res: ServerResponse,
-            ) => {
-              const ct = proxyRes.headers['content-type'] ?? ''
-              if (ct.includes('text/event-stream')) {
-                // Disable any buffering / transform of the SSE body so
-                // events reach the browser as they are produced.
-                proxyRes.headers['cache-control'] = 'no-cache, no-transform'
-                proxyRes.headers['x-accel-buffering'] = 'no'
-                res.setHeader('Cache-Control', 'no-cache, no-transform')
-                res.setHeader('X-Accel-Buffering', 'no')
-                res.setHeader('Connection', 'keep-alive')
-                // Flush headers immediately; do not wait for the body to
-                // fill a buffer before the client sees the response.
-                if (typeof res.flushHeaders === 'function') {
-                  res.flushHeaders()
-                }
-              }
-            },
-          )
+          proxy.on('proxyRes', (proxyRes, _req, res) => {
+            mirrorSseHeaders(proxyRes, res)
+          })
         },
       },
     },

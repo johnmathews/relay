@@ -142,7 +142,44 @@ of red because a local check piped `npm run check` to `tail` and lost
 the real exit code; the lesson is to keep the filter as narrow as
 possible.
 
-### 3. Pi-flavoured token names in `UsageRow.vue`
+### 3. Vite SSE dev-proxy must mirror `Content-Type` before flushing
+
+`vite.config.ts`'s `proxy.on('proxyRes', …)` hook for `/api` delegates
+to `dev/sse-proxy-headers.ts::mirrorSseHeaders`. The helper MUST set
+`Content-Type` on the downstream `res` **before** calling
+`res.flushHeaders()`. http-proxy copies upstream headers onto `res`
+*after* the proxyRes listeners run, but `flushHeaders()` commits the
+response head to the socket immediately — so flushing first means the
+proxied SSE response goes out with no `Content-Type` at all. The
+browser defaults to `text/plain`, and `EventSource` aborts the live
+connection with:
+
+```
+EventSource's response has a MIME type ("text/plain") that is not "text/event-stream"
+```
+
+User-visible symptom: opening a `running` run's detail page shows
+an empty timeline; a manual browser refresh "fixes" it because the
+detail view falls back to REST replay (`status ∈ TERMINAL` and even
+for live, the replay-then-cutover REST page populates the list on
+mount). The Hub and Project list views are REST-only and never
+auto-update either way — so a broken live SSE collapses ALL of the
+real-time experience.
+
+Regression test: `tests/sse-proxy-headers.spec.ts` records the
+ordering with a call-order mock and would fail if a future refactor
+re-introduces the flush-first order or drops the explicit
+`setHeader('Content-Type', …)` call.
+
+Verify in dev: two curls must both show
+`content-type: text/event-stream`.
+
+```sh
+curl -sI http://localhost:5173/api/events/<run_id> | grep -i content-type
+curl -sI http://127.0.0.1:7800/api/events/<run_id> | grep -i content-type
+```
+
+### 4. Pi-flavoured token names in `UsageRow.vue`
 
 Pi's `SessionEnded.messages[].usage` carries `input` / `output` /
 `cacheRead` / `cacheWrite` / `totalTokens` (verbatim per ADR-18),
