@@ -81,7 +81,7 @@ def test_project_list_get_delete(tmp_path: Path) -> None:
     p_a.mkdir()
     p_b.mkdir()
 
-    async def scenario(core: RelayCore) -> None:
+    async def scenario(core: RelayCore) -> tuple[int, int]:
         id_a = await core.register_project(p_a, "alpha")
         id_b = await core.register_project(p_b, "beta")
 
@@ -92,15 +92,77 @@ def test_project_list_get_delete(tmp_path: Path) -> None:
         assert one is not None and one.name == "alpha"
         assert await core.get_project(9999) is None
 
-        # delete only the row; the directory must remain on disk.
+        # Seed a terminal run on id_a with events/iters so the cascade
+        # has something to remove.
+        await _seed_run(core, id_a, "r-a1", status="done")
+        await _seed_run(core, id_a, "r-a2", status="failed")
+        # Project-scoped prompt: must be deleted.
+        await core.create_prompt(id_a, "alpha-only", "body")
+        # Project-global prompt (no project_id): must survive.
+        await core.create_prompt(None, "global", "global-body")
+
+        # Cascade: row + runs + project-scoped prompts gone.
         assert await core.delete_project(id_a) is True
         assert await core.get_project(id_a) is None
-        assert p_a.exists()  # files untouched (spec.md §7)
+        assert p_a.exists()  # files untouched
         assert await core.delete_project(id_a) is False  # unknown id
         assert await core.delete_project(9999) is False
 
         remaining = await core.list_projects()
         assert [p.id for p in remaining] == [id_b]
+        return id_a, id_b
+
+    id_a, _id_b = _run(scenario, settings)
+
+    # Read-back: runs / events / iters for id_a are gone; the project-
+    # scoped prompt is gone; the project-global prompt survives.
+    with _read(settings) as s:
+        assert s.scalar(
+            select(func.count())
+            .select_from(Run)
+            .where(Run.project_id == id_a)
+        ) == 0
+        assert s.scalar(
+            select(func.count())
+            .select_from(Event)
+            .where(Event.run_id.in_(["r-a1", "r-a2"]))
+        ) == 0
+        assert s.scalar(
+            select(func.count())
+            .select_from(Iter)
+            .where(Iter.run_id.in_(["r-a1", "r-a2"]))
+        ) == 0
+        assert s.scalar(
+            select(func.count())
+            .select_from(Prompt)
+            .where(Prompt.project_id == id_a)
+        ) == 0
+        assert s.scalar(
+            select(func.count())
+            .select_from(Prompt)
+            .where(Prompt.project_id.is_(None))
+        ) >= 1
+
+
+def test_delete_project_refuses_active_run(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+
+    async def scenario(core: RelayCore) -> int:
+        pid = await core.register_project(proj, "p")
+        await _seed_run(core, pid, "live", status="running")
+        with pytest.raises(ValueError, match="active run"):
+            await core.delete_project(pid)
+        # Project + run rows untouched.
+        assert await core.get_project(pid) is not None
+        assert await core.get_run("live") is not None
+
+        # awaiting_children also blocks.
+        await _seed_run(core, pid, "fanning", status="awaiting_children")
+        with pytest.raises(ValueError, match="active run"):
+            await core.delete_project(pid)
+        return pid
 
     _run(scenario, settings)
 

@@ -117,13 +117,13 @@ The replay path returns no delta rows — deltas are never persisted
 | GET | `/projects` | `list_projects` | |
 | POST | `/projects` | `register_project` | body `{root_path, name}`; `root_path` is `expanduser`-ed then `resolve`d and must be an existing directory (else **400**); idempotent on the normalised path; 201 |
 | GET | `/projects/{id}` | `get_project` | 404 if absent |
-| DELETE | `/projects/{id}` | `delete_project` | unregister only — **never deletes files on disk**; 204, or 404 if unknown |
+| DELETE | `/projects/{id}` | `delete_project` | cascade-delete the project: every run (and its events / iters / descendants) + every project-scoped prompt (`Prompt.project_id == id`; global prompts with `project_id is None` are unaffected) + the project row itself. **DB-only — never deletes files on disk** (worktrees / `.relay/runs/`). 204; 404 if unknown; 409 if any run is currently active (`running`/`awaiting_children`) — cancel first. |
 
 ### System
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/system/browse` | Read-only directory listing for the dashboard's register-project directory picker. Query `path=` (default `~`). Returns `{path, parent, entries:[{name,path}]}` — entries are subdirectories only, sorted case-insensitive by name; `parent` is `null` at the filesystem root. **NOT sandboxed** (single-user, localhost MVP per ADR-12 — picking a project root inherently needs full-FS access). `path` is `expanduser`-ed then `resolve`d; missing path or non-directory → **404**; permission denied → **403**. |
+| GET | `/system/browse` | Read-only directory listing for the dashboard's register-project directory picker. Query `path=` (default `~`). Returns `{path, parent, entries:[{name,path}]}` — entries are subdirectories only, sorted case-insensitive by name; `parent` is `null` at the filesystem root. **NOT sandboxed** (single-user, localhost MVP per ADR-12 — picking a project root inherently needs full-FS access; never expose by changing `RELAY_HOST` from `127.0.0.1`). `path` is `expanduser`-ed then `resolve`d; missing path or non-directory → **404**; permission denied → **403**. |
 
 ### File browser (read-only, sandboxed)
 

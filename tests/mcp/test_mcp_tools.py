@@ -384,6 +384,25 @@ def test_read_artifact_happy_and_sandbox(tmp_path: Path) -> None:
                 {"run_id": run_id, "path": "missing.md"},
             )
 
+        from relay_v2.api.files import MAX_FILE_BYTES
+
+        # Oversize: size check fires before binary read, so a text-shaped
+        # file just over the cap returns the size error (not OOM-alloc).
+        (run_dir / "big.md").write_bytes(b"a" * (MAX_FILE_BYTES + 1))
+        with pytest.raises(ToolError, match="too large"):
+            await mcp.call_tool(
+                "relay__read_artifact",
+                {"run_id": run_id, "path": "big.md"},
+            )
+
+        # Binary: NUL byte in the first 8 KiB triggers the binary guard.
+        (run_dir / "bin.dat").write_bytes(b"\x00\x01\x02")
+        with pytest.raises(ToolError, match="binary"):
+            await mcp.call_tool(
+                "relay__read_artifact",
+                {"run_id": run_id, "path": "bin.dat"},
+            )
+
     _run(scenario, settings)
 
 

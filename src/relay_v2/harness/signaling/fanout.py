@@ -23,13 +23,24 @@ class FanoutChild(BaseModel):
     prompt: str
 
 
+# Hard cap on the number of children in a single fanout sentinel.
+# Parser-enforced regardless of config; the per-deployment soft cap
+# (settings.max_fanout_width, default 8) is enforced at dispatch.
+MAX_FANOUT_CHILDREN_HARD_CAP = 32
+
+
 class FanoutPayload(BaseModel):
     children: list[FanoutChild]
     join_prompt: str
 
     @field_validator("children")
     @classmethod
-    def at_least_one(cls, v: list[FanoutChild]) -> list[FanoutChild]:
+    def _children_bounds(cls, v: list[FanoutChild]) -> list[FanoutChild]:
         if not v:
             raise ValueError("fanout payload must list at least one child")
+        if len(v) > MAX_FANOUT_CHILDREN_HARD_CAP:
+            raise ValueError(
+                f"fanout payload lists {len(v)} children; hard cap is "
+                f"{MAX_FANOUT_CHILDREN_HARD_CAP}"
+            )
         return v

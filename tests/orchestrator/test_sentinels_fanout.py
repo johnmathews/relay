@@ -34,6 +34,16 @@ def test_fanout_payload_empty_children_raises() -> None:
         FanoutPayload.model_validate({"children": [], "join_prompt": "x"})
 
 
+def test_fanout_payload_too_many_children_raises() -> None:
+    """Hard cap (32) is parser-enforced regardless of config."""
+    too_many = [{"role": f"r{i}", "prompt": "p"} for i in range(33)]
+    with pytest.raises(ValidationError, match="hard cap"):
+        FanoutPayload.model_validate({
+            "children": too_many,
+            "join_prompt": "x",
+        })
+
+
 def test_fanout_payload_missing_join_prompt_raises() -> None:
     with pytest.raises(ValidationError):
         FanoutPayload.model_validate({

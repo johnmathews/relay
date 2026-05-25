@@ -27,8 +27,8 @@ net for stuck 'running' rows (single-user/-process per ADR-12).
 (9a–9g, ADRs 34–39) and pause-for-review (14a–14f, ADRs 40–41). The
 codebase is now in an **MVP-acceptance-testing phase** — feature work
 is parked until the gates close (`docs/acceptance-testing.md`). Counts:
-**342 backend + 3 pi-e2e gated**, **186 frontend**, **42 ADRs**, **39
-source files**, **`ruff`/`mypy --strict` clean**, **94% backend
+**371 backend + 3 pi-e2e gated**, **234 frontend**, **46 ADRs**, **40
+source files**, **`ruff`/`mypy --strict` clean**, **95% backend
 coverage**.
 
 Operational refs:

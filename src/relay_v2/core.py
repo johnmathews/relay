@@ -386,6 +386,12 @@ class RelayCore:
             )
 
         payload = FanoutPayload.model_validate(fanout_payload)
+        if len(payload.children) > self._settings.max_fanout_width:
+            raise ValueError(
+                f"fanout width limit: payload lists {len(payload.children)} "
+                f"children, max_fanout_width="
+                f"{self._settings.max_fanout_width}"
+            )
 
         async with self._sm() as s:
             parent_run = await s.get(Run, parent_run_id)
@@ -1392,16 +1398,54 @@ class RelayCore:
         return True
 
     async def delete_project(self, project_id: int) -> bool:
-        """Unregister a project: delete ONLY the ``projects`` row. Never
-        touches files on disk (spec.md §7 DELETE /api/projects/:id "does
-        not delete files on disk"). False if id unknown, True if deleted."""
+        """Unregister a project and cascade-delete its runs + prompts.
+
+        DB-only — never touches files on disk (worktrees, artifacts,
+        ``.relay/runs/``). Reclaiming on-disk space is a separate manual
+        ``rm -rf`` step.
+
+        Cascade:
+          1. Every :class:`Run` with ``project_id == project_id`` — via
+             :meth:`delete_run` so each run's events, iters, and
+             descendants are removed through the audited path.
+          2. Every project-scoped :class:`Prompt`
+             (``Prompt.project_id == project_id``). The FK is nullable;
+             project-global prompts (``project_id is None``) are
+             unaffected.
+          3. The :class:`Project` row itself.
+
+        Returns ``False`` if ``project_id`` is unknown, ``True`` after
+        a successful cascade. Raises ``ValueError`` if any run is
+        currently active (``running``/``awaiting_children``) — the
+        caller must :meth:`cancel_run` first. The REST adapter maps
+        that to ``409``.
+        """
         async with self._sm() as s:
             row = await s.get(Project, project_id)
             if row is None:
                 return False
-            await s.delete(row)
+            run_rows = list(
+                await s.scalars(
+                    select(Run).where(Run.project_id == project_id)
+                )
+            )
+            for r in run_rows:
+                if r.status in ("running", "awaiting_children"):
+                    raise ValueError(
+                        f"project {project_id} has active run {r.id} "
+                        f"({r.status}); cancel it before delete"
+                    )
+        for r in run_rows:
+            await self.delete_run(r.id)
+        async with self._sm() as s:
+            await s.execute(
+                sql_delete(Prompt).where(Prompt.project_id == project_id)
+            )
+            row = await s.get(Project, project_id)
+            if row is not None:
+                await s.delete(row)
             await s.commit()
-            return True
+        return True
 
     # ── prompts (versioned; spec.md §3.1 / §7) ─────────────────────────
 

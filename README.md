@@ -37,7 +37,7 @@ The four docs under `docs/` are the canonical source. Read in this order:
 | Doc | Purpose |
 |---|---|
 | [`docs/motivation.md`](docs/motivation.md) | Why v2 exists. Goals, non-goals, hard constraints, parked risks. |
-| [`docs/decisions.md`](docs/decisions.md) | 42 ADRs with context, alternatives, rationale, consequences. **Append-only.** |
+| [`docs/decisions.md`](docs/decisions.md) | 46 ADRs with context, alternatives, rationale, consequences. **Append-only.** |
 | [`docs/spec.md`](docs/spec.md) | Canonical design — architecture, data model, harness protocol, signaling, REST + MCP surface, Vue dashboard, observability, packaging. |
 | [`docs/plan.md`](docs/plan.md) | 9 MVP phases (0–8, all complete) + post-MVP arcs (9a–9g fanout-join + 14a–14f pause-for-review, both shipped) + remaining sketch. |
 | [`docs/acceptance-testing.md`](docs/acceptance-testing.md) | Live tracker for the current MVP-acceptance phase: gates, exercise sweep, bug log, definition of done. |
@@ -64,7 +64,7 @@ Requires [`uv`](https://docs.astral.sh/uv/) and Python 3.13.
 
 ```bash
 uv sync                              # create the venv, install deps
-uv run pytest                        # run the test suite (342 passed, 3 pi-e2e gated)
+uv run pytest                        # run the test suite (371 passed, 3 pi-e2e gated)
 uv run relay serve                   # daemon on http://127.0.0.1:7800
 curl http://127.0.0.1:7800/health    # -> {"status": "ok"}
 ```
@@ -107,9 +107,11 @@ it with Claude Code / Claude Desktop by copying the `relay-v2` entry
 from [`docs/mcp-config.example.json`](docs/mcp-config.example.json) into
 your `.mcp.json` (Claude Code) or `claude_desktop_config.json`
 (Claude Desktop). The backend must be running and the URL must stay on
-`127.0.0.1`/`localhost` (the server enforces a localhost
-DNS-rebinding allow-list — ADR-12 single-user, ADR-27). Full reference:
-[`docs/mcp.md`](docs/mcp.md).
+`127.0.0.1`/`localhost`. The MCP `/mcp` endpoint enforces a localhost
+DNS-rebinding allow-list (provided by the official MCP SDK; ADR-27).
+The REST surface relies on the default `RELAY_HOST=127.0.0.1` bind — do
+not override unless you understand the consequences (ADR-12). Full
+reference: [`docs/mcp.md`](docs/mcp.md).
 
 ## Observability (optional)
 

@@ -58,7 +58,14 @@ async def get_project(
 async def delete_project(
     project_id: int, core: CoreDep
 ) -> Response:
-    if not await core.delete_project(project_id):
+    """Unregister a project and cascade-delete its runs + prompts.
+    DB-only; never touches files on disk. 404 unknown project; 409 if
+    any run is currently active (cancel first)."""
+    try:
+        ok = await core.delete_project(project_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not ok:
         raise HTTPException(
             status_code=404, detail=f"unknown project_id={project_id}"
         )

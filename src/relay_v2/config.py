@@ -70,6 +70,12 @@ class Settings(BaseSettings):
     #   tasks across all active parents (Option A, ADR-35).
     max_fanout_depth: int = 2
     max_fanout_concurrent: int = 4
+    # max_fanout_width: maximum FanoutPayload.children list length per
+    #   closing fanout sentinel (soft, operator-tunable cap). Default 8;
+    #   the hard cap (32) is enforced inside FanoutPayload's validator
+    #   so a malformed agent emission is rejected at parse time
+    #   regardless of config. Env var RELAY_MAX_FANOUT_WIDTH.
+    max_fanout_width: int = 8
 
     otel_export: str = "none"  # "langfuse" | "none"
     langfuse_host: str | None = None

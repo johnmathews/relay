@@ -218,7 +218,12 @@ def test_noop_run_completes_without_spans(tmp_path: Path) -> None:
     _run(scenario, settings, harness, NOOP)  # no exporter exists at all
 
 
-def test_langfuse_misconfig_fails_fast(tmp_path: Path) -> None:
+def test_langfuse_misconfig_fails_fast(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("RELAY_LANGFUSE_HOST", raising=False)
+    monkeypatch.delenv("RELAY_LANGFUSE_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("RELAY_LANGFUSE_SECRET_KEY", raising=False)
     with pytest.raises(ValueError, match="langfuse"):
         build_instrumentation(
             _settings(tmp_path, otel_export="langfuse")  # keys unset

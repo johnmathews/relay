@@ -102,6 +102,78 @@ def test_project_crud(tmp_path: Path) -> None:
     _run(body, s)
 
 
+def test_delete_project_409_when_run_is_active(tmp_path: Path) -> None:
+    """W7: DELETE /api/projects/{id} returns 409 when any run is
+    currently active (`running` or `awaiting_children`). The cascade
+    refuses; the caller must cancel the run first."""
+    from sqlalchemy import select
+
+    from relay_v2.db.models import Project
+    from relay_v2.orchestrator.lifecycle import (
+        create_run,
+        open_iter,
+        set_run_status,
+    )
+
+    s = _settings(tmp_path)
+    proj_root = tmp_path / "proj"
+    proj_root.mkdir()
+    harness = ScriptedHarness([TextScript(DONE_BLOCK)])
+    app = create_app(s, harness=harness)
+
+    async def body() -> None:
+        async with app.router.lifespan_context(app):
+            core = app.state.core
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as ac:
+                pid = await core.register_project(proj_root, "demo")
+                # Seed a `running` run directly through the lifecycle
+                # helpers — no harness drive, no terminal status.
+                await create_run(
+                    core._sm,
+                    run_id="live",
+                    project_id=pid,
+                    prompt_body="seeded",
+                    max_iters=1,
+                    iter_timeout=60,
+                    worktree_path=None,
+                    branch=None,
+                )
+                await open_iter(
+                    core._sm,
+                    run_id="live",
+                    seq=1,
+                    phase=None,
+                    prompt="p",
+                    preamble="pre",
+                )
+                await set_run_status(
+                    core._sm, "live", "running", ended=False
+                )
+
+                r = await ac.delete(f"/api/projects/{pid}")
+                assert r.status_code == 409
+                assert "active run" in r.json()["detail"]
+
+                # Project row is intact.
+                async with core._sm() as sess:
+                    assert (
+                        await sess.scalar(
+                            select(Project).where(Project.id == pid)
+                        )
+                    ) is not None
+
+                # Settle the run so lifespan teardown's orphan-sweep
+                # finds nothing in flight.
+                await set_run_status(
+                    core._sm, "live", "cancelled", ended=True
+                )
+
+    asyncio.run(body())
+
+
 def test_project_register_expands_tilde(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -32,7 +32,12 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from relay_v2.api.files import SandboxViolation, resolve_within_sandbox
+from relay_v2.api.files import (
+    BINARY_SNIFF_BYTES,
+    MAX_FILE_BYTES,
+    SandboxViolation,
+    resolve_within_sandbox,
+)
 from relay_v2.api.schemas import EventOut, IterOut, RunDetailOut, RunOut
 from relay_v2.core import RelayCore
 
@@ -166,6 +171,15 @@ def create_mcp_server(core: RelayCore) -> FastMCP:
             raise ValueError(f"invalid artifact path: {exc}") from exc
         if not target.is_file():
             raise ValueError(f"artifact not found: {path!r}")
-        return target.read_text()
+        size = target.stat().st_size
+        if size > MAX_FILE_BYTES:
+            raise ValueError(
+                f"artifact too large: {size} bytes > {MAX_FILE_BYTES} "
+                f"limit"
+            )
+        raw = target.read_bytes()
+        if b"\x00" in raw[:BINARY_SNIFF_BYTES]:
+            raise ValueError("artifact is binary; not readable as text")
+        return raw.decode("utf-8", errors="replace")
 
     return mcp

@@ -132,6 +132,43 @@ def test_subagent_dispatch_events_are_iter_scoped(tmp_path: Path) -> None:
         engine.dispose()
 
 
+def test_dispatch_width_limit_fails_parent_run(tmp_path: Path) -> None:
+    """Parent emitting more children than max_fanout_width fails the
+    parent run, never provisions the child worktrees, never spawns
+    children."""
+    settings = _settings(tmp_path, max_fanout_width=1)
+    # FANOUT_TWO has 2 children; max_fanout_width=1 should reject.
+    harness = ScriptedHarness([TextScript(FANOUT_TWO)])
+
+    async def scenario(core: RelayCore) -> str:
+        pid = await core.register_project(tmp_path, "p")
+        parent_id = await core.start_run(pid, "Start.")
+        await core.wait_for_run(parent_id)
+        return parent_id
+
+    parent_id = _run_sync(scenario, settings, harness)
+    engine = create_engine(settings.db_url)
+    try:
+        with Session(engine) as s:
+            parent = s.get(Run, parent_id)
+            assert parent is not None and parent.status == "failed"
+            # No child rows were created.
+            children = list(
+                s.scalars(select(Run).where(Run.parent_run_id == parent_id))
+            )
+            assert children == []
+            # The run_ended summary names the width cap.
+            ended = s.scalar(
+                select(Event).where(
+                    Event.run_id == parent_id, Event.kind == "run_ended"
+                )
+            )
+            assert ended is not None
+            assert "max_fanout_width" in ended.payload["summary"]
+    finally:
+        engine.dispose()
+
+
 def test_dispatch_depth_limit_fails_child_run(tmp_path: Path) -> None:
     """Child at depth 1 trying to fanout when max_fanout_depth=1 fails."""
     settings = _settings(tmp_path, max_fanout_depth=1)

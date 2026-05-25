@@ -11,9 +11,23 @@ necessary or supported.
 from __future__ import annotations
 
 import argparse
+import sys
 from collections.abc import Sequence
 
 from relay_v2.version import __version__
+
+_LOCALHOST_BINDS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+_NON_LOCALHOST_WARNING = """\
+WARNING: relay is binding to a non-localhost host (RELAY_HOST={host}).
+The MVP envelope (ADR-12) assumes a localhost bind; off-localhost exposes:
+  - /api/system/browse lists arbitrary host directories (not sandboxed).
+  - /api/runs/... exposes full run management with no auth.
+  - SSE streams have no rate limit / auth.
+  - The MCP /mcp mount has its own DNS-rebinding protection but
+    inherits the same network reachability.
+Proceeding anyway (warn, not refuse). Set RELAY_HOST=127.0.0.1 to silence.
+"""
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -36,6 +50,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         from relay_v2.config import get_settings
 
         settings = get_settings()
+        if settings.host not in _LOCALHOST_BINDS:
+            print(
+                _NON_LOCALHOST_WARNING.format(host=settings.host),
+                file=sys.stderr,
+                end="",
+            )
         uvicorn.run("relay_v2.app:app", host=settings.host, port=settings.port)
         return 0
 

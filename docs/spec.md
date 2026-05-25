@@ -642,6 +642,9 @@ GET    /api/runs/:id              get run detail     includes iters[], current s
 GET    /api/runs/:id/children     list direct child runs  returns list[Run] ordered by started_at
 POST   /api/runs/:id/cancel       cancel a run
 POST   /api/runs/:id/resume       resume a paused run  body: {answer}
+DELETE /api/runs/:id              delete a run and its events/iters/descendants
+                                  (DB only — does not touch files on disk);
+                                  204, 404 if unknown, 409 if currently active.
 GET    /api/runs/:id/events       paginated events for replay
 GET    /api/runs/:id/preview      preview the rendered prompt + preamble that WOULD be sent
                                   (no side effects — used by the dashboard's "New Run" wizard)
@@ -654,6 +657,17 @@ GET    /api/projects              list projects
 POST   /api/projects              register a project body: {root_path, name}
 GET    /api/projects/:id          get project detail
 DELETE /api/projects/:id          unregister (does not delete files on disk)
+
+# System ───────────────────────────────────────────────────────────────────────
+GET    /api/system/browse         read-only directory listing for the dashboard's
+                                  register-project picker. Query path=<absolute or ~>
+                                  (default ~). Returns {path, parent, entries:[{name,path}]};
+                                  entries are subdirectories only.
+                                  **NOT sandboxed** (single-user, localhost MVP per
+                                  ADR-12 — picking a project root inherently needs
+                                  full-FS access; never expose by changing RELAY_HOST
+                                  from 127.0.0.1). Missing path / non-dir → 404;
+                                  permission denied → 403.
 
 # File browser (read-only, sandboxed) ─────────────────────────────────
 GET    /api/projects/:id/files    list files         query: path=<relative> (default: project root)
@@ -1012,6 +1026,10 @@ Per ADR-10.
 | `RELAY_PORT` | `7800` | server port |
 | `RELAY_MAX_FANOUT_DEPTH` | `2` | maximum parent→child recursion depth (hard cap 4) |
 | `RELAY_MAX_FANOUT_CONCURRENT` | `4` | concurrent child-run task semaphore pool size |
+| `RELAY_MAX_FANOUT_WIDTH` | `8` | soft cap on the children list length per closing fanout sentinel (operator-tunable); the parser hard cap (32) rejects anything larger regardless of config |
+| `RELAY_PI_SKILLS` | unset | colon-separated POSIX path list of skill dirs / `SKILL.md` files passed to pi via repeated `--skill` flags on every spawn (ADR-44). Unset → the bundled engineering-team skill is injected. Empty string → explicit opt-out (pi sees only its own auto-discovered skills under `<cwd>/.pi/skills/` and `~/.pi/agent/skills/`). |
+| `RELAY_MAX_FANOUT_WIDTH` | `8` | soft cap on the children list length per closing fanout sentinel (operator-tunable); the parser hard cap (32) rejects anything larger regardless of config |
+| `RELAY_PI_SKILLS` | unset | colon-separated POSIX path list of skill dirs / `SKILL.md` files passed to pi via repeated `--skill` flags on every spawn (ADR-44). Unset → the bundled engineering-team skill is injected. Empty string → explicit opt-out (pi sees only its own auto-discovered skills under `<cwd>/.pi/skills/` and `~/.pi/agent/skills/`). |
 
 Pi-side env vars (passed through to subprocess):
 - `PI_AGENT_SDK=1` — always set by `PiHarness` per ADR-09.

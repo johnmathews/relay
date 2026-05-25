@@ -529,7 +529,7 @@ covers install + run.
 > `.github/workflows/ci.yml` (full Python + frontend gate, GHCR
 > publish on push to `main`, `workflow_dispatch`); ADR-30 + spec §11.2
 > note + CLAUDE.md update. Suite 192→**194 passed**, 3 pi-e2e gated;
-> ruff + `mypy --strict` clean (38 source files); coverage 93%.
+> ruff + `mypy --strict` clean (39 source files); coverage 94%.
 > `docker build` + container-boot smoke verified locally (`/health`,
 > `/`, deep SPA route, `/openapi.json`). The automated/manual split is
 > ADR-30. **Outstanding (manual, owner-run, journal-attested):** the
