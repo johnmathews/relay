@@ -320,3 +320,60 @@ def test_get_run_children_after_scripted_fanout(tmp_path: Path) -> None:
             )
 
     asyncio.run(body())
+
+
+# ── DELETE /api/runs/{run_id} ──────────────────────────────────────────
+
+
+def test_delete_run_unknown_returns_404(tmp_path: Path) -> None:
+    s = _settings(tmp_path)
+
+    async def body() -> None:
+        async with _client_with_core(s) as (ac, _core):
+            res = await ac.delete("/api/runs/nope")
+            assert res.status_code == 404
+
+    asyncio.run(body())
+
+
+def test_delete_run_terminal_returns_204(tmp_path: Path) -> None:
+    s = _settings(tmp_path)
+    proj_root = tmp_path / "proj"
+    proj_root.mkdir()
+
+    async def body() -> None:
+        async with _client_with_core(s) as (ac, core):
+            project_id = await _register_project(ac, proj_root)
+            run_id = await _start_run(ac, project_id, "hello")
+            await core.wait_for_run(run_id)  # settles to done
+
+            res = await ac.delete(f"/api/runs/{run_id}")
+            assert res.status_code == 204
+            # Subsequent GET → 404.
+            assert (await ac.get(f"/api/runs/{run_id}")).status_code == 404
+
+    asyncio.run(body())
+
+
+def test_delete_run_active_returns_409(tmp_path: Path) -> None:
+    """A row in 'running' status (e.g. a prior process left it stuck before
+    orphan recovery sweeps it) must be cancelled first."""
+    s = _settings(tmp_path)
+    proj_root = tmp_path / "proj"
+    proj_root.mkdir()
+
+    async def body() -> None:
+        async with _client_with_core(s) as (ac, core):
+            project_id = await _register_project(ac, proj_root)
+            run_id = await _start_run(ac, project_id, "hello")
+            await core.wait_for_run(run_id)
+            # Force the row back to 'running' to simulate an active run
+            # (the scripted harness already settled, so no real task races us).
+            from relay_v2.orchestrator.lifecycle import set_run_status
+            await set_run_status(core._sm, run_id, "running", ended=False)
+
+            res = await ac.delete(f"/api/runs/{run_id}")
+            assert res.status_code == 409, res.text
+            assert "running" in res.json()["detail"]
+
+    asyncio.run(body())

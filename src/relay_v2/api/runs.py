@@ -173,6 +173,27 @@ async def list_run_events(
     )
 
 
+@router.delete(
+    "/runs/{run_id}", status_code=http_status.HTTP_204_NO_CONTENT
+)
+async def delete_run(run_id: str, core: CoreDep) -> None:
+    """Delete a run and all of its events/iters/descendants.
+
+    DB-only — does NOT touch files on disk (worktree, run_dir);
+    mirrors ``DELETE /api/projects/{id}``. Reclaiming on-disk space is a
+    separate manual ``rm -rf .relay/runs/<id>`` step.
+
+    ``404`` if ``run_id`` is unknown. ``409`` if the run is currently
+    active (``running``/``awaiting_children``) — cancel it first.
+    """
+    try:
+        ok = await core.delete_run(run_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"unknown run {run_id}")
+
+
 @router.get("/runs/{run_id}/preview", response_model=PreviewOut)
 async def preview_run(
     run_id: str,

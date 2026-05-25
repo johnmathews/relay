@@ -39,6 +39,7 @@ models in `relay_v2.api.schemas` (response models use
 | GET | `/runs/{run_id}` | `get_run` + `list_iters` | includes `iters[]` + current status; 404 if absent |
 | GET | `/runs/{run_id}/children` | `list_children` | direct children of a parent run (no recursion); `[]` when no fanout; 404 if `run_id` unknown (9e) |
 | POST | `/runs/{run_id}/cancel` | `cancel_run` | returns the updated run; 404 if `run_id` unknown |
+| DELETE | `/runs/{run_id}` | `delete_run` | cascade-deletes the run + all events / iters / descendants. DB-only — **never deletes files on disk** (worktree + run artifacts remain); mirror of `DELETE /projects/{id}`. 204; 404 if unknown; 409 if `running` / `awaiting_children` (cancel first) |
 | POST | `/runs/{run_id}/resume` | `resume_run` | body `{answer}`; not-paused / already-running → 409; unknown run or deleted project → 404 |
 | GET | `/runs/{run_id}/events` | `list_events` | paginated replay; query `after_seq=0, limit=100, offset=0` |
 | GET | `/runs/{run_id}/preview` | `preview_run` | **no side effects** — no run row, event, or dir. Path segment is the **project id** (the New-Run wizard previews a prospective run; no run exists yet — see "Preview" below). query `prompt_body? \| prompt_id?, phase?` |

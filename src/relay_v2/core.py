@@ -34,6 +34,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from sqlalchemy import delete as sql_delete
 from sqlalchemy import func, select
 
 from relay_v2.config import Settings, get_settings
@@ -1343,6 +1344,49 @@ class RelayCore:
     async def get_project(self, project_id: int) -> Project | None:
         async with self._sm() as s:
             return await s.get(Project, project_id)
+
+    async def delete_run(self, run_id: str) -> bool:
+        """Delete a run and all of its events/iters/descendants.
+
+        DB-only — never touches files on disk (worktree, run_dir);
+        mirrors :meth:`delete_project`. The dashboard surfaces this as
+        "clear history"; reclaiming on-disk space is a separate manual
+        ``rm -rf .relay/runs/<id>`` step.
+
+        Returns ``False`` if ``run_id`` is unknown, ``True`` after a
+        successful delete. Raises ``ValueError`` if the run is currently
+        active (``running`` or ``awaiting_children``) — those have an
+        in-memory task or join-watcher; the caller must
+        :meth:`cancel_run` first so the row settles to a terminal status.
+
+        Cascade-deletes child runs (Shape B fanout —
+        ``parent_run_id == run_id``) depth-first before removing this
+        run's rows. The schema has no ``ON DELETE CASCADE`` (ADR-17
+        hand-rolled), so events + iters are removed explicitly.
+        """
+        async with self._sm() as s:
+            row = await s.get(Run, run_id)
+            if row is None:
+                return False
+            if row.status in ("running", "awaiting_children"):
+                raise ValueError(
+                    f"run {run_id} is {row.status}; "
+                    "cancel it before delete"
+                )
+        children = await self.list_children(run_id)
+        for child in children:
+            await self.delete_run(child.id)
+        async with self._sm() as s:
+            await s.execute(sql_delete(Event).where(Event.run_id == run_id))
+            await s.execute(sql_delete(Iter).where(Iter.run_id == run_id))
+            row = await s.get(Run, run_id)
+            if row is not None:
+                await s.delete(row)
+            await s.commit()
+        # Drop the settled _RunState so it can be GC'd. Active rows were
+        # refused above; entries here belong only to terminal runs.
+        self._runs.pop(run_id, None)
+        return True
 
     async def delete_project(self, project_id: int) -> bool:
         """Unregister a project: delete ONLY the ``projects`` row. Never

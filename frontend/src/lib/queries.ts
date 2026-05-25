@@ -749,6 +749,40 @@ export function useCancelRunMutation(): UseMutationReturn<
   })
 }
 
+/**
+ * `useMutation` to delete a run (`DELETE /api/runs/{run_id}`). Cascade-
+ * deletes the run's events / iters / descendants (DB-only — files on
+ * disk are left alone, matching `DELETE /api/projects/{id}`). 204 on
+ * success, 404 if unknown, 409 if the run is still active
+ * (`running` / `awaiting_children`) — the latter two surface as an
+ * `ApiError` carrying `status` so the caller can show an inline message
+ * (e.g. skip the row in a bulk delete and report which ones refused).
+ *
+ * On success invalidates the broad `keys.runs()` prefix so every
+ * run list / hub status / child pane drops the deleted row(s). The
+ * detail key for the deleted run is dropped together with the list
+ * (`['runs', 'detail', id]` is a prefix-descendant of `['runs']`).
+ */
+export function useDeleteRunMutation(): UseMutationReturn<
+  void,
+  string,
+  ApiError
+> {
+  const cache = useQueryCache()
+  return useMutation({
+    mutation: async (runId: string) => {
+      unwrap(
+        await api.DELETE('/api/runs/{run_id}', {
+          params: { path: { run_id: runId } },
+        }),
+      )
+    },
+    onSuccess: () => {
+      void cache.invalidateQueries({ key: keys.runs() })
+    },
+  })
+}
+
 /** Arguments for the resume mutation: which run + the answer text. */
 export interface ResumeRunArgs {
   runId: string

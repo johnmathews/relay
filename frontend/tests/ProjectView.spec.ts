@@ -19,11 +19,13 @@ const {
   updatePromptMutate,
   deletePromptMutate,
   deleteProjectMutate,
+  deleteRunMutate,
 } = vi.hoisted(() => ({
   createPromptMutate: vi.fn(),
   updatePromptMutate: vi.fn(),
   deletePromptMutate: vi.fn(),
   deleteProjectMutate: vi.fn(),
+  deleteRunMutate: vi.fn(),
 }))
 
 // Stores the most-recently registered filter getter from useRunsQuery so
@@ -71,6 +73,11 @@ vi.mock('@/lib/queries', () => ({
   }),
   useDeleteProjectMutation: () => ({
     mutateAsync: deleteProjectMutate,
+    error: ref(null),
+    isLoading: ref(false),
+  }),
+  useDeleteRunMutation: () => ({
+    mutateAsync: deleteRunMutate,
     error: ref(null),
     isLoading: ref(false),
   }),
@@ -135,6 +142,7 @@ describe('ProjectView', () => {
     updatePromptMutate.mockReset()
     deletePromptMutate.mockReset()
     deleteProjectMutate.mockReset()
+    deleteRunMutate.mockReset()
     _runsFiltersGetter = null
     projectData.value = {
       id: 7,
@@ -414,6 +422,86 @@ describe('ProjectView', () => {
     // project id — the W7 source abstraction).
     expect(tree.attributes('data-store')).toBe('project:7')
     expect(viewer.attributes('data-store')).toBe('project:7')
+  })
+
+  it('Runs multi-select: enter mode, select rows, bulk delete invokes mutation per id', async () => {
+    runsData.value = [
+      {
+        id: 'r-done',
+        status: 'done',
+        prompt_id: null,
+        started_at: '2026-05-19T10:00:00Z',
+      } as unknown as Run,
+      {
+        id: 'r-failed',
+        status: 'failed',
+        prompt_id: null,
+        started_at: '2026-05-19T09:00:00Z',
+      } as unknown as Run,
+      {
+        id: 'r-running',
+        status: 'running',
+        prompt_id: null,
+        started_at: '2026-05-19T08:00:00Z',
+      } as unknown as Run,
+    ]
+    deleteRunMutate.mockResolvedValue(undefined)
+
+    const w = mountView()
+    await flushPromises()
+
+    // No checkboxes until select mode is entered.
+    expect(w.find('[data-testid="run-check-r-done"]').exists()).toBe(false)
+    await w.get('[data-testid="runs-select-mode"]').trigger('click')
+    expect(w.find('[data-testid="run-check-r-done"]').exists()).toBe(true)
+
+    // Running rows render a disabled checkbox.
+    const runningCheck = w.get('[data-testid="run-check-r-running"]')
+    expect(
+      (runningCheck.element as HTMLInputElement).disabled,
+    ).toBe(true)
+
+    // Select two terminal runs.
+    await w.get('[data-testid="run-check-r-done"]').trigger('click')
+    await w.get('[data-testid="run-check-r-failed"]').trigger('click')
+    const btn = w.get('[data-testid="runs-delete-selected"]')
+    expect(btn.text()).toContain('Delete selected (2)')
+
+    // Confirm → both ids passed to the mutation.
+    await btn.trigger('click')
+    await w
+      .get('[data-testid="runs-delete-confirm-button"]')
+      .trigger('click')
+    await flushPromises()
+
+    expect(deleteRunMutate).toHaveBeenCalledTimes(2)
+    const calledWith = deleteRunMutate.mock.calls.map(
+      (args: unknown[]) => args[0] as string,
+    )
+    expect(new Set(calledWith)).toEqual(new Set(['r-done', 'r-failed']))
+    // Select mode auto-exits on a clean success.
+    expect(w.find('[data-testid="run-check-r-done"]').exists()).toBe(false)
+  })
+
+  it('Runs multi-select: row click toggles checkbox in select mode (no nav)', async () => {
+    runsData.value = [
+      {
+        id: 'r-done',
+        status: 'done',
+        prompt_id: null,
+        started_at: '2026-05-19T10:00:00Z',
+      } as unknown as Run,
+    ]
+    const w = mountView()
+    await flushPromises()
+
+    await w.get('[data-testid="runs-select-mode"]').trigger('click')
+    // Click the row (the inner button). Should toggle selection, not navigate.
+    await w.get('[data-testid="run-row-r-done"]').trigger('click')
+    expect(push).not.toHaveBeenCalled()
+    const check = w.get('[data-testid="run-check-r-done"]')
+      .element as HTMLInputElement
+    expect(check.checked).toBe(true)
   })
 
   it('tab switching shows exactly one panel at a time (Runs default)', async () => {

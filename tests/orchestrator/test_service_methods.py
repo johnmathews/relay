@@ -22,7 +22,12 @@ from sqlalchemy.orm import Session
 
 from relay_v2.config import Settings
 from relay_v2.core import RelayCore
-from relay_v2.db.models import Prompt, Run
+from relay_v2.db.models import Event, Iter, Prompt, Run
+from relay_v2.orchestrator.lifecycle import (
+    create_run,
+    open_iter,
+    set_run_status,
+)
 from tests.orchestrator.scripted_harness import (
     ScriptedHarness,
     TextScript,
@@ -98,6 +103,135 @@ def test_project_list_get_delete(tmp_path: Path) -> None:
         assert [p.id for p in remaining] == [id_b]
 
     _run(scenario, settings)
+
+
+# ── runs (delete) ──────────────────────────────────────────────────────
+
+
+async def _seed_run(
+    core: RelayCore,
+    project_id: int,
+    run_id: str,
+    *,
+    status: str = "done",
+    parent_run_id: str | None = None,
+) -> None:
+    """Seed a run row, an iter, and a few events for delete-cascade tests.
+
+    Goes directly through ``lifecycle.create_run`` + ``set_run_status``
+    so the test can dial the status to terminal / active without driving
+    a full loop.
+    """
+    await create_run(
+        core._sm,
+        run_id=run_id,
+        project_id=project_id,
+        prompt_body="seeded",
+        max_iters=1,
+        iter_timeout=60,
+        worktree_path=None,
+        branch=None,
+        parent_run_id=parent_run_id,
+    )
+    iter_id = await open_iter(
+        core._sm,
+        run_id=run_id,
+        seq=1,
+        phase=None,
+        prompt="p",
+        preamble="pre",
+    )
+    await core.store_event(run_id, "iter_started", {}, iter_id=iter_id)
+    await core.store_event(run_id, "iter_ended", {"reason": "done"}, iter_id=iter_id)
+    if status != "running":
+        await set_run_status(core._sm, run_id, status, ended=True)
+
+
+def test_delete_run_cascades_events_and_iters(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+
+    async def scenario(core: RelayCore) -> None:
+        pid = await core.register_project(proj, "p")
+        await _seed_run(core, pid, "r1", status="done")
+        await _seed_run(core, pid, "r2", status="failed")
+
+        # Sanity: events/iters exist for r1.
+        assert await core.get_run("r1") is not None
+        events_r1 = await core.list_events("r1")
+        assert len(events_r1) >= 2
+
+        assert await core.delete_run("r1") is True
+        assert await core.get_run("r1") is None
+        # r2 untouched.
+        assert await core.get_run("r2") is not None
+
+        # Re-deleting is a no-op (returns False).
+        assert await core.delete_run("r1") is False
+        assert await core.delete_run("nope") is False
+
+    _run(scenario, settings)
+
+    # Read-back: r1's events / iters are gone; r2's are intact.
+    with _read(settings) as s:
+        assert s.scalar(
+            select(func.count()).select_from(Event).where(Event.run_id == "r1")
+        ) == 0
+        assert s.scalar(
+            select(func.count()).select_from(Iter).where(Iter.run_id == "r1")
+        ) == 0
+        assert s.scalar(
+            select(func.count()).select_from(Event).where(Event.run_id == "r2")
+        ) > 0
+
+
+def test_delete_run_refuses_active(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+
+    async def scenario(core: RelayCore) -> None:
+        pid = await core.register_project(proj, "p")
+        await _seed_run(core, pid, "live", status="running")
+        with pytest.raises(ValueError, match="running"):
+            await core.delete_run("live")
+
+        await _seed_run(core, pid, "fanning", status="awaiting_children")
+        with pytest.raises(ValueError, match="awaiting_children"):
+            await core.delete_run("fanning")
+
+        # Run is still there after the refused deletes.
+        assert await core.get_run("live") is not None
+        assert await core.get_run("fanning") is not None
+
+    _run(scenario, settings)
+
+
+def test_delete_run_cascades_children(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+
+    async def scenario(core: RelayCore) -> None:
+        pid = await core.register_project(proj, "p")
+        await _seed_run(core, pid, "parent", status="done")
+        await _seed_run(core, pid, "child-a", status="done", parent_run_id="parent")
+        await _seed_run(core, pid, "child-b", status="failed", parent_run_id="parent")
+        # Grandchild — depth-first cascade must reach it.
+        await _seed_run(
+            core, pid, "grand", status="done", parent_run_id="child-a"
+        )
+
+        assert await core.delete_run("parent") is True
+
+        for rid in ("parent", "child-a", "child-b", "grand"):
+            assert await core.get_run(rid) is None
+
+    _run(scenario, settings)
+
+    with _read(settings) as s:
+        assert s.scalar(select(func.count()).select_from(Run)) == 0
 
 
 # ── prompts (versioned) ────────────────────────────────────────────────

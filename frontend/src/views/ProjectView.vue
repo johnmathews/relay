@@ -39,8 +39,10 @@ import {
   usePromptsQuery,
   useDeletePromptMutation,
   useDeleteProjectMutation,
+  useDeleteRunMutation,
   asAsyncState,
   projectFileSource,
+  ApiError,
   type Prompt,
 } from '@/lib/queries'
 import { useBrowserUiStore } from '@/stores/files'
@@ -70,6 +72,95 @@ const runsState = asAsyncState(runsQuery)
 
 function openRun(runId: string): void {
   void router.push({ name: 'run-detail', params: { id: runId } })
+}
+
+// ── Run multi-select + bulk delete ────────────────────────────────────
+// Select mode swaps row-click behaviour from "open run" to "toggle
+// selection"; a confirm step + bulk DELETE then runs in parallel via
+// Promise.allSettled so one refused row (still-active 409) doesn't
+// block the rest. Active runs (`running` / `awaiting_children`) are
+// not selectable — they have an in-memory task and must be cancelled
+// first; the checkbox is rendered disabled with a tooltip.
+const ACTIVE_STATUSES = new Set(['running', 'awaiting_children'])
+const selectMode = ref(false)
+const selectedRunIds = ref<Set<string>>(new Set())
+const confirmDeleteRuns = ref(false)
+const deleteRun = useDeleteRunMutation()
+/** Last bulk-delete summary: `{deleted, failed}` so the UI can report. */
+const lastDeleteSummary = ref<{ deleted: number; failed: string[] } | null>(
+  null,
+)
+
+const selectableRuns = computed(() =>
+  runs.value.filter((r) => !ACTIVE_STATUSES.has(r.status)),
+)
+const allSelectableSelected = computed(
+  () =>
+    selectableRuns.value.length > 0 &&
+    selectableRuns.value.every((r) => selectedRunIds.value.has(r.id)),
+)
+
+function enterSelectMode(): void {
+  selectMode.value = true
+  selectedRunIds.value = new Set()
+  confirmDeleteRuns.value = false
+  lastDeleteSummary.value = null
+}
+function exitSelectMode(): void {
+  selectMode.value = false
+  selectedRunIds.value = new Set()
+  confirmDeleteRuns.value = false
+}
+function toggleRunSelection(runId: string): void {
+  const next = new Set(selectedRunIds.value)
+  if (next.has(runId)) next.delete(runId)
+  else next.add(runId)
+  selectedRunIds.value = next
+}
+function toggleSelectAll(): void {
+  if (allSelectableSelected.value) {
+    selectedRunIds.value = new Set()
+  } else {
+    selectedRunIds.value = new Set(selectableRuns.value.map((r) => r.id))
+  }
+}
+function onRunRowClick(runId: string, status: string): void {
+  if (!selectMode.value) {
+    openRun(runId)
+    return
+  }
+  if (ACTIVE_STATUSES.has(status)) return  // not selectable
+  toggleRunSelection(runId)
+}
+async function onConfirmDeleteRuns(): Promise<void> {
+  const ids = Array.from(selectedRunIds.value)
+  if (ids.length === 0) return
+  const results = await Promise.allSettled(
+    ids.map((id) => deleteRun.mutateAsync(id)),
+  )
+  const failed: string[] = []
+  let deleted = 0
+  results.forEach((r, i) => {
+    if (r.status === 'fulfilled') {
+      deleted += 1
+    } else {
+      const id = ids[i]!
+      const reason = r.reason
+      const detail =
+        reason instanceof ApiError ? `${id} (${reason.message})` : id
+      failed.push(detail)
+    }
+  })
+  lastDeleteSummary.value = { deleted, failed }
+  confirmDeleteRuns.value = false
+  if (failed.length === 0) {
+    exitSelectMode()
+  } else {
+    // Keep failed rows selected so the user sees what's still there.
+    selectedRunIds.value = new Set(
+      ids.filter((_, i) => results[i]!.status === 'rejected'),
+    )
+  }
 }
 
 // ── Prompts pane (W8 — full CRUD + read-only version history) ────────
@@ -296,14 +387,101 @@ async function onConfirmUnregister(): Promise<void> {
           aria-labelledby="project-tab-runs"
           data-testid="panel-runs"
         >
-          <label class="project-view__runs-toggle">
-            <input
-              v-model="showChildren"
-              type="checkbox"
-              data-testid="show-children-toggle"
-            >
-            Show child runs
-          </label>
+          <div class="project-view__runs-bar">
+            <label class="project-view__runs-toggle">
+              <input
+                v-model="showChildren"
+                type="checkbox"
+                data-testid="show-children-toggle"
+              >
+              Show child runs
+            </label>
+            <div class="project-view__runs-actions">
+              <button
+                v-if="!selectMode && runs.length > 0"
+                type="button"
+                class="project-view__select-button"
+                data-testid="runs-select-mode"
+                @click="enterSelectMode"
+              >
+                Select runs
+              </button>
+              <template v-if="selectMode">
+                <button
+                  type="button"
+                  class="project-view__select-button"
+                  data-testid="runs-select-all"
+                  :disabled="selectableRuns.length === 0"
+                  @click="toggleSelectAll"
+                >
+                  {{ allSelectableSelected ? 'Clear' : 'Select all' }}
+                </button>
+                <button
+                  type="button"
+                  class="project-view__select-button project-view__select-button--danger"
+                  data-testid="runs-delete-selected"
+                  :disabled="selectedRunIds.size === 0"
+                  @click="confirmDeleteRuns = true"
+                >
+                  Delete selected ({{ selectedRunIds.size }})
+                </button>
+                <button
+                  type="button"
+                  class="project-view__select-button"
+                  data-testid="runs-select-cancel"
+                  @click="exitSelectMode"
+                >
+                  Cancel
+                </button>
+              </template>
+            </div>
+          </div>
+          <div
+            v-if="confirmDeleteRuns"
+            class="project-view__confirm"
+            role="alertdialog"
+            aria-label="Confirm delete runs"
+            data-testid="runs-delete-confirm"
+          >
+            <p class="project-view__confirm-text">
+              Delete {{ selectedRunIds.size }}
+              {{ selectedRunIds.size === 1 ? 'run' : 'runs' }} and all of
+              their events / iters / child runs? This removes the entries
+              from the dashboard — it does NOT delete files on disk
+              (worktrees and run artifacts remain). Cannot be undone.
+            </p>
+            <div class="project-view__confirm-actions">
+              <ActionButton
+                :loading="deleteRun.isLoading.value"
+                data-testid="runs-delete-confirm-button"
+                @click="onConfirmDeleteRuns"
+              >
+                Delete
+                {{
+                  selectedRunIds.size === 1
+                    ? '1 run'
+                    : `${selectedRunIds.size} runs`
+                }}
+              </ActionButton>
+              <button
+                type="button"
+                class="project-view__confirm-cancel"
+                data-testid="runs-delete-cancel-button"
+                @click="confirmDeleteRuns = false"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+          <p
+            v-if="lastDeleteSummary && lastDeleteSummary.failed.length > 0"
+            class="project-view__error"
+            role="alert"
+            data-testid="runs-delete-errors"
+          >
+            Deleted {{ lastDeleteSummary.deleted }}; failed to delete:
+            {{ lastDeleteSummary.failed.join(', ') }}
+          </p>
           <AsyncBoundary
             :loading="runsState.isLoading.value"
             :error="runsState.error.value"
@@ -322,25 +500,48 @@ async function onConfirmUnregister(): Promise<void> {
                 v-for="run in runs"
                 :key="run.id"
               >
-                <button
-                  type="button"
-                  class="project-view__run"
-                  :data-testid="`run-row-${run.id}`"
-                  @click="openRun(run.id)"
+                <div
+                  class="project-view__run-wrap"
+                  :class="{
+                    'project-view__run-wrap--selected':
+                      selectMode && selectedRunIds.has(run.id),
+                  }"
                 >
-                  <StatusBadge :status="run.status" />
-                  <span class="project-view__run-prompt">
-                    {{
-                      run.prompt_id != null
-                        ? `prompt #${run.prompt_id}`
-                        : 'inline'
-                    }}
-                  </span>
-                  <span class="project-view__run-meta">
-                    {{ run.started_at }}
-                  </span>
-                  <span class="project-view__run-id">{{ run.id }}</span>
-                </button>
+                  <input
+                    v-if="selectMode"
+                    type="checkbox"
+                    class="project-view__run-check"
+                    :checked="selectedRunIds.has(run.id)"
+                    :disabled="ACTIVE_STATUSES.has(run.status)"
+                    :title="
+                      ACTIVE_STATUSES.has(run.status)
+                        ? 'Cancel this run before deleting'
+                        : ''
+                    "
+                    :aria-label="`Select run ${run.id}`"
+                    :data-testid="`run-check-${run.id}`"
+                    @click.stop="toggleRunSelection(run.id)"
+                  >
+                  <button
+                    type="button"
+                    class="project-view__run"
+                    :data-testid="`run-row-${run.id}`"
+                    @click="onRunRowClick(run.id, run.status)"
+                  >
+                    <StatusBadge :status="run.status" />
+                    <span class="project-view__run-prompt">
+                      {{
+                        run.prompt_id != null
+                          ? `prompt #${run.prompt_id}`
+                          : 'inline'
+                      }}
+                    </span>
+                    <span class="project-view__run-meta">
+                      {{ run.started_at }}
+                    </span>
+                    <span class="project-view__run-id">{{ run.id }}</span>
+                  </button>
+                </div>
               </li>
             </ul>
           </AsyncBoundary>
@@ -708,5 +909,68 @@ async function onConfirmUnregister(): Promise<void> {
   gap: 0.4rem;
   font-size: 0.85em;
   color: var(--color-text-dim);
+}
+
+.project-view__runs-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.project-view__runs-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.project-view__select-button {
+  padding: 0.35em 0.7em;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 0.85em;
+  cursor: pointer;
+}
+
+.project-view__select-button:hover:not(:disabled) {
+  border-color: var(--color-accent);
+}
+
+.project-view__select-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.project-view__select-button--danger:hover:not(:disabled) {
+  border-color: #ff6b6b;
+  color: #ff6b6b;
+}
+
+.project-view__run-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.project-view__run-wrap--selected .project-view__run {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface));
+}
+
+.project-view__run-check {
+  width: 1.05rem;
+  height: 1.05rem;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.project-view__run-check:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
 }
 </style>

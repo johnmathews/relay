@@ -132,6 +132,29 @@ scrolling:
   brand-new run. This is a peek, not a replacement for the Timeline:
   the full event stream still renders below.
 
+## Runs pane — multi-select delete
+
+`ProjectView`'s Runs pane has a **Select runs** toggle. In select mode
+each terminal run grows a checkbox; rows in `running` or
+`awaiting_children` render a disabled checkbox with a tooltip
+("Cancel this run before deleting") because the backend refuses to
+delete a row with in-memory state. A toolbar exposes **Select all**,
+**Delete selected (N)**, and **Cancel**; row click toggles selection
+instead of navigating while the mode is on.
+
+The confirm dialog explicitly states that files on disk (worktrees,
+run artifacts) are NOT removed — only the DB rows (mirrors the
+`DELETE /api/projects/{id}` "never deletes files on disk" contract).
+Deletes fire in parallel via `Promise.allSettled`, so a single 409
+(refused-active) doesn't block the rest; refused rows stay selected
+and the inline summary lists them by id so the operator can cancel
+them first.
+
+Cache invalidation: `useDeleteRunMutation` invalidates `keys.runs()`
+on success, which drops the deleted row from every project run list,
+hub status, and detail/children queries (all nested under `['runs',
+…]`).
+
 ## Worktree pane — MVP degradation
 
 The Worktree pane shows read-only `worktree_path` + `branch` from the

@@ -50,7 +50,18 @@ export interface paths {
         get: operations["get_run_api_runs__run_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete Run
+         * @description Delete a run and all of its events/iters/descendants.
+         *
+         *     DB-only — does NOT touch files on disk (worktree, run_dir);
+         *     mirrors ``DELETE /api/projects/{id}``. Reclaiming on-disk space is a
+         *     separate manual ``rm -rf .relay/runs/<id>`` step.
+         *
+         *     ``404`` if ``run_id`` is unknown. ``409`` if the run is currently
+         *     active (``running``/``awaiting_children``) — cancel it first.
+         */
+        delete: operations["delete_run_api_runs__run_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -350,10 +361,13 @@ export interface paths {
          *
          *     Body: ``{"content": str, "editor"?: str}``. The endpoint is the
          *     **single write entry point** on the run artifacts dir; it requires
-         *     the run to be ``paused`` AND the requested path to equal the latest
-         *     paused iter's ``signal_args.review_path`` (set by 14b). On success
-         *     the event store gains one ``artifact_edited`` event with the
-         *     pre/post SHA-256 hashes and sizes — the audit trail per ADR-10.
+         *     the run to be ``paused`` AND the requested path to be a member of
+         *     the latest paused iter's ``signal_args.review_paths`` (set by 14b,
+         *     plural per 14f / ADR-41; a paused iter from 14a–14d that carries
+         *     only the legacy scalar ``review_path`` is read as a one-element
+         *     list for migration). On success the event store gains one
+         *     ``artifact_edited`` event with the pre/post SHA-256 hashes and
+         *     sizes — the audit trail per ADR-10.
          *
          *     Status mapping:
          *
@@ -376,10 +390,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/system/browse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Browse */
+        get: operations["browse_api_system_browse_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** BrowseOut */
+        BrowseOut: {
+            /** Path */
+            path: string;
+            /** Parent */
+            parent: string | null;
+            /** Entries */
+            entries: components["schemas"]["DirEntry"][];
+        };
+        /** DirEntry */
+        DirEntry: {
+            /** Name */
+            name: string;
+            /** Path */
+            path: string;
+        };
         /** EventOut */
         EventOut: {
             /** Id */
@@ -738,6 +785,35 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["RunDetailOut"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_run_api_runs__run_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -1400,6 +1476,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    browse_api_system_browse_get: {
+        parameters: {
+            query?: {
+                path?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrowseOut"];
                 };
             };
             /** @description Validation Error */
