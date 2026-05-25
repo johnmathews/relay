@@ -136,6 +136,9 @@ class RelayCore:
         # ``app.state.core.broadcaster`` and never construct their own.
         self.broadcaster = Broadcaster()
         self._store = EventStore(self._sm, self.broadcaster)
+        # Read-only view of settings for thin API adapters (e.g. the
+        # New Run wizard's defaults endpoint). Routes never mutate it.
+        self.settings = self._settings
         self._queue: asyncio.Queue[RunContext] = asyncio.Queue()
         self._runs: dict[str, _RunState] = {}
         self._supervisor: asyncio.Task[None] | None = None

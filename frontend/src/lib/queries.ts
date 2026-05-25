@@ -126,6 +126,8 @@ export type RunCreate = components['schemas']['RunCreate']
 /** The side-effect-free run preview (`GET /api/runs/{projectId}/preview`). */
 export type Preview = components['schemas']['PreviewOut']
 
+export type SettingsDefaults = components['schemas']['SettingsDefaultsOut']
+
 // The file-browser endpoints return bare dicts on the backend, so the
 // generated schema types them as `unknown` (no Pydantic model). The
 // shapes are fixed by `docs/api.md` (File browser section), so we
@@ -316,6 +318,9 @@ export const keys = {
     path: string,
   ): readonly ['artifacts', string, 'content', string] =>
     ['artifacts', runId, 'content', path] as const,
+  /** Server-side defaults the New Run wizard prefills. */
+  settingsDefaults: (): readonly ['settings', 'defaults'] =>
+    ['settings', 'defaults'] as const,
 } as const
 
 /**
@@ -358,6 +363,19 @@ export class ApiError extends Error {
     }
     return `Request failed with status ${status}`
   }
+}
+
+/**
+ * `useQuery` for the server-side run-option defaults
+ * (`GET /api/system/defaults`). Used by the New Run wizard to prefill
+ * `max_iters` / `iter_timeout` with concrete numbers — clearer than the
+ * opaque "server default" placeholder the form used to show.
+ */
+export function useSettingsDefaultsQuery(): UseQueryReturn<SettingsDefaults> {
+  return useQuery({
+    key: keys.settingsDefaults(),
+    query: async () => unwrap(await api.GET('/api/system/defaults')),
+  })
 }
 
 /** `useQuery` for the full project list (`GET /api/projects`). */

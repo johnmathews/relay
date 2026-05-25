@@ -29,6 +29,24 @@ def _client() -> httpx.AsyncClient:
     )
 
 
+def _client_with_core(settings: Any) -> httpx.AsyncClient:
+    """Like :func:`_client` but attaches a stub ``core`` with a
+    ``.settings`` attribute so the ``/defaults`` route can read it.
+    """
+    app = FastAPI()
+    app.include_router(router)
+
+    class _StubCore:
+        def __init__(self) -> None:
+            self.settings = settings
+
+    app.state.core = _StubCore()
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://t",
+    )
+
+
 def _run(coro: Any) -> Any:
     return asyncio.run(coro)
 
@@ -106,6 +124,23 @@ def test_browse_file_path_is_404(tmp_path: Path) -> None:
         async with _client() as c:
             r = await c.get(f"/api/system/browse?path={f}")
         assert r.status_code == 404, r.text
+
+    _run(go())
+
+
+def test_defaults_returns_settings_values() -> None:
+    """The wizard's defaults endpoint surfaces ``Settings.max_iters`` /
+    ``iter_timeout`` so the form can prefill concrete numbers."""
+
+    class _StubSettings:
+        max_iters = 7
+        iter_timeout = 123
+
+    async def go() -> None:
+        async with _client_with_core(_StubSettings()) as c:
+            r = await c.get("/api/system/defaults")
+        assert r.status_code == 200, r.text
+        assert r.json() == {"max_iters": 7, "iter_timeout": 123}
 
     _run(go())
 

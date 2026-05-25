@@ -390,6 +390,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/system/defaults": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Defaults
+         * @description Return the run-option defaults the dashboard prefills.
+         *
+         *     Surfaces ``Settings.max_iters`` and ``Settings.iter_timeout`` so the
+         *     New Run wizard can render concrete numbers in the form fields rather
+         *     than an opaque "server default" placeholder. The values are
+         *     process-wide; an in-flight request reads the same instance as
+         *     :class:`RelayCore` would inject into a run.
+         */
+        get: operations["defaults_api_system_defaults_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/system/browse": {
         parameters: {
             query?: never;
@@ -437,10 +463,7 @@ export interface components {
             iter_id: number | null;
             /** Seq */
             seq: number;
-            /**
-             * Ts
-             * Format: date-time
-             */
+            /** Ts */
             ts: string;
             /** Kind */
             kind: string;
@@ -476,10 +499,7 @@ export interface components {
             signal_args: {
                 [key: string]: unknown;
             } | null;
-            /**
-             * Started At
-             * Format: date-time
-             */
+            /** Started At */
             started_at: string;
             /** Ended At */
             ended_at: string | null;
@@ -523,10 +543,7 @@ export interface components {
             root_path: string;
             /** Name */
             name: string;
-            /**
-             * Created At
-             * Format: date-time
-             */
+            /** Created At */
             created_at: string;
             /** User Id */
             user_id: number;
@@ -552,10 +569,7 @@ export interface components {
             version: number;
             /** Body */
             body: string;
-            /**
-             * Created At
-             * Format: date-time
-             */
+            /** Created At */
             created_at: string;
             /** User Id */
             user_id: number;
@@ -597,10 +611,7 @@ export interface components {
             user_id: number;
             /** Status */
             status: string;
-            /**
-             * Started At
-             * Format: date-time
-             */
+            /** Started At */
             started_at: string;
             /** Ended At */
             ended_at: string | null;
@@ -631,10 +642,7 @@ export interface components {
             user_id: number;
             /** Status */
             status: string;
-            /**
-             * Started At
-             * Format: date-time
-             */
+            /** Started At */
             started_at: string;
             /** Ended At */
             ended_at: string | null;
@@ -653,6 +661,16 @@ export interface components {
         RunResume: {
             /** Answer */
             answer: string;
+        };
+        /**
+         * SettingsDefaultsOut
+         * @description Server-side defaults the dashboard uses to prefill the New Run form.
+         */
+        SettingsDefaultsOut: {
+            /** Max Iters */
+            max_iters: number;
+            /** Iter Timeout */
+            iter_timeout: number;
         };
         /** ValidationError */
         ValidationError: {
@@ -1485,6 +1503,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    defaults_api_system_defaults_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsDefaultsOut"];
                 };
             };
         };

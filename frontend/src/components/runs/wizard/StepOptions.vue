@@ -1,10 +1,13 @@
 <script setup lang="ts">
 // New Run wizard — step 2: run options (spec §9.1).
 //
-// `max_iters`, `iter_timeout`, and a model override. There is NO
-// settings endpoint in the MVP, so defaults come from the server when
-// these are omitted: every field is OPTIONAL and "leave blank = server
-// default". The parent only forwards fields the user actually set.
+// `max_iters`, `iter_timeout`, and a model override. The parent wizard
+// fetches `GET /api/system/defaults` and prefills these inputs with the
+// concrete server-side defaults so a user sees actual numbers instead
+// of an opaque "server default" placeholder. Each field stays OPTIONAL —
+// a blank value still means "use whatever default the server has at
+// create time"; the parent only forwards fields with a non-null value
+// to `POST /api/runs`.
 //
 // `model` override: spec §9.1 lists it for parity, but the generated
 // `RunCreate` schema has NO model field (verified in schema.d.ts —
@@ -44,7 +47,8 @@ function onIterTimeout(ev: Event): void {
       2. Options
     </h2>
     <p class="step__hint">
-      All optional — leave blank to use the server defaults.
+      Prefilled with the current server defaults. Clear a field to fall
+      back to whatever default the server has at create time.
     </p>
 
     <label class="field">

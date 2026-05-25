@@ -43,6 +43,13 @@ vi.mock('@/lib/queries', async () => {
       vi.fn<(b: Record<string, unknown>) => Promise<{ id: string }>>(),
     createError: ref<unknown>(null),
     createLoading: ref(false),
+    // Settings defaults default to `null` so existing specs preserve
+    // their "leave blank → don't send" behavior. A spec exercising the
+    // prefill flow sets this before mounting.
+    settingsDefaults: ref<{
+      max_iters: number
+      iter_timeout: number
+    } | null>(null),
   }
 
   return {
@@ -50,6 +57,7 @@ vi.mock('@/lib/queries', async () => {
     ApiError: FakeApiError,
     usePromptsQuery: () => ({ data: state.prompts }),
     usePreviewQuery: () => ({ data: state.preview }),
+    useSettingsDefaultsQuery: () => ({ data: state.settingsDefaults }),
     useCreateRunMutation: () => ({
       mutateAsync: state.createMutate,
       isLoading: state.createLoading,
@@ -83,6 +91,9 @@ const state = (
       createMutate: ReturnType<typeof vi.fn>
       createError: { value: unknown }
       createLoading: { value: boolean }
+      settingsDefaults: {
+        value: { max_iters: number; iter_timeout: number } | null
+      }
     }
   }
 ).__state
@@ -306,5 +317,48 @@ describe('NewRunWizard', () => {
     expect(router.currentRoute.value.fullPath).toBe(
       '/projects/5/new-run',
     )
+  })
+
+  it('prefills Options with the server defaults so the inputs show concrete numbers', async () => {
+    state.settingsDefaults.value = { max_iters: 8, iter_timeout: 600 }
+    const { wrapper } = await mountAt()
+    await wrapper.get('input[name="existing-prompt"][value="11"]').setValue()
+    await wrapper.get('[data-testid="wizard-next"]').trigger('click') // → opts
+    await flushPromises()
+
+    const maxIters = wrapper.get(
+      'input[name="max-iters"]',
+    ).element as HTMLInputElement
+    const iterTimeout = wrapper.get(
+      'input[name="iter-timeout"]',
+    ).element as HTMLInputElement
+    expect(maxIters.value).toBe('8')
+    expect(iterTimeout.value).toBe('600')
+  })
+
+  it('prefilled defaults are submitted with the create request', async () => {
+    state.settingsDefaults.value = { max_iters: 8, iter_timeout: 600 }
+    state.createMutate.mockResolvedValue({ id: 'run-100' })
+    const { wrapper } = await mountAt('5')
+    await wrapper.get('input[name="existing-prompt"][value="11"]').setValue()
+    await wrapper.get('[data-testid="wizard-next"]').trigger('click') // → opts
+    await wrapper.get('[data-testid="wizard-next"]').trigger('click') // → prev
+    state.preview.value = {
+      preamble: 'P',
+      body: 'B',
+      prompt: 'p',
+      run_dir: 'd',
+    }
+    await flushPromises()
+    await wrapper.get('[data-testid="wizard-next"]').trigger('click') // → start
+    await wrapper.get('[data-testid="wizard-start"]').trigger('click')
+    await flushPromises()
+
+    expect(state.createMutate).toHaveBeenCalledWith({
+      project_id: 5,
+      prompt_id: 11,
+      max_iters: 8,
+      iter_timeout: 600,
+    })
   })
 })

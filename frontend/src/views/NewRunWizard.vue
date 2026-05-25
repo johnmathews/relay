@@ -24,6 +24,7 @@ import StepOptions from '@/components/runs/wizard/StepOptions.vue'
 import StepPreview from '@/components/runs/wizard/StepPreview.vue'
 import {
   useCreateRunMutation,
+  useSettingsDefaultsQuery,
   ApiError,
   type PromptSource,
   type PreviewSelection,
@@ -44,6 +45,22 @@ const promptMode = ref<'existing' | 'inline'>('existing')
 const promptSource = ref<PromptSource | null>(null)
 const maxIters = ref<number | null>(null)
 const iterTimeout = ref<number | null>(null)
+
+// Fetch the server-side defaults so the Options step renders concrete
+// numbers ("12", "1800") in the inputs instead of an opaque "server
+// default" placeholder. Prefill happens once on first arrival; the user
+// can still clear a field — a blank value means "use whatever default
+// the server has at create time" (handled by `start()` below).
+const defaultsQuery = useSettingsDefaultsQuery()
+watch(
+  () => defaultsQuery.data.value,
+  (d) => {
+    if (d == null) return
+    if (maxIters.value == null) maxIters.value = d.max_iters
+    if (iterTimeout.value == null) iterTimeout.value = d.iter_timeout
+  },
+  { immediate: true },
+)
 
 // Gate for Start: true only after a successful preview load for the
 // CURRENT selection. Any change to the prompt source or the options

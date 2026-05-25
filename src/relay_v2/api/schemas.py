@@ -152,3 +152,13 @@ class PreviewOut(BaseModel):
     body: str
     prompt: str
     run_dir: str
+
+
+# ── settings ──────────────────────────────────────────────────────────
+
+
+class SettingsDefaultsOut(BaseModel):
+    """Server-side defaults the dashboard uses to prefill the New Run form."""
+
+    max_iters: int
+    iter_timeout: int
