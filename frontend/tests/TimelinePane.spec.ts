@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import TimelinePane from '../src/components/runs/TimelinePane.vue'
@@ -41,6 +41,14 @@ const MIXED: StreamEvent[] = [
 ]
 
 describe('TimelinePane', () => {
+  beforeEach(() => {
+    // TimelinePane now reads `useTimelinePrefsStore` for per-type
+    // expand defaults (2026-05-25). Every mount needs an active
+    // Pinia or the store factory throws "no active Pinia".
+    setActivePinia(createPinia())
+    localStorage.removeItem('relay.timeline.expanded')
+  })
+
   it('renders all mixed event types readably', () => {
     const w = mount(TimelinePane, { props: { events: MIXED } })
     const text = w.text()
@@ -279,6 +287,179 @@ describe('TimelinePane', () => {
     expect(w.find('.tool-card__block').text().split('\n').length).toBeGreaterThan(
       5,
     )
+  })
+
+  it('gear button opens a popover with per-type toggles; clicking flips defaults', async () => {
+    // The popover lists the 5 collapsible types and reflects the
+    // current type-default state. Clicking a row's toggle flips the
+    // type default in the store (persisted via the store's own
+    // localStorage watch). A second open is read-from-store, so a
+    // collapsed-by-default type becomes expanded for all matching
+    // rows on the next render.
+    const events: StreamEvent[] = [
+      {
+        seq: 1,
+        kind: 'tool_use_start',
+        payload: { tool_id: 't', name: 'Bash', args: { x: 1 } },
+      },
+    ]
+    const w = mount(TimelinePane, { props: { events } })
+    const row = w.get('.timeline__row')
+    expect(row.classes()).toContain('timeline__row--collapsed')
+
+    // Popover hidden by default.
+    expect(w.find('[data-testid="display-popover"]').exists()).toBe(false)
+    // Click the gear to open.
+    await w.get('[data-testid="display-gear"]').trigger('click')
+    expect(w.find('[data-testid="display-popover"]').exists()).toBe(true)
+
+    // Flip the `tool` type default to expanded.
+    await w.get('[data-testid="display-toggle-tool"]').trigger('click')
+    expect(row.classes()).not.toContain('timeline__row--collapsed')
+
+    // Close the popover by clicking the gear again.
+    await w.get('[data-testid="display-gear"]').trigger('click')
+    expect(w.find('[data-testid="display-popover"]').exists()).toBe(false)
+  })
+
+  it('classifies assistant_text by payload.kind: text=assistant, thinking=thinking', () => {
+    // ADR-18 keeps assistant `text` vs `thinking` distinct at the
+    // protocol level; the dashboard now distinguishes them in the
+    // row classifier so the type-default expand prefs and the
+    // ASSISTANT highlight can target only the user-facing reply.
+    const events: StreamEvent[] = [
+      {
+        seq: 1,
+        kind: 'assistant_text',
+        payload: { text: 'reasoning here', turn_seq: 1, kind: 'thinking' },
+      },
+      {
+        seq: 2,
+        kind: 'assistant_text',
+        payload: { text: 'the answer', turn_seq: 1, kind: 'text' },
+      },
+    ]
+    const w = mount(TimelinePane, { props: { events } })
+    const rows = w.findAll('.timeline__row')
+    expect(rows[0]!.attributes('data-row-type')).toBe('thinking')
+    expect(rows[1]!.attributes('data-row-type')).toBe('assistant')
+  })
+
+  it('assistant row has the highlight class; thinking and tool do not', () => {
+    const events: StreamEvent[] = [
+      {
+        seq: 1,
+        kind: 'assistant_text',
+        payload: { text: 'reply', turn_seq: 1, kind: 'text' },
+      },
+      {
+        seq: 2,
+        kind: 'assistant_text',
+        payload: { text: 'inner monologue', turn_seq: 1, kind: 'thinking' },
+      },
+      {
+        seq: 3,
+        kind: 'tool_use_start',
+        payload: { tool_id: 't', name: 'Bash', args: { x: 1 } },
+      },
+    ]
+    const w = mount(TimelinePane, { props: { events } })
+    const rows = w.findAll('.timeline__row')
+    expect(rows[0]!.classes()).toContain('timeline__row--assistant')
+    expect(rows[1]!.classes()).not.toContain('timeline__row--assistant')
+    expect(rows[2]!.classes()).not.toContain('timeline__row--assistant')
+  })
+
+  it('assistant rows expanded by default; tool/thinking/signal collapsed', () => {
+    const events: StreamEvent[] = [
+      {
+        seq: 1,
+        kind: 'assistant_text',
+        payload: { text: 'reply', turn_seq: 1, kind: 'text' },
+      },
+      {
+        seq: 2,
+        kind: 'assistant_text',
+        payload: { text: 'inner', turn_seq: 1, kind: 'thinking' },
+      },
+      {
+        seq: 3,
+        kind: 'tool_use_start',
+        payload: { tool_id: 't', name: 'Bash', args: { x: 1 } },
+      },
+      {
+        seq: 4,
+        kind: 'signal_emit',
+        payload: { kind: 'phase_start', args: { phase: 'plan' } },
+      },
+    ]
+    const w = mount(TimelinePane, { props: { events } })
+    const rows = w.findAll('.timeline__row')
+    expect(rows[0]!.classes()).not.toContain('timeline__row--collapsed') // assistant
+    expect(rows[1]!.classes()).toContain('timeline__row--collapsed') // thinking
+    expect(rows[2]!.classes()).toContain('timeline__row--collapsed') // tool
+    expect(rows[3]!.classes()).toContain('timeline__row--collapsed') // signal
+  })
+
+  it('per-row toggle overrides the type default', async () => {
+    const events: StreamEvent[] = [
+      {
+        seq: 1,
+        kind: 'tool_use_start',
+        payload: { tool_id: 't', name: 'Bash', args: { x: 1 } },
+      },
+    ]
+    const w = mount(TimelinePane, { props: { events } })
+    const row = w.get('.timeline__row')
+    expect(row.classes()).toContain('timeline__row--collapsed')
+
+    // Click the toggle — this row expands; the type default
+    // (collapsed for tools) is unaffected for any other tool row.
+    await w.get('[data-testid="toggle-step"]').trigger('click')
+    expect(row.classes()).not.toContain('timeline__row--collapsed')
+
+    // Click again — collapse this row.
+    await w.get('[data-testid="toggle-step"]').trigger('click')
+    expect(row.classes()).toContain('timeline__row--collapsed')
+  })
+
+  it('copy button copies the row text to the clipboard', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+    const events: StreamEvent[] = [
+      {
+        seq: 1,
+        kind: 'assistant_text',
+        payload: { text: 'hello world', turn_seq: 1, kind: 'text' },
+      },
+    ]
+    const w = mount(TimelinePane, { props: { events } })
+    await w.get('[data-testid="copy-step"]').trigger('click')
+    expect(writeText).toHaveBeenCalledWith('hello world')
+  })
+
+  it('copy on a tool row includes both args and result JSON', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+    const events: StreamEvent[] = [
+      {
+        seq: 1,
+        kind: 'tool_use_start',
+        payload: { tool_id: 't', name: 'Bash', args: { command: 'ls -la' } },
+      },
+      {
+        seq: 2,
+        kind: 'tool_use_end',
+        payload: { tool_id: 't', result: { stdout: 'a\nb' }, is_error: false, duration_ms: 5 },
+      },
+    ]
+    const w = mount(TimelinePane, { props: { events } })
+    await w.get('[data-testid="copy-step"]').trigger('click')
+    const arg = writeText.mock.calls[0]![0] as string
+    expect(arg).toContain('args:')
+    expect(arg).toContain('"command": "ls -la"')
+    expect(arg).toContain('result:')
+    expect(arg).toContain('"stdout"')
   })
 
   it('pinned-to-bottom: appending an event auto-scrolls to the new tail', async () => {

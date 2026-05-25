@@ -25,6 +25,23 @@ import SignalCard from './SignalCard.vue'
 import UsageRow from './UsageRow.vue'
 import type { PendingTurn, StreamEvent } from '@/stores/events'
 import { useBrowserUiStore } from '@/stores/files'
+import {
+  useTimelinePrefsStore,
+  type TimelineRowType,
+} from '@/stores/timelinePrefs'
+
+/**
+ * Row types that participate in the collapse / expand workflow.
+ * Boundary / pause / usage / artifact_edited rows are intrinsically
+ * one-liners; collapsing them gains nothing and just adds chrome.
+ */
+const COLLAPSIBLE_TYPES = new Set([
+  'tool',
+  'signal',
+  'assistant',
+  'thinking',
+  'generic',
+])
 
 const props = defineProps<{
   /** The ordered, deduped event list from the events store. */
@@ -107,12 +124,22 @@ const OVERSCAN = 8
 interface Row {
   /** Stable key. */
   key: string
-  /** 'tool' | 'signal' | 'message' | 'boundary' | 'pause' | 'usage' | 'generic'. */
+  /** 'tool' | 'signal' | 'assistant' | 'thinking' | 'boundary' | 'pause' | 'usage' | 'artifact_edited' | 'generic'. */
   kind: Row['type'] extends never ? never : string
+  /**
+   * Display row category. The `assistant_text` event kind is split
+   * into TWO row types — `assistant` (the `text` kind, the agent's
+   * reply, expanded by default and visually highlighted) vs
+   * `thinking` (the `text === 'thinking'` reasoning stream, a
+   * scannable header by default per ADR-18 — never the carrier of
+   * user-facing output). The split is the load-bearing
+   * differentiation for the type-default expand prefs.
+   */
   type:
     | 'tool'
     | 'signal'
-    | 'message'
+    | 'assistant'
+    | 'thinking'
     | 'boundary'
     | 'pause'
     | 'usage'
@@ -166,10 +193,16 @@ const rows = computed<Row[]>(() => {
         event: ev,
       })
     } else if (ev.kind === 'assistant_text') {
+      // Split assistant_text by payload.kind so the type-default
+      // expand prefs (and the ASSISTANT highlight) can target the
+      // user-facing reply (`text`) separately from the model
+      // reasoning (`thinking`). ADR-18 keeps these distinct at the
+      // protocol level; the dashboard now keeps them distinct
+      // visually too.
       out.push({
         key: `e${ev.seq}`,
         kind: ev.kind,
-        type: 'message',
+        type: p.kind === 'thinking' ? 'thinking' : 'assistant',
         event: ev,
       })
     } else if (ev.kind === 'pause_requested' || ev.kind === 'pause_resolved') {
@@ -263,6 +296,106 @@ function scrollToBottom(): void {
 function jumpToLatest(): void {
   isPinned.value = true
   scrollToBottom()
+}
+
+/**
+ * Per-row expand override (keyed by `row.key`, which is unique per
+ * event seq). Wins over the type default when set; a `null` slot
+ * means "follow the type default". Lives in component state and
+ * resets on remount — overrides shouldn't outlive the tab the way
+ * type defaults do.
+ */
+const rowOverrides = ref<Record<string, boolean>>({})
+const prefs = useTimelinePrefsStore()
+
+function isCollapsible(t: Row['type']): boolean {
+  return COLLAPSIBLE_TYPES.has(t)
+}
+
+function isRowExpanded(row: Row): boolean {
+  if (!isCollapsible(row.type)) return true
+  const ov = rowOverrides.value[row.key]
+  if (typeof ov === 'boolean') return ov
+  return prefs.isExpandedByDefault(row.type as TimelineRowType)
+}
+
+function toggleRow(row: Row): void {
+  rowOverrides.value = {
+    ...rowOverrides.value,
+    [row.key]: !isRowExpanded(row),
+  }
+}
+
+/**
+ * The text the "copy" button puts on the clipboard. Matches what is
+ * visible on the row when expanded: assistant/thinking → the text
+ * body; tool → `args: …\nresult: …` JSON; signal/generic/etc. →
+ * pretty-printed payload JSON. Boundaries / pause / usage rows
+ * still get a copy button since the payload is sometimes useful
+ * (a stop_reason or pause question is worth quoting).
+ */
+function getCopyText(row: Row): string {
+  const ev = row.event
+  const p = ev.payload
+  if (row.type === 'assistant' || row.type === 'thinking') {
+    return typeof p.text === 'string' ? p.text : ''
+  }
+  if (row.type === 'tool') {
+    const args = JSON.stringify(p.args, null, 2)
+    const end = row.toolEnd
+    if (end == null) return `args:\n${args}`
+    const result = JSON.stringify(end.result, null, 2)
+    return `args:\n${args}\n\nresult:\n${result}`
+  }
+  if (row.type === 'signal') {
+    return JSON.stringify({ kind: p.kind, args: p.args }, null, 2)
+  }
+  try {
+    return JSON.stringify(p, null, 2)
+  } catch {
+    return ''
+  }
+}
+
+const popoverOpen = ref(false)
+
+/**
+ * Order matters — this is the display order in the gear popover.
+ * Boundary / pause / usage / artifact_edited rows are
+ * intrinsically small (one-liners) and have no useful collapsed
+ * state, so the popover deliberately omits them; the COLLAPSIBLE
+ * Set above is the same scope.
+ */
+const COLLAPSIBLE_TYPE_ORDER: readonly TimelineRowType[] = [
+  'assistant',
+  'thinking',
+  'tool',
+  'signal',
+  'generic',
+] as const
+
+const TYPE_LABEL: Record<TimelineRowType, string> = {
+  assistant: 'Assistant',
+  thinking: 'Thinking',
+  tool: 'Tool calls',
+  signal: 'Signals',
+  generic: 'Other',
+}
+
+function togglePopover(): void {
+  popoverOpen.value = !popoverOpen.value
+}
+
+async function copyRow(row: Row): Promise<void> {
+  const text = getCopyText(row)
+  if (text === '') return
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    // Clipboard permissions denied / unavailable (Safari private
+    // mode etc.). Soft-fail — the user can fall back to manual
+    // selection.
+  }
 }
 
 /**
@@ -374,6 +507,58 @@ function onArtifactEditedClick(path: string): void {
     :data-virtualized="virtualized"
     @scroll="onScroll"
   >
+    <div class="timeline__topbar">
+      <button
+        type="button"
+        class="timeline__gear"
+        data-testid="display-gear"
+        :aria-expanded="popoverOpen"
+        title="Display options"
+        @click.stop="togglePopover"
+      >
+        ⚙
+      </button>
+      <div
+        v-if="popoverOpen"
+        class="timeline__popover"
+        data-testid="display-popover"
+        @click.stop
+      >
+        <p class="timeline__popover-title">
+          Expand by default
+        </p>
+        <ul class="timeline__popover-list">
+          <li
+            v-for="t in COLLAPSIBLE_TYPE_ORDER"
+            :key="t"
+            class="timeline__popover-row"
+          >
+            <button
+              type="button"
+              class="timeline__popover-toggle"
+              :class="{ 'is-on': prefs.isExpandedByDefault(t) }"
+              :data-testid="`display-toggle-${t}`"
+              @click="prefs.toggle(t)"
+            >
+              <span
+                class="timeline__popover-dot"
+                aria-hidden="true"
+              />
+              {{ TYPE_LABEL[t] }}
+            </button>
+          </li>
+        </ul>
+        <button
+          type="button"
+          class="timeline__popover-reset"
+          data-testid="display-reset"
+          @click="prefs.reset"
+        >
+          Reset to defaults
+        </button>
+      </div>
+    </div>
+
     <p
       v-if="rows.length === 0"
       class="timeline__empty"
@@ -392,9 +577,37 @@ function onArtifactEditedClick(path: string): void {
         v-for="row in visibleRows"
         :key="row.key"
         class="timeline__row"
+        :class="{
+          'timeline__row--collapsible': isCollapsible(row.type),
+          'timeline__row--collapsed': !isRowExpanded(row),
+          'timeline__row--assistant': row.type === 'assistant',
+        }"
         :data-kind="row.kind"
+        :data-row-type="row.type"
       >
         <span class="timeline__seq">#{{ row.event.seq }}</span>
+
+        <div class="timeline__row-controls">
+          <button
+            type="button"
+            class="timeline__row-btn"
+            data-testid="copy-step"
+            title="Copy step content"
+            @click="copyRow(row)"
+          >
+            ⧉
+          </button>
+          <button
+            v-if="isCollapsible(row.type)"
+            type="button"
+            class="timeline__row-btn"
+            data-testid="toggle-step"
+            :title="isRowExpanded(row) ? 'Collapse' : 'Expand'"
+            @click="toggleRow(row)"
+          >
+            {{ isRowExpanded(row) ? '▾' : '▸' }}
+          </button>
+        </div>
 
         <ToolCallCard
           v-if="row.type === 'tool'"
@@ -413,10 +626,12 @@ function onArtifactEditedClick(path: string): void {
         />
 
         <div
-          v-else-if="row.type === 'message'"
+          v-else-if="row.type === 'assistant' || row.type === 'thinking'"
           class="timeline__message"
         >
-          <span class="timeline__label">assistant</span>
+          <span class="timeline__label">
+            {{ row.type === 'thinking' ? 'thinking' : 'assistant' }}
+          </span>
           <p class="timeline__text">
             {{ text(row.event) }}
           </p>
@@ -528,6 +743,166 @@ function onArtifactEditedClick(path: string): void {
   border-radius: 8px;
   padding: 0.75rem;
   background: var(--color-bg);
+}
+
+/* Row controls — copy + expand/collapse buttons pinned to the top
+   right of every row. Always rendered (the copy button is universal
+   even for one-line rows); the toggle is omitted on non-collapsible
+   types via v-if. */
+.timeline__row {
+  position: relative;
+}
+.timeline__row-controls {
+  position: absolute;
+  top: 0.45rem;
+  right: 0.55rem;
+  display: flex;
+  gap: 0.25rem;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.timeline__row:hover .timeline__row-controls,
+.timeline__row:focus-within .timeline__row-controls {
+  opacity: 1;
+}
+.timeline__row-btn {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  color: var(--color-text-dim);
+  font: inherit;
+  font-size: 0.85em;
+  line-height: 1;
+  padding: 0.15em 0.4em;
+  cursor: pointer;
+}
+.timeline__row-btn:hover {
+  color: var(--color-text);
+  border-color: currentcolor;
+}
+
+/* Collapsed body: clip to ~5 lines, fade the tail so the truncation
+   is obvious. The mask-image gradient is supported in every
+   evergreen browser (Safari needs the -webkit- prefix). The user's
+   per-row toggle or a type-default flip via the gear popover lifts
+   the clip. Boundaries / pause / usage / artifact_edited rows are
+   intrinsically one-liners and never get this class. */
+.timeline__row--collapsible.timeline__row--collapsed > :not(.timeline__seq):not(.timeline__row-controls) {
+  max-height: 5em;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, black 70%, transparent);
+  mask-image: linear-gradient(to bottom, black 70%, transparent);
+}
+
+/* ASSISTANT highlight: a medium-thickness 70%-white border so the
+   user's intended-to-read output stands out from tool/thinking/etc.
+   rows at a glance. Applied to the row container, not the body, so
+   the seq + controls live inside the highlight box too. */
+.timeline__row--assistant {
+  border: 2px solid rgba(255, 255, 255, 0.7);
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  margin: 0.35rem 0;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* Top bar with the display-options gear. Sits inside the scroll
+   container as a sticky header so the popover anchors to the
+   gear regardless of scroll position. */
+.timeline__topbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  justify-content: flex-end;
+  margin: -0.25rem -0.25rem 0.5rem;
+  pointer-events: none; /* let the rows behind it scroll normally */
+}
+.timeline__gear {
+  pointer-events: auto;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  color: var(--color-text-dim);
+  cursor: pointer;
+  font: inherit;
+  font-size: 1em;
+  line-height: 1;
+  padding: 0.2em 0.55em;
+}
+.timeline__gear:hover {
+  color: var(--color-text);
+  border-color: currentcolor;
+}
+.timeline__popover {
+  pointer-events: auto;
+  position: absolute;
+  top: 2.2rem;
+  right: 0.25rem;
+  min-width: 12rem;
+  padding: 0.5rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+}
+.timeline__popover-title {
+  margin: 0 0 0.4rem;
+  font-size: 0.72em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-dim);
+}
+.timeline__popover-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.timeline__popover-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--color-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.88em;
+  padding: 0.25em 0.4em;
+  text-align: left;
+}
+.timeline__popover-toggle:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.timeline__popover-dot {
+  display: inline-block;
+  width: 0.55em;
+  height: 0.55em;
+  border-radius: 50%;
+  border: 1px solid var(--color-text-dim);
+}
+.timeline__popover-toggle.is-on .timeline__popover-dot {
+  background: var(--color-accent, #5b9dff);
+  border-color: var(--color-accent, #5b9dff);
+}
+.timeline__popover-reset {
+  margin-top: 0.5rem;
+  background: none;
+  border: none;
+  color: var(--color-text-dim);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78em;
+  padding: 0;
+  text-decoration: underline;
+}
+.timeline__popover-reset:hover {
+  color: var(--color-text);
 }
 
 /* Jump-to-latest pill — only rendered while the user is scrolled up
