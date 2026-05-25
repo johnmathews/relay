@@ -29,7 +29,7 @@ const errorMessage = computed<string | null>(() => {
   const e: unknown = register.error.value
   if (e == null) return null
   if (e instanceof ApiError || e instanceof Error) return e.message
-  return 'Failed to register project.'
+  return 'Failed to create project.'
 })
 
 const canSubmit = computed(
