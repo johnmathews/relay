@@ -49,6 +49,26 @@ import { useCurrentRunStore } from '@/stores/currentRun'
 
 const props = defineProps<{ id: string }>()
 
+/**
+ * Render the run's `started_at` (a UTC-tagged ISO string from the API
+ * since commit 8b00e61) in the viewer's local timezone. Falls back to
+ * the raw value if parsing fails so a future format change can't blank
+ * out the header.
+ */
+function formatStarted(iso: string | null | undefined): string {
+  if (iso == null || iso === '') return ''
+  const t = Date.parse(iso)
+  if (Number.isNaN(t)) return iso
+  return new Date(t).toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  })
+}
+
 const detailQuery = useRunDetailQuery(() => props.id)
 const detail = computed<RunDetail | null>(
   () => detailQuery.data.value ?? null,
@@ -328,7 +348,12 @@ onBeforeUnmount(() => {
             </div>
             <div>
               <dt>Started</dt>
-              <dd>{{ detail.started_at }}</dd>
+              <dd
+                :title="detail.started_at"
+                data-testid="run-started-at"
+              >
+                {{ formatStarted(detail.started_at) }}
+              </dd>
             </div>
             <div>
               <dt>Iters</dt>

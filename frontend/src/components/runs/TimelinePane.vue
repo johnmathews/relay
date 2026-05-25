@@ -513,10 +513,11 @@ function onArtifactEditedClick(path: string): void {
         class="timeline__gear"
         data-testid="display-gear"
         :aria-expanded="popoverOpen"
-        title="Display options"
+        title="Choose which row types are expanded by default"
         @click.stop="togglePopover"
       >
-        ⚙
+        <span aria-hidden="true">⚙</span>
+        <span class="timeline__gear-label">Display</span>
       </button>
       <div
         v-if="popoverOpen"
@@ -758,7 +759,12 @@ function onArtifactEditedClick(path: string): void {
   right: 0.55rem;
   display: flex;
   gap: 0.25rem;
-  opacity: 0;
+  /* Always visible so the user knows every row — including nested
+     ones like `thinking` — has its own copy button. Dimmed at rest,
+     full opacity on row hover/focus. Previously opacity: 0 by
+     default; users reported they couldn't tell that nested rows
+     were copyable. */
+  opacity: 0.55;
   transition: opacity 0.15s ease;
 }
 .timeline__row:hover .timeline__row-controls,
@@ -820,15 +826,21 @@ function onArtifactEditedClick(path: string): void {
 }
 .timeline__gear {
   pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: 6px;
-  color: var(--color-text-dim);
+  color: var(--color-text);
   cursor: pointer;
   font: inherit;
-  font-size: 1em;
+  font-size: 0.85em;
   line-height: 1;
-  padding: 0.2em 0.55em;
+  padding: 0.35em 0.7em;
+}
+.timeline__gear-label {
+  font-size: 0.92em;
 }
 .timeline__gear:hover {
   color: var(--color-text);
