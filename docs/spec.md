@@ -999,7 +999,7 @@ Per ADR-10.
 | `RELAY_DATA_DIR` | `<cwd>/.relay` | server-global SQLite event store dir (relay.db lives here). Per-run worktrees & artifacts live under each project's own `<project_root>/.relay/` (§3.3), not here. |
 | `RELAY_PI_BIN` | `pi` | pi binary path (override for testing) |
 | `RELAY_PI_EXPECTED_VERSION` | `0.74.0` | pinned pi version (OQ-5). `PiHarness.spawn` warns when the installed pi reports a different version; relay does not refuse to run. |
-| `RELAY_PI_MODEL` | `claude-sonnet-4-6` | default model |
+| `RELAY_PI_MODEL` | `claude-opus-4-7` | default model |
 | `RELAY_PI_PROVIDER` | `anthropic` | default provider |
 | `RELAY_PI_STDOUT_LIMIT` | `8388608` (8 MiB) | asyncio `StreamReader` buffer size for pi's stdout. Pi emits one JSON object per line; a large tool result or `agent_end.messages` payload can exceed asyncio's 64 KiB default and crash the read with `LimitOverrunError`. Raise if pi emits even larger lines. |
 | `RELAY_MAX_ITERS` | `12` | default per-run iter cap |

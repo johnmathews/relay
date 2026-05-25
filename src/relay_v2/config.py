@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     data_dir: Path = Field(default_factory=lambda: Path.cwd() / ".relay")
 
     pi_bin: str = "pi"
-    pi_model: str = "claude-sonnet-4-6"
+    pi_model: str = "claude-opus-4-7"
     pi_provider: str = "anthropic"
     # Colon-separated (POSIX path-list) directories or `SKILL.md` files
     # passed to pi via `--skill` on every spawn (pi accepts the flag
