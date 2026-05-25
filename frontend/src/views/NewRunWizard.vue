@@ -1,8 +1,12 @@
 <script setup lang="ts">
 // New Run wizard (`/projects/:id/new-run`, `:id` = PROJECT id).
-// Spec §9.1: a 4-step flow — Prompt → Options → Preview → Start.
+// A 3-step flow — Prompt → Options → Preview & start. Preview and
+// Start used to be separate tabs; they are merged so the user reviews
+// the preview and clicks Start in one place (spec.md §9.1 left the
+// preview-then-start ordering invariant but did not require a distinct
+// Start step).
 //
-// Acceptance behaviors (docs/plan.md Phase 4 Verification):
+// Acceptance behaviors:
 //  1. Preview step shows the full prompt + preamble before commit
 //     (StepPreview renders the complete untruncated preamble/body).
 //  2. Start is DISABLED until the preview has been viewed: `previewed`
@@ -11,7 +15,7 @@
 //     required — the spec's safe "nothing has happened yet" behavior).
 //  3. Cancelling creates NO run row: cancel just routes away. Preview
 //     is side-effect-free by contract; only `useCreateRunMutation`
-//     (step 4) ever issues `POST /api/runs`.
+//     (the Start click on the merged step) ever issues `POST /api/runs`.
 //
 // Wizard step/selection state is ephemeral UI state held locally (not
 // in a Pinia store, not in the Colada cache).
@@ -37,9 +41,9 @@ const router = useRouter()
 const projectId = computed(() => Number(props.id))
 
 // ── ephemeral wizard state ──────────────────────────────────────────
-type Step = 0 | 1 | 2 | 3
+type Step = 0 | 1 | 2
 const step = ref<Step>(0)
-const STEP_TITLES = ['Prompt', 'Options', 'Preview', 'Start'] as const
+const STEP_TITLES = ['Prompt', 'Options', 'Preview & start'] as const
 
 const promptMode = ref<'existing' | 'inline'>('existing')
 const promptSource = ref<PromptSource | null>(null)
@@ -89,7 +93,7 @@ const canAdvance = computed(() => {
 })
 
 function next(): void {
-  if (step.value < 3 && canAdvance.value) {
+  if (step.value < 2 && canAdvance.value) {
     step.value = (step.value + 1) as Step
   }
 }
@@ -183,22 +187,12 @@ async function start(): Promise<void> {
       @update:max-iters="maxIters = $event"
       @update:iter-timeout="iterTimeout = $event"
     />
-    <StepPreview
-      v-else-if="step === 2"
-      :selection="previewSelection"
-      :active="step === 2"
-      @loaded="onPreviewLoaded"
-    />
-    <section
-      v-else
-      class="step"
-    >
-      <h2 class="step__title">
-        4. Start
-      </h2>
-      <p class="step__hint">
-        Ready to launch. This creates the run and opens its detail view.
-      </p>
+    <template v-else>
+      <StepPreview
+        :selection="previewSelection"
+        :active="step === 2"
+        @loaded="onPreviewLoaded"
+      />
       <p
         v-if="startError"
         class="wizard__error"
@@ -206,7 +200,7 @@ async function start(): Promise<void> {
       >
         {{ startError }}
       </p>
-    </section>
+    </template>
 
     <footer class="wizard__nav">
       <button
@@ -228,7 +222,7 @@ async function start(): Promise<void> {
           Back
         </button>
         <ActionButton
-          v-if="step < 3"
+          v-if="step < 2"
           data-testid="wizard-next"
           :disabled="!canAdvance"
           @click="next"

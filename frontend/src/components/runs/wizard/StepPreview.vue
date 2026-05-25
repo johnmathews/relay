@@ -53,11 +53,12 @@ watch(
 <template>
   <section class="step">
     <h2 class="step__title">
-      3. Preview
+      3. Preview &amp; start
     </h2>
     <p class="step__hint">
       This is exactly what will run. Nothing has happened yet — no run
-      has been created.
+      has been created. Review below, then click <strong>Start run</strong>
+      to launch.
     </p>
 
     <AsyncBoundary

@@ -176,13 +176,13 @@ describe('NewRunWizard', () => {
 
   it('Start is disabled until the preview has loaded successfully', async () => {
     const { wrapper } = await mountAt()
-    // Pick an existing prompt, walk to the Start step WITHOUT a preview.
+    // Pick an existing prompt, walk to the merged Preview & Start step
+    // WITHOUT a preview loaded yet.
     await wrapper.get('input[name="existing-prompt"][value="11"]').setValue()
     await wrapper.get('[data-testid="wizard-next"]').trigger('click') // → opts
-    await wrapper.get('[data-testid="wizard-next"]').trigger('click') // → prev
+    await wrapper.get('[data-testid="wizard-next"]').trigger('click') // → preview & start
     // Preview step active but no data yet → no `loaded` emit.
     await flushPromises()
-    await wrapper.get('[data-testid="wizard-next"]').trigger('click') // → start
     const startBtn = wrapper.get('[data-testid="wizard-start"]')
       .element as HTMLButtonElement
     expect(startBtn.disabled).toBe(true)
@@ -209,7 +209,6 @@ describe('NewRunWizard', () => {
     expect(wrapper.get('[data-testid="preview-body"]').text()).toBe(
       'THE FULL PROMPT BODY',
     )
-    await wrapper.get('[data-testid="wizard-next"]').trigger('click') // → start
     expect(
       (
         wrapper.get('[data-testid="wizard-start"]')
@@ -218,7 +217,6 @@ describe('NewRunWizard', () => {
     ).toBe(false)
 
     // Change the prompt → Start must re-disable until re-preview.
-    await wrapper.get('[data-testid="wizard-back"]').trigger('click') // → prev
     await wrapper.get('[data-testid="wizard-back"]').trigger('click') // → opts
     await wrapper.get('[data-testid="wizard-back"]').trigger('click') // → step1
     // Real usePreviewQuery would have no cached data for the NEW
@@ -227,7 +225,6 @@ describe('NewRunWizard', () => {
     await wrapper
       .get('input[name="existing-prompt"][value="12"]')
       .setValue()
-    await wrapper.get('[data-testid="wizard-next"]').trigger('click')
     await wrapper.get('[data-testid="wizard-next"]').trigger('click')
     await wrapper.get('[data-testid="wizard-next"]').trigger('click')
     expect(
@@ -247,7 +244,7 @@ describe('NewRunWizard', () => {
       .get('input[name="max-iters"]')
       .setValue('7')
     // iter-timeout left blank → must NOT be sent.
-    await wrapper.get('[data-testid="wizard-next"]').trigger('click') // prev
+    await wrapper.get('[data-testid="wizard-next"]').trigger('click') // → preview & start
     state.preview.value = {
       preamble: 'P',
       body: 'B',
@@ -255,7 +252,6 @@ describe('NewRunWizard', () => {
       run_dir: 'd',
     }
     await flushPromises()
-    await wrapper.get('[data-testid="wizard-next"]').trigger('click') // start
     await wrapper.get('[data-testid="wizard-start"]').trigger('click')
     await flushPromises()
 
@@ -308,7 +304,6 @@ describe('NewRunWizard', () => {
       run_dir: 'd',
     }
     await flushPromises()
-    await wrapper.get('[data-testid="wizard-next"]').trigger('click')
     await wrapper.get('[data-testid="wizard-start"]').trigger('click')
     await flushPromises()
     expect(wrapper.get('[role="alert"]').text()).toContain(
@@ -342,7 +337,7 @@ describe('NewRunWizard', () => {
     const { wrapper } = await mountAt('5')
     await wrapper.get('input[name="existing-prompt"][value="11"]').setValue()
     await wrapper.get('[data-testid="wizard-next"]').trigger('click') // → opts
-    await wrapper.get('[data-testid="wizard-next"]').trigger('click') // → prev
+    await wrapper.get('[data-testid="wizard-next"]').trigger('click') // → preview & start
     state.preview.value = {
       preamble: 'P',
       body: 'B',
@@ -350,7 +345,6 @@ describe('NewRunWizard', () => {
       run_dir: 'd',
     }
     await flushPromises()
-    await wrapper.get('[data-testid="wizard-next"]').trigger('click') // → start
     await wrapper.get('[data-testid="wizard-start"]').trigger('click')
     await flushPromises()
 
