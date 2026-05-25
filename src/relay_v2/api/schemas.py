@@ -7,10 +7,11 @@ fields the corresponding ``RelayCore`` method accepts.
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from relay_v2._time import UtcDatetime
 
 # ── projects ───────────────────────────────────────────────────────────
 
@@ -26,7 +27,7 @@ class ProjectOut(BaseModel):
     id: int
     root_path: str
     name: str
-    created_at: datetime
+    created_at: UtcDatetime
     user_id: int
 
 
@@ -51,7 +52,7 @@ class PromptOut(BaseModel):
     name: str
     version: int
     body: str
-    created_at: datetime
+    created_at: UtcDatetime
     user_id: int
 
 
@@ -94,8 +95,8 @@ class IterOut(BaseModel):
     preamble: str
     signal_kind: str | None
     signal_args: dict[str, Any] | None
-    started_at: datetime
-    ended_at: datetime | None
+    started_at: UtcDatetime
+    ended_at: UtcDatetime | None
     exit_reason: str | None
 
 
@@ -108,8 +109,8 @@ class RunOut(BaseModel):
     prompt_body: str
     user_id: int
     status: str
-    started_at: datetime
-    ended_at: datetime | None
+    started_at: UtcDatetime
+    ended_at: UtcDatetime | None
     max_iters: int
     iter_timeout: int
     worktree_path: str | None
@@ -131,7 +132,7 @@ class EventOut(BaseModel):
     run_id: str
     iter_id: int | None
     seq: int
-    ts: datetime
+    ts: UtcDatetime
     kind: str
     payload: dict[str, Any]
 

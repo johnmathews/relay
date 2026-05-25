@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from relay_v2._time import to_utc_iso
 from relay_v2.db.models import Event
 from relay_v2.harness import (
     AssistantText,
@@ -137,7 +138,7 @@ class EventStore:
                         "seq": seq,
                         "kind": kind,
                         "payload": payload,
-                        "ts": ts.isoformat(),
+                        "ts": to_utc_iso(ts),
                         "run_id": run_id,
                         "iter_id": iter_id,
                     },

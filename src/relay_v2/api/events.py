@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse
 
+from relay_v2._time import to_utc_iso
 from relay_v2.api.deps import get_core
 from relay_v2.sse import CLOSED
 
@@ -99,7 +100,7 @@ def _event_payload(ev: Any) -> dict[str, Any]:
         "seq": ev.seq,
         "kind": ev.kind,
         "payload": ev.payload,
-        "ts": ev.ts.isoformat(),
+        "ts": to_utc_iso(ev.ts),
         "run_id": ev.run_id,
         "iter_id": ev.iter_id,
     }
@@ -174,7 +175,7 @@ async def sse_event_stream(
                 yield _heartbeat_frame(
                     {
                         "run_id": run_id,
-                        "server_ts": _dt.datetime.now(_dt.UTC).isoformat(),
+                        "server_ts": to_utc_iso(_dt.datetime.now(_dt.UTC)),
                         "last_event_ts": last_event_ts,
                     }
                 )
