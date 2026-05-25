@@ -53,6 +53,43 @@ def test_skill_md_frontmatter_parses() -> None:
     assert "description:" in fm
 
 
+def test_skill_md_frontmatter_meets_pi_constraints() -> None:
+    """Pi enforces (https://pi.dev/docs/latest/skills) `name` max 64
+    chars / lowercase a-z 0-9 hyphens, and `description` max 1024 chars
+    (folded). A description over the limit is rejected or silently
+    truncated by pi — the skill then loses its trigger phrases at the
+    tail. Lock both limits so drift fails the gate."""
+    import re as _re
+
+    text = _read("SKILL.md")
+    fm = text.split("---", 2)[1]
+
+    name_match = _re.search(r"^name:\s*(\S+)\s*$", fm, _re.MULTILINE)
+    assert name_match is not None, "name: missing"
+    name = name_match.group(1)
+    assert 1 <= len(name) <= 64, f"name length {len(name)} outside 1..64"
+    assert _re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name), (
+        f"name {name!r} must be lowercase a-z/0-9/hyphens, no "
+        f"leading/trailing/consecutive hyphens"
+    )
+
+    desc_match = _re.search(
+        r"^description: >\n((?:  .*\n?)+)", fm, _re.MULTILINE
+    )
+    assert desc_match is not None, (
+        "description must be a YAML folded scalar (`description: >`)"
+    )
+    folded = " ".join(
+        line.strip()
+        for line in desc_match.group(1).splitlines()
+        if line.strip()
+    )
+    assert len(folded) <= 1024, (
+        f"description folds to {len(folded)} chars; pi limit is 1024. "
+        f"Trim trigger phrases; preserve the keyword set that activates the skill."
+    )
+
+
 def test_sentinel_grammar_is_verbatim_v1() -> None:
     s = _read("references/sentinels.md")
     for verb in (

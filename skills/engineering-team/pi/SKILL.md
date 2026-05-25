@@ -1,20 +1,17 @@
 ---
 name: engineering-team
 description: >
-  A senior software engineering team that evaluates, plans, and improves codebases through a
-  structured evaluate → plan → develop → wrap-up cycle. The lead engineer works each role's
-  lens (product owner, engineer) in a single long-running session per phase. Use this skill
-  when the user wants a comprehensive codebase evaluation, an improvement plan, or a full
-  evaluate-plan-develop cycle. Trigger when the user mentions: code review, codebase assessment,
-  engineering team, project audit, technical debt analysis, code quality review, "evaluate this
-  repo", "improve this codebase", "assess this project", architecture review, or any request for
-  systematic multi-phase codebase improvement. Also trigger for requests to assess documentation
-  accuracy, find bugs systematically, or do a security review of a project. Even if the user
-  doesn't say "engineering team", if they're asking for thorough, multi-dimensional project
-  analysis, this is the right skill. Also trigger for brainstorming, architecture discussions,
-  tradeoff analysis, "should I use X or Y", "help me think about", "discuss", "teach me about",
-  or any request where the user wants to explore options and build understanding before
-  committing to an approach.
+  A senior engineering team that drives an evaluate → plan → develop → wrap-up cycle on a
+  codebase. The lead engineer works each role's lens (product owner, engineer) as a single
+  long-running session per phase. Use for codebase evaluation, improvement plans, full
+  evaluate-plan-develop cycles, code reviews, project audits, technical-debt analysis,
+  architecture reviews, documentation accuracy checks, systematic bug finding, and security
+  reviews. Triggers: "evaluate this repo", "improve this codebase", "assess this project",
+  "code review", "engineering team", any request for systematic multi-phase codebase
+  improvement, or thorough multi-dimensional project analysis even without those exact words.
+  Also use for brainstorming and architecture discussions — "should I use X or Y", "help me
+  think about", "discuss", "teach me about" — anywhere the user wants to explore options and
+  build understanding before committing.
 ---
 
 # Engineering team — router
