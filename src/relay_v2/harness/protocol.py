@@ -18,6 +18,7 @@ __all__ = [
     "HarnessEvent",
     "SessionStarted",
     "AssistantText",
+    "AssistantTextDelta",
     "ToolUseStart",
     "ToolUseUpdate",
     "ToolUseEnd",
@@ -60,6 +61,32 @@ class AssistantText(HarnessEvent):
 
     text: str
     turn_seq: int
+    kind: Literal["text", "thinking"] = "text"
+
+
+@dataclass
+class AssistantTextDelta(HarnessEvent):
+    """A single streamed text chunk inside an in-progress turn.
+
+    Emitted inline by the harness as pi feeds ``text_delta`` /
+    ``thinking_delta`` events — **in addition to**, not instead of,
+    the accumulated :class:`AssistantText` flushed at ``turn_end``.
+    The orchestrator does NOT persist these: spec.md §3.2 has no
+    event kind for deltas. They flow through the SSE broadcaster's
+    ephemeral channel so the dashboard can render an in-progress
+    pending row as tokens arrive (ADR-46 Plan B). The post-turn
+    :class:`AssistantText` remains the canonical persisted record;
+    concatenating the deltas of a (turn_seq, kind) equals the
+    canonical text (ADR-18 invariant preserved).
+
+    ``delta_seq`` is monotonic within a turn and resets across turns
+    — useful for ordering on the client side without relying on
+    arrival order.
+    """
+
+    text: str
+    turn_seq: int
+    delta_seq: int
     kind: Literal["text", "thinking"] = "text"
 
 

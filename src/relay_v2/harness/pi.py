@@ -35,6 +35,7 @@ from pathlib import Path
 from relay_v2.config import Settings, get_settings
 from relay_v2.harness.protocol import (
     AssistantText,
+    AssistantTextDelta,
     HarnessEvent,
     SessionEnded,
     SessionStarted,
@@ -96,6 +97,9 @@ class _PiEventMapper:
         self._turn_seq = 0
         self._text: list[str] = []
         self._thinking: list[str] = []
+        # ADR-46 Plan B: monotonic per-turn counter for streamed delta
+        # events. Reset at every ``turn_start`` alongside the buffers.
+        self._delta_seq = 0
         self._tool_started: dict[str, float] = {}
         self.saw_agent_end = False
 
@@ -141,15 +145,43 @@ class _PiEventMapper:
             self._turn_seq += 1
             self._text.clear()
             self._thinking.clear()
+            self._delta_seq = 0
 
         elif kind == "message_update":
             ame = ev.get("assistantMessageEvent")
             if isinstance(ame, dict):
                 sub = ame.get("type")
                 if sub == "text_delta":
-                    self._text.append(str(ame.get("delta", "")))
+                    delta = str(ame.get("delta", ""))
+                    self._text.append(delta)
+                    # ADR-46 Plan B: surface the chunk inline. The
+                    # accumulated AssistantText still flushes at
+                    # turn_end (ADR-18 concatenation invariant
+                    # preserved); deltas are an ADDITIVE ephemeral
+                    # signal for the dashboard's live pending row.
+                    self._delta_seq += 1
+                    seq, ts = self._next()
+                    yield AssistantTextDelta(
+                        seq=seq,
+                        ts=ts,
+                        text=delta,
+                        turn_seq=self._turn_seq,
+                        delta_seq=self._delta_seq,
+                        kind="text",
+                    )
                 elif sub == "thinking_delta":
-                    self._thinking.append(str(ame.get("delta", "")))
+                    delta = str(ame.get("delta", ""))
+                    self._thinking.append(delta)
+                    self._delta_seq += 1
+                    seq, ts = self._next()
+                    yield AssistantTextDelta(
+                        seq=seq,
+                        ts=ts,
+                        text=delta,
+                        turn_seq=self._turn_seq,
+                        delta_seq=self._delta_seq,
+                        kind="thinking",
+                    )
                 # text/thinking/toolcall start+end framing and any unknown
                 # sub-type are consumed internally (ADR-18).
 

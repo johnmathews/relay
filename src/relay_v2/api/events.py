@@ -31,6 +31,7 @@ used instead.
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
 import json
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
@@ -59,9 +60,13 @@ _TERMINAL = frozenset({"done", "failed", "cancelled"})
 # off a single unbounded SELECT; spec.md §9.3 "paginated").
 _REPLAY_PAGE = 500
 
-# Idle keepalive cadence (seconds): an SSE comment so proxies / the
-# browser keep the connection warm on a quiet live run.
-_KEEPALIVE_S = 15.0
+# Idle heartbeat cadence (seconds): the live generator emits a named
+# ``heartbeat`` frame at this interval whenever the queue is quiet.
+# Lowered from the 15s "keep proxy warm" cadence to 5s so the
+# dashboard's liveness widget reflects pi-is-thinking within a
+# user-noticeable window (ADR-45 Plan A). Test seam — tests
+# monkeypatch this to a sub-second value to avoid sleeping.
+_KEEPALIVE_S = 5.0
 
 
 def _frame(seq: int, kind: str, data: dict[str, Any]) -> str:
@@ -70,6 +75,19 @@ def _frame(seq: int, kind: str, data: dict[str, Any]) -> str:
     return (
         f"id: {seq}\n"
         f"event: {kind}\n"
+        f"data: {json.dumps(data, default=str)}\n\n"
+    )
+
+
+def _heartbeat_frame(data: dict[str, Any]) -> str:
+    """An ephemeral liveness ping (ADR-45 Plan A). Deliberately omits
+    the ``id:`` line: per WHATWG SSE, a message with no ``id`` field
+    leaves the browser's Last-Event-ID buffer unchanged — exactly
+    what we want, since heartbeats are not persisted and bumping the
+    cursor would point at a phantom DB row on reconnect.
+    """
+    return (
+        f"event: heartbeat\n"
         f"data: {json.dumps(data, default=str)}\n\n"
     )
 
@@ -130,8 +148,12 @@ async def sse_event_stream(
     # below is captured in the queue and not lost in the replay→live gap.
     async with core.broadcaster.subscribe(run_id) as queue:
         max_replayed = last_event_id
+        # Track the ts of the most recently forwarded event so idle
+        # heartbeats can carry "how long has pi been silent" (ADR-45).
+        last_event_ts: str | None = None
         async for seq, kind, data in _replay(core, run_id, last_event_id):
             max_replayed = max(max_replayed, seq)
+            last_event_ts = data.get("ts")
             yield _frame(seq, kind, data)
 
         # Drain the live subscription. Forward only seq > max_replayed:
@@ -143,9 +165,19 @@ async def sse_event_stream(
                     queue.get(), timeout=_KEEPALIVE_S
                 )
             except TimeoutError:
-                # Idle: keepalive comment, then re-check terminality so a
-                # run that finished while quiet ends the stream promptly.
-                yield ": keepalive\n\n"
+                # Idle: emit a named heartbeat frame (ADR-45 Plan A —
+                # supersedes the bare `: keepalive` comment so the
+                # dashboard can render a live "alive · last activity
+                # Xs ago" indicator). Then re-check terminality so a
+                # run that finished while quiet ends the stream
+                # promptly.
+                yield _heartbeat_frame(
+                    {
+                        "run_id": run_id,
+                        "server_ts": _dt.datetime.now(_dt.UTC).isoformat(),
+                        "last_event_ts": last_event_ts,
+                    }
+                )
                 latest = await core.get_run(run_id)
                 if latest is not None and latest.status in _TERMINAL:
                     if queue.empty():
@@ -157,10 +189,28 @@ async def sse_event_stream(
                 # reconnects with Last-Event-ID and replay backfills.
                 return
 
+            # Ephemeral frame (ADR-46 Plan B — assistant text/thinking
+            # deltas). Discriminated by the ``_ephemeral`` marker
+            # publish_ephemeral writes. Rendered as a id-less named
+            # event so the browser preserves Last-Event-ID across
+            # deltas. Does NOT count toward ``max_replayed`` /
+            # ``last_event_ts`` (not a persisted event).
+            if isinstance(item, dict) and item.get("_ephemeral"):
+                kind = str(item.get("_kind", "ephemeral"))
+                payload = item.get("data", {})
+                if not isinstance(payload, dict):
+                    payload = {}
+                yield _heartbeat_frame(payload) if kind == "heartbeat" else (
+                    f"event: {kind}\n"
+                    f"data: {json.dumps(payload, default=str)}\n\n"
+                )
+                continue
+
             seq = item["seq"]
             if seq <= max_replayed:
                 continue  # already delivered during replay — dedupe
             max_replayed = seq
+            last_event_ts = item.get("ts")
             yield _frame(seq, item["kind"], item)
             if item["kind"] == "run_ended":
                 # `run_ended` is the last event a run ever appends

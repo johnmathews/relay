@@ -55,6 +55,62 @@ describe('TimelinePane', () => {
     expect(w.find('[data-kind="some_future_kind"]').exists()).toBe(true)
   })
 
+  it('renders pendingTurns as in-progress pseudo-rows after canonical events', () => {
+    // ADR-46 Plan B: the dashboard shows tokens-as-they-arrive by
+    // accumulating assistant_delta SSE frames into a pendingTurns
+    // buffer (events store). TimelinePane renders one pseudo-row per
+    // pending entry below the canonical timeline; the rows are
+    // distinct (data-testid="pending-turn") so the canonical
+    // assistant_text card replaces them cleanly when it lands.
+    const w = mount(TimelinePane, {
+      props: {
+        events: [
+          { seq: 1, kind: 'iter_started', payload: { seq: 1, phase: null } },
+        ],
+        pendingTurns: [
+          {
+            iterId: 20,
+            turnSeq: 1,
+            kind: 'thinking' as const,
+            text: 'let me look',
+          },
+          {
+            iterId: 20,
+            turnSeq: 1,
+            kind: 'text' as const,
+            text: 'hello…',
+          },
+        ],
+      },
+    })
+    const pending = w.findAll('[data-testid="pending-turn"]')
+    expect(pending.length).toBe(2)
+    expect(pending[0]!.attributes('data-pending-kind')).toBe('thinking')
+    expect(pending[0]!.text()).toContain('let me look')
+    expect(pending[1]!.text()).toContain('hello…')
+  })
+
+  it('hides pendingTurns when an iter filter is active', () => {
+    // Pending rows only stream for the *currently running* iter (deltas
+    // come from the live pi process). When the user is zoomed into a
+    // specific iter view (selectedIterSeq set), showing the live
+    // deltas of a different iter is confusing — hide them entirely.
+    const w = mount(TimelinePane, {
+      props: {
+        events: [
+          { seq: 1, kind: 'iter_started', payload: { seq: 1, phase: null } },
+          { seq: 2, kind: 'iter_ended', payload: { seq: 1, exit_reason: 'signal' } },
+          { seq: 3, kind: 'iter_started', payload: { seq: 2, phase: null } },
+        ],
+        selectedIterSeq: 1,
+        pendingTurns: [
+          { iterId: 21, turnSeq: 1, kind: 'text' as const, text: 'iter 2 live' },
+        ],
+      },
+    })
+    expect(w.findAll('[data-testid="pending-turn"]').length).toBe(0)
+  })
+
   it('renders harness_session_ended as a UsageRow (ADR-39)', () => {
     const events: StreamEvent[] = [
       { seq: 1, kind: 'iter_started', payload: { seq: 1, phase: null } },

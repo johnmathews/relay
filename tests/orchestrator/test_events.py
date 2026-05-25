@@ -22,12 +22,14 @@ from relay_v2.db import init_db, make_async_engine, make_async_sessionmaker
 from relay_v2.db.models import Event
 from relay_v2.events import TOOL_RESULT_CAP, EventStore, _truncate_result
 from relay_v2.harness.protocol import (
+    AssistantTextDelta,
     SessionEnded,
     SessionStarted,
     ToolUseEnd,
     ToolUseStart,
     ToolUseUpdate,
 )
+from relay_v2.sse import Broadcaster
 
 
 @asynccontextmanager
@@ -116,6 +118,54 @@ def test_store_harness_event_tool_branches(tmp_path: Path) -> None:
 
     kinds = asyncio.run(scenario())
     assert kinds == ["tool_use_start", "tool_use_end"]
+
+
+def test_assistant_text_delta_publishes_ephemeral_not_persisted(
+    tmp_path: Path,
+) -> None:
+    """ADR-46 Plan B: AssistantTextDelta is broadcast on the
+    broadcaster's ephemeral channel and NOT appended to the events
+    table. The canonical AssistantText flushed at turn_end remains the
+    persisted record (ADR-18 invariant)."""
+
+    async def scenario() -> tuple[list[str], dict[str, object]]:
+        async with _store(tmp_path) as (_settings, store):
+            b = Broadcaster()
+            store.broadcaster = b  # wire it after construction
+            async with b.subscribe("r1") as q:
+                await store.store_harness_event(
+                    "r1",
+                    1,
+                    AssistantTextDelta(
+                        seq=1,
+                        ts=0.0,
+                        text="hi",
+                        turn_seq=2,
+                        delta_seq=1,
+                        kind="text",
+                    ),
+                )
+                item = await asyncio.wait_for(q.get(), timeout=2)
+            async with store.sessionmaker() as s:
+                rows = list(
+                    await s.scalars(select(Event).where(Event.run_id == "r1"))
+                )
+            return [r.kind for r in rows], item
+
+    persisted_kinds, broadcast = asyncio.run(scenario())
+    # NOT persisted.
+    assert persisted_kinds == []
+    # Broadcast in the ephemeral shape (sse.py:publish_ephemeral).
+    assert isinstance(broadcast, dict)
+    assert broadcast.get("_ephemeral") is True
+    assert broadcast.get("_kind") == "assistant_delta"
+    data = broadcast.get("data")
+    assert isinstance(data, dict)
+    assert data["text"] == "hi"
+    assert data["turn_seq"] == 2
+    assert data["delta_seq"] == 1
+    assert data["kind"] == "text"
+    assert data["iter_id"] == 1
 
 
 def test_store_harness_event_truncates_large_tool_result(

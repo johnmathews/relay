@@ -339,4 +339,236 @@ describe('events store — replay vs live orchestration', () => {
     expect(store.events.map((e) => e.kind)).toContain('harness_session_ended')
     expect(store.lastSeq).toBe(4)
   })
+
+  // ADR-45 Plan A: heartbeat is an ephemeral liveness ping. It MUST
+  // be wired into KNOWN_EVENT_TYPES (so the browser EventSource fires
+  // the listener) but it MUST NOT be ingested into the timeline event
+  // list, MUST NOT update lastSeq (the SSE id: line is intentionally
+  // omitted on the wire so the browser's Last-Event-ID cursor is
+  // preserved across heartbeats), and MUST NOT trigger Colada
+  // invalidations. It feeds a separate `lastHeartbeat` field used by
+  // the run-detail liveness widget.
+  it('routes heartbeat to lastHeartbeat, not events/lastSeq/invalidations', async () => {
+    const invalidate = vi.fn()
+    const onLifecycle = vi.fn()
+    const store = useEventsStore()
+    await store.open('run-hb', 'running', {
+      streamOptions: { eventSourceFactory: freshFactory() },
+      invalidate,
+      onLifecycle,
+    })
+    const es = FakeEventSource.instances[0]!
+
+    // First a real persisted event so lastSeq starts at 5.
+    es.emit(
+      'iter_started',
+      JSON.stringify({
+        seq: 5,
+        kind: 'iter_started',
+        payload: { seq: 1 },
+        ts: '2026-05-25T09:00:00+00:00',
+        run_id: 'run-hb',
+        iter_id: 5,
+      }),
+      '5',
+    )
+    await Promise.resolve()
+    expect(store.lastSeq).toBe(5)
+    expect(store.events.length).toBe(1)
+    // The priming iter_started event legitimately invalidates — reset
+    // the spies so the next assertion isolates the heartbeat's
+    // (non-)behaviour.
+    invalidate.mockClear()
+    onLifecycle.mockClear()
+
+    // Now a heartbeat. The real browser leaves MessageEvent.lastEventId
+    // at the prior value ('5') when the frame had no id: line — the
+    // FakeEventSource mirrors that here.
+    es.emit(
+      'heartbeat',
+      JSON.stringify({
+        run_id: 'run-hb',
+        server_ts: '2026-05-25T09:00:07+00:00',
+        last_event_ts: '2026-05-25T09:00:00+00:00',
+      }),
+      '5',
+    )
+    await Promise.resolve()
+
+    // Timeline UNCHANGED.
+    expect(store.events.length).toBe(1)
+    expect(store.lastSeq).toBe(5)
+    // Liveness clock updated.
+    expect(store.lastHeartbeat).toBeTruthy()
+    expect(store.lastHeartbeat!.serverTs).toBe('2026-05-25T09:00:07+00:00')
+    expect(store.lastHeartbeat!.lastEventTs).toBe('2026-05-25T09:00:00+00:00')
+    expect(typeof store.lastHeartbeat!.receivedAt).toBe('number')
+    // No cache invalidations.
+    expect(invalidate).not.toHaveBeenCalled()
+    expect(onLifecycle).not.toHaveBeenCalled()
+  })
+
+  // ADR-46 Plan B: assistant text/thinking deltas are ephemeral —
+  // they accumulate into a per-(iter, turn, kind) "pending" buffer
+  // so TimelinePane can render an in-progress row, but they MUST NOT
+  // enter the canonical events list (the persisted AssistantText at
+  // turn end is the source of truth). When that canonical row
+  // arrives, the matching pending entry is dropped (otherwise the
+  // pending row and the real row would both render).
+  it('accumulates assistant_delta into pendingTurns and drops on canonical text', async () => {
+    const store = useEventsStore()
+    await store.open('run-d', 'running', {
+      streamOptions: { eventSourceFactory: freshFactory() },
+    })
+    const es = FakeEventSource.instances[0]!
+
+    // Two text deltas for (iter=20, turn=1).
+    es.emit(
+      'assistant_delta',
+      JSON.stringify({
+        iter_id: 20,
+        turn_seq: 1,
+        delta_seq: 1,
+        text: 'hel',
+        kind: 'text',
+      }),
+      '5',
+    )
+    es.emit(
+      'assistant_delta',
+      JSON.stringify({
+        iter_id: 20,
+        turn_seq: 1,
+        delta_seq: 2,
+        text: 'lo',
+        kind: 'text',
+      }),
+      '5',
+    )
+
+    // Timeline UNCHANGED.
+    expect(store.events.length).toBe(0)
+    expect(store.lastSeq).toBe(0)
+
+    const pending = store.pendingTurns
+    expect(pending.length).toBe(1)
+    expect(pending[0]!.iterId).toBe(20)
+    expect(pending[0]!.turnSeq).toBe(1)
+    expect(pending[0]!.kind).toBe('text')
+    expect(pending[0]!.text).toBe('hello')
+
+    // A thinking delta for the SAME (iter, turn) opens a SECOND
+    // pending entry (thinking and text are distinct flushes).
+    es.emit(
+      'assistant_delta',
+      JSON.stringify({
+        iter_id: 20,
+        turn_seq: 1,
+        delta_seq: 3,
+        text: 'reasoning',
+        kind: 'thinking',
+      }),
+      '5',
+    )
+    expect(store.pendingTurns.length).toBe(2)
+
+    // Canonical assistant_text for (iter=20, turn=1, text) — drop
+    // the text pending entry. The thinking pending entry survives
+    // until its own canonical flush arrives.
+    es.emit(
+      'assistant_text',
+      JSON.stringify({
+        seq: 6,
+        kind: 'assistant_text',
+        payload: { text: 'hello', turn_seq: 1, kind: 'text' },
+        ts: '2026-05-25T10:00:00+00:00',
+        run_id: 'run-d',
+        iter_id: 20,
+      }),
+      '6',
+    )
+    const remaining = store.pendingTurns
+    expect(remaining.length).toBe(1)
+    expect(remaining[0]!.kind).toBe('thinking')
+  })
+
+  it('iter_ended clears all pending turns for that iter', async () => {
+    const store = useEventsStore()
+    await store.open('run-d2', 'running', {
+      streamOptions: { eventSourceFactory: freshFactory() },
+    })
+    const es = FakeEventSource.instances[0]!
+
+    es.emit(
+      'assistant_delta',
+      JSON.stringify({
+        iter_id: 5,
+        turn_seq: 1,
+        delta_seq: 1,
+        text: 'stuck',
+        kind: 'thinking',
+      }),
+      '0',
+    )
+    expect(store.pendingTurns.length).toBe(1)
+
+    // Iter ended without a canonical thinking flush (interrupted
+    // turn). Pending must be dropped so the new iter starts clean.
+    es.emit(
+      'iter_ended',
+      JSON.stringify({
+        seq: 9,
+        kind: 'iter_ended',
+        payload: { exit_reason: 'cancelled' },
+        ts: '2026-05-25T10:01:00+00:00',
+        run_id: 'run-d2',
+        iter_id: 5,
+      }),
+      '9',
+    )
+    expect(store.pendingTurns.length).toBe(0)
+  })
+
+  // Regression for the live-vs-replay payload-shape divergence (the
+  // "tool cards are empty until you refresh" bug from 2026-05-25).
+  //
+  // The SSE `data:` body is the FULL envelope the broadcaster publishes
+  // — `{seq, kind, payload, ts, run_id, iter_id}` (api/events.py:_frame
+  // + _event_payload). The REST replay path correctly unwraps `r.payload`
+  // before ingesting. The live path here must do the same — otherwise
+  // every renderer that reads `event.payload.<field>` sees `undefined`
+  // (e.g. ToolCallCard's name/args), and the "generic" renderer dumps
+  // the whole envelope as JSON. Replay rendered fine; live did not.
+  it('unwraps the SSE envelope so live payload matches REST replay', async () => {
+    const store = useEventsStore()
+    await store.open('run-env', 'running', {
+      streamOptions: { eventSourceFactory: freshFactory() },
+    })
+    const es = FakeEventSource.instances[0]!
+    // What the server actually sends on the wire:
+    es.emit(
+      'tool_use_start',
+      JSON.stringify({
+        seq: 5,
+        kind: 'tool_use_start',
+        payload: { tool_id: 'tu-1', name: 'read', args: { path: '/x' } },
+        ts: '2026-05-25T08:33:42',
+        run_id: 'run-env',
+        iter_id: 20,
+      }),
+      '5',
+    )
+
+    const row = store.events.find((e) => e.seq === 5)
+    expect(row).toBeDefined()
+    expect(row!.kind).toBe('tool_use_start')
+    // INNER payload, not the envelope:
+    expect(row!.payload.name).toBe('read')
+    expect(row!.payload.tool_id).toBe('tu-1')
+    expect(row!.payload.args).toEqual({ path: '/x' })
+    // Envelope keys must NOT leak into the payload:
+    expect(row!.payload.seq).toBeUndefined()
+    expect(row!.payload.ts).toBeUndefined()
+    expect(row!.payload.run_id).toBeUndefined()
+  })
 })

@@ -37,10 +37,12 @@ src/relay_v2/harness/
 SessionEnded`.
 
 Normalized events: `SessionStarted`, `AssistantText` (with
-`kind ∈ {"text", "thinking"}`), `ToolUseStart` / `ToolUseUpdate` /
-`ToolUseEnd`, `SessionEnded` (`stop_reason ∈
-{"clean", "crash", "timeout", "cancelled"}`). Every event carries a
-monotonic `seq` and a `ts`.
+`kind ∈ {"text", "thinking"}`), `AssistantTextDelta` (one per pi
+`text_delta` / `thinking_delta`, carries `text`, `turn_seq`,
+`delta_seq`, `kind`; ADR-46 — ephemeral, not persisted),
+`ToolUseStart` / `ToolUseUpdate` / `ToolUseEnd`, `SessionEnded`
+(`stop_reason ∈ {"clean", "crash", "timeout", "cancelled"}`).
+Every event carries a monotonic `seq` and a `ts`.
 
 ## pi mapping (spec.md §4.2, ADR-18)
 
@@ -48,8 +50,17 @@ Grounded in the committed de-risking fixtures, not assumptions:
 
 - `session` → `SessionStarted`.
 - `message_update`/`text_delta` → accumulated per turn → one
-  `AssistantText(kind="text")` flushed at `turn_end` (OQ-2).
-- `message_update`/`thinking_delta` → accumulated → `AssistantText(kind="thinking")`.
+  `AssistantText(kind="text")` flushed at `turn_end` (OQ-2). Each
+  chunk is **also** surfaced inline as an
+  `AssistantTextDelta(kind="text", delta_seq, turn_seq)` for the SSE
+  ephemeral channel (ADR-46 Plan B); the accumulated `AssistantText`
+  at `turn_end` is the canonical persisted record (ADR-18 invariant
+  preserved — joining the deltas of a (turn_seq, kind) equals the
+  canonical text).
+- `message_update`/`thinking_delta` → accumulated → `AssistantText(kind="thinking")`,
+  plus an inline `AssistantTextDelta(kind="thinking", …)` per chunk
+  (same ADR-46 ephemeral channel; never reaches signal detection
+  per the ADR-18 anti-mention rule).
 - `tool_execution_start|update|end` → `ToolUseStart|Update|End`
   (`duration_ms` is timed by relay between the start/end events — pi does
   not report it).

@@ -7,6 +7,7 @@ package may import pi's JSONL schema.
 
 from relay_v2.harness.protocol import (
     AssistantText,
+    AssistantTextDelta,
     Harness,
     HarnessEvent,
     HarnessSession,
@@ -21,6 +22,7 @@ from relay_v2.harness.protocol import (
 
 __all__ = [
     "AssistantText",
+    "AssistantTextDelta",
     "Harness",
     "HarnessEvent",
     "HarnessSession",

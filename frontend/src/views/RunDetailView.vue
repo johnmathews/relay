@@ -27,6 +27,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import AsyncBoundary from '@/components/shared/AsyncBoundary.vue'
 import StatusBadge from '@/components/shared/StatusBadge.vue'
+import RunHealthBadge from '@/components/runs/RunHealthBadge.vue'
 import ActionButton from '@/components/shared/ActionButton.vue'
 import TimelinePane from '@/components/runs/TimelinePane.vue'
 import ItersPane from '@/components/runs/ItersPane.vue'
@@ -261,6 +262,13 @@ async function onResumed(): Promise<void> {
 
 const eventList = computed(() => eventsStore.events)
 const renderedCount = computed(() => eventsStore.renderedCount)
+// ADR-45 Plan A — feeds the run-health badge in the header so a quiet
+// live run reads as "still alive" rather than "frozen".
+const lastHeartbeat = computed(() => eventsStore.lastHeartbeat)
+// ADR-46 Plan B — in-progress assistant turns from the ephemeral
+// SSE delta channel; rendered as pseudo-rows below the canonical
+// timeline so tokens appear live while pi streams.
+const pendingTurns = computed(() => eventsStore.pendingTurns)
 
 const showPrompt = ref(false)
 
@@ -301,6 +309,10 @@ onBeforeUnmount(() => {
               Run {{ detail.id }}
             </h1>
             <StatusBadge :status="detail.status" />
+            <RunHealthBadge
+              :status="detail.status"
+              :last-heartbeat="lastHeartbeat"
+            />
             <ParentRunChip :parent-run-id="detail.parent_run_id" />
           </div>
           <dl class="run-detail__meta">
@@ -407,6 +419,7 @@ onBeforeUnmount(() => {
         <TimelinePane
           :events="eventList"
           :selected-iter-seq="currentRun.selectedIterId"
+          :pending-turns="pendingTurns"
           :run-id="detail.id"
         />
 

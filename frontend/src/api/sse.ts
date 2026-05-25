@@ -99,6 +99,8 @@ export const KNOWN_EVENT_TYPES = [
   'pause_requested',
   'pause_resolved',
   'artifact_edited', // ADR-40 (14a/14c)
+  'heartbeat', // ADR-45 Plan A — ephemeral liveness ping; not persisted
+  'assistant_delta', // ADR-46 Plan B — ephemeral text/thinking deltas; not persisted
   'error',
 ] as const
 

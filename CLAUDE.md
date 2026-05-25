@@ -231,6 +231,53 @@ restored existing contracts and exposed lasting invariants:
   `cacheWrite` / `totalTokens` + `cost.total`) per ADR-18 — **NOT**
   Anthropic-API names (`input_tokens` / `cache_read_input_tokens` /
   etc). Pi `SessionEnded.messages[].usage` is the source of truth.
+- **SSE wire shape vs store payload (ADR-45/46, 2026-05-25
+  regression).** The SSE `data:` body for a persisted event is the
+  full envelope `{seq, kind, payload, ts, run_id, iter_id}` that
+  `api/events.py:_event_payload` builds. The REST replay path
+  correctly unwraps `r.payload`; the live store path must do the
+  same (`stores/events.ts:onSseEvent` — pluck `envelope.payload`,
+  not the envelope itself). The 2026-05-25 bug stored the envelope
+  as `payload`, so every renderer reading `event.payload.<field>`
+  saw `undefined` and tool cards rendered with empty
+  name/args/result until a refresh hit REST replay. Two ephemeral
+  frame kinds — `heartbeat` (ADR-45) and `assistant_delta` (ADR-46)
+  — deliberately ship the inner shape directly with NO envelope and
+  NO `id:` line, so the browser keeps its Last-Event-ID cursor and
+  the store special-cases them BEFORE the envelope-unwrap path.
+
+**Post-MVP live-stream UX (2026-05-25, ADR-45 + ADR-46).** Two thin
+additions to the SSE layer make a quiet "pi is thinking" phase
+readable without changing the events table.
+- **ADR-45 Plan A — heartbeat.** Idle live streams emit a named
+  `heartbeat` SSE frame at the `_KEEPALIVE_S` cadence (dropped from
+  15s → 5s) carrying `{run_id, server_ts, last_event_ts}`. No `id:`
+  line (cursor unchanged). The frontend store routes it to
+  `lastHeartbeat` (NOT the events list, lastSeq, or invalidations).
+  `RunHealthBadge.vue` consumes it next to the `StatusBadge` to
+  render a live-ticking "● live · last activity Xs ago" indicator
+  with `live` / `slow` (>15s) / `stalled` (>60s) transitions;
+  rendered nothing for terminal status. Dual-list rule satisfied:
+  `heartbeat` is in `KNOWN_EVENT_TYPES` (listener fires) and
+  intentionally absent from `INVALIDATING_KINDS` (no cache effect).
+- **ADR-46 Plan B — streaming deltas.** New harness event
+  `AssistantTextDelta(text, kind, turn_seq, delta_seq)` yielded
+  inline by `_PiEventMapper` for every `text_delta` /
+  `thinking_delta` — additive to the existing `AssistantText` flush
+  at `turn_end` (ADR-18 concatenation invariant preserved).
+  `EventStore.store_harness_event` routes deltas to a new
+  `Broadcaster.publish_ephemeral(run_id, kind, data)` and does NOT
+  append. `sse_event_stream`'s drain loop discriminates on the
+  `_ephemeral` marker before reading `seq` and renders id-less
+  named-event frames. The frontend `pendingMap` in the events store
+  accumulates deltas per `${iterId}:${turnSeq}:${kind}`; the entry
+  is dropped when the canonical `assistant_text` arrives or when
+  `iter_ended` fires. `TimelinePane.vue` renders pending pseudo-rows
+  below the canonical timeline, hidden under an active iter filter.
+  Replay sees no pending rows but the canonical `AssistantText` is
+  in the events list — identical final state. Signal detection
+  still happens only on the turn-end `AssistantText`, never on a
+  delta (ADR-18 anti-mention preserved).
 
 **Phase 14a** (2026-05-22, `docs/proposals/pause-for-review.md`,
 `docs/plans/2026-05-22-pause-for-review-14a.md`) opens the

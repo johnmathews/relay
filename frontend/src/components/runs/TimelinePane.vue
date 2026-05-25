@@ -23,7 +23,7 @@ import { computed, ref } from 'vue'
 import ToolCallCard from './ToolCallCard.vue'
 import SignalCard from './SignalCard.vue'
 import UsageRow from './UsageRow.vue'
-import type { StreamEvent } from '@/stores/events'
+import type { PendingTurn, StreamEvent } from '@/stores/events'
 import { useBrowserUiStore } from '@/stores/files'
 
 const props = defineProps<{
@@ -45,6 +45,16 @@ const props = defineProps<{
    * call-sites (and tests) need not thread it through.
    */
   runId?: string
+  /**
+   * ADR-46 Plan B — in-progress assistant turns (text/thinking
+   * deltas accumulating live). Rendered as ephemeral pseudo-rows
+   * BELOW the canonical timeline; replaced by the canonical
+   * `assistant_text` event when it lands. Hidden entirely when an
+   * iter filter is active (deltas only flow for the running iter;
+   * showing them in a historical iter view is misleading). Default
+   * `[]` keeps older call-sites unchanged.
+   */
+  pendingTurns?: PendingTurn[]
 }>()
 
 /**
@@ -76,6 +86,15 @@ const filteredEvents = computed<StreamEvent[]>(() => {
     if (openIter === sel) out.push(ev)
   }
   return out
+})
+
+/** ADR-46 Plan B: pending pseudo-rows only render in the "all iters"
+ * view. Streaming deltas come from the live iter; in a historical
+ * iter filter they would be misleading (and the iterId-to-payload-seq
+ * mapping is one-way derivable, not two-way). */
+const visiblePending = computed<PendingTurn[]>(() => {
+  if (props.selectedIterSeq != null) return []
+  return props.pendingTurns ?? []
 })
 
 /** Above this many events the list is windowed. */
@@ -408,6 +427,34 @@ function onArtifactEditedClick(path: string): void {
       :style="{ height: `${window.padBottom}px` }"
       aria-hidden="true"
     />
+
+    <!-- ADR-46 Plan B — in-progress assistant turns. Live deltas
+         streamed via SSE; replaced by the canonical assistant_text
+         when it lands. Hidden under an iter filter (deltas only
+         flow for the running iter). -->
+    <ol
+      v-if="visiblePending.length > 0"
+      class="timeline__pending-list"
+      data-testid="pending-turns"
+    >
+      <li
+        v-for="(pt, idx) in visiblePending"
+        :key="`pending:${pt.iterId}:${pt.turnSeq}:${pt.kind}:${idx}`"
+        class="timeline__row timeline__row--pending"
+        :data-testid="'pending-turn'"
+        :data-pending-kind="pt.kind"
+      >
+        <span class="timeline__seq">···</span>
+        <div class="timeline__message timeline__message--pending">
+          <span class="timeline__label">
+            {{ pt.kind === 'thinking' ? 'thinking…' : 'assistant…' }}
+          </span>
+          <p class="timeline__text">
+            {{ pt.text }}
+          </p>
+        </div>
+      </li>
+    </ol>
   </div>
 </template>
 

@@ -99,6 +99,38 @@ export interface StreamEvent {
   payload: Record<string, unknown>
 }
 
+/**
+ * An in-progress assistant turn (ADR-46 Plan B). Accumulates streamed
+ * `assistant_delta` SSE frames keyed by (iter_id, turn_seq, kind);
+ * dropped when the canonical `assistant_text` event arrives or when
+ * the iter ends without a flush. Lets TimelinePane render a pending
+ * pseudo-row as tokens arrive.
+ */
+export interface PendingTurn {
+  iterId: number
+  turnSeq: number
+  kind: 'text' | 'thinking'
+  text: string
+}
+
+/**
+ * Latest heartbeat snapshot (ADR-45 Plan A). Heartbeats are ephemeral
+ * SSE frames the backend emits ~every 5s on an idle live stream; they
+ * are NOT persisted and carry no event seq. The dashboard's liveness
+ * widget reads this to render "alive · last activity Xs ago".
+ */
+export interface HeartbeatSnapshot {
+  /** Server wall clock at the moment the heartbeat was emitted (ISO). */
+  serverTs: string
+  /**
+   * ISO ts of the most recent event the server has forwarded on THIS
+   * connection (or `null` if none — e.g. reconnected past the tail).
+   */
+  lastEventTs: string | null
+  /** `Date.now()` at the moment the frame arrived at the client. */
+  receivedAt: number
+}
+
 /** How the current list was populated (purely informational for UI). */
 export type StreamMode = 'idle' | 'replay' | 'live'
 
@@ -148,6 +180,19 @@ export const useEventsStore = defineStore('run-events', () => {
   const loading = ref(false)
   /** Set if the replay fetch failed. */
   const error = ref<unknown>(null)
+  /**
+   * Latest heartbeat (ADR-45). `null` until the first heartbeat
+   * arrives — the run-detail widget shows "connecting…" until then.
+   */
+  const lastHeartbeat = shallowRef<HeartbeatSnapshot | null>(null)
+  /**
+   * In-progress assistant turns (ADR-46 Plan B). Keyed internally by
+   * `${iterId}:${turnSeq}:${kind}`; exposed as a flat array via the
+   * `pendingTurns` getter. shallowRef + replace-on-mutate keeps
+   * reactivity firing while avoiding deep tracking of the buffer
+   * (which can grow O(deltas) within a turn).
+   */
+  const pendingMap = shallowRef<Record<string, PendingTurn>>({})
 
   let stream: RunEventStream | null = null
   let openRunId: string | null = null
@@ -160,6 +205,18 @@ export const useEventsStore = defineStore('run-events', () => {
 
   /** Count of rows actually in the list — the parity-check observable. */
   const renderedCount = computed(() => events.value.length)
+
+  /**
+   * ADR-46 Plan B — flattened view of `pendingMap` for renderers.
+   * Stable insertion order via Object.values; consumers should not
+   * rely on a specific order between (iter, turn) pairs but within
+   * one pair the kind order is text-then-thinking only if both keys
+   * coexist (rare — pi flushes each kind at turn_end before the next
+   * delta could arrive).
+   */
+  const pendingTurns = computed((): PendingTurn[] =>
+    Object.values(pendingMap.value),
+  )
 
   /** The current last-seen seq as a string (SSE reconnect cursor). */
   const currentLastEventId = computed(() =>
@@ -177,6 +234,8 @@ export const useEventsStore = defineStore('run-events', () => {
     lastSeq.value = 0
     loading.value = false
     error.value = null
+    lastHeartbeat.value = null
+    pendingMap.value = {}
     openRunId = null
     invalidateFn = null
     onLifecycleFn = null
@@ -231,12 +290,113 @@ export const useEventsStore = defineStore('run-events', () => {
     })
   }
 
+  function pendingKey(iterId: number, turnSeq: number, kind: string): string {
+    return `${iterId}:${turnSeq}:${kind}`
+  }
+
+  function ingestDelta(data: Record<string, unknown>): void {
+    const iterId = Number(data.iter_id)
+    const turnSeq = Number(data.turn_seq)
+    const kind = data.kind === 'thinking' ? 'thinking' : 'text'
+    const text = typeof data.text === 'string' ? data.text : ''
+    if (!Number.isFinite(iterId) || !Number.isFinite(turnSeq)) return
+    const key = pendingKey(iterId, turnSeq, kind)
+    const next = { ...pendingMap.value }
+    const prev = next[key]
+    next[key] = {
+      iterId,
+      turnSeq,
+      kind,
+      text: (prev?.text ?? '') + text,
+    }
+    pendingMap.value = next
+  }
+
+  function dropPendingForCanonicalText(
+    iterId: unknown,
+    payload: Record<string, unknown>,
+  ): void {
+    const turnSeq = Number(payload.turn_seq)
+    const kind = payload.kind === 'thinking' ? 'thinking' : 'text'
+    const iid = Number(iterId)
+    if (!Number.isFinite(iid) || !Number.isFinite(turnSeq)) return
+    const key = pendingKey(iid, turnSeq, kind)
+    if (!(key in pendingMap.value)) return
+    const next = { ...pendingMap.value }
+    delete next[key]
+    pendingMap.value = next
+  }
+
+  function dropPendingForIter(iterId: unknown): void {
+    const iid = Number(iterId)
+    if (!Number.isFinite(iid)) return
+    const prefix = `${iid}:`
+    const next: Record<string, PendingTurn> = {}
+    let changed = false
+    for (const [k, v] of Object.entries(pendingMap.value)) {
+      if (k.startsWith(prefix)) {
+        changed = true
+        continue
+      }
+      next[k] = v
+    }
+    if (changed) pendingMap.value = next
+  }
+
   function onSseEvent(ev: RelaySseEvent): void {
+    // Heartbeat (ADR-45 Plan A) is ephemeral: the wire frame omits
+    // `id:` so the browser's Last-Event-ID is unchanged, the payload
+    // is NOT an envelope (it's `{run_id, server_ts, last_event_ts}`
+    // directly), and it MUST NOT enter the events list. Special-case
+    // FIRST — before the seq check below, which would otherwise
+    // re-ingest the prior event's seq.
+    if (ev.type === 'heartbeat') {
+      const hb = parsePayload(ev.data)
+      const serverTs = typeof hb.server_ts === 'string' ? hb.server_ts : ''
+      const lastEventTs =
+        typeof hb.last_event_ts === 'string' ? hb.last_event_ts : null
+      lastHeartbeat.value = {
+        serverTs,
+        lastEventTs,
+        receivedAt: Date.now(),
+      }
+      return
+    }
+    // assistant_delta (ADR-46 Plan B) is also ephemeral and id-less.
+    // Payload is the inner shape directly (publish_ephemeral, NOT the
+    // event envelope) — `{iter_id, turn_seq, delta_seq, text, kind}`.
+    // Accumulate into pendingTurns; never touch events / lastSeq /
+    // invalidations.
+    if (ev.type === 'assistant_delta') {
+      ingestDelta(parsePayload(ev.data))
+      return
+    }
     const seqNum = ev.lastEventId != null ? Number(ev.lastEventId) : NaN
     if (!Number.isFinite(seqNum)) return
-    ingest([
-      { seq: seqNum, kind: ev.type, payload: parsePayload(ev.data) },
-    ])
+    // The SSE `data:` body is the full envelope the broadcaster
+    // publishes (api/events.py:_event_payload) — `{seq, kind, payload,
+    // ts, run_id, iter_id}`. The REST replay path unwraps `r.payload`;
+    // the live path must do the same, or every renderer that reads
+    // `event.payload.<field>` sees undefined and the "generic" renderer
+    // dumps the envelope as JSON (the 2026-05-25 "empty tool cards
+    // until refresh" regression).
+    const envelope = parsePayload(ev.data)
+    const inner = envelope.payload
+    const payload =
+      inner != null && typeof inner === 'object' && !Array.isArray(inner)
+        ? (inner as Record<string, unknown>)
+        : {}
+    ingest([{ seq: seqNum, kind: ev.type, payload }])
+    // ADR-46 Plan B: prune the pending pseudo-row when its canonical
+    // companion arrives, so the in-progress row doesn't render
+    // alongside the persisted one.
+    if (ev.type === 'assistant_text') {
+      dropPendingForCanonicalText(envelope.iter_id, payload)
+    } else if (ev.type === 'iter_ended') {
+      // Iter wrapped (any reason). Drop every pending row for it so
+      // an aborted turn does not leave a stuck pseudo-row.
+      dropPendingForIter(envelope.iter_id)
+    }
     if (INVALIDATING_KINDS.has(ev.type)) armInvalidation()
   }
 
@@ -353,6 +513,8 @@ export const useEventsStore = defineStore('run-events', () => {
     lastSeq,
     loading,
     error,
+    lastHeartbeat,
+    pendingTurns,
     renderedCount,
     currentLastEventId,
     open,

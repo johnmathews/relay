@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from relay_v2.harness import (
     AssistantText,
+    AssistantTextDelta,
     SessionEnded,
     SessionStarted,
     ToolUseEnd,
@@ -107,6 +108,95 @@ def test_unknown_event_types_are_ignored_gracefully() -> None:
     assert isinstance(events[0], SessionStarted)
     assert isinstance(events[-1], SessionEnded)
     assert len(events) == 2  # the two unknowns produced nothing
+
+
+def test_text_and_thinking_deltas_yield_assistant_text_delta_inline() -> None:
+    """ADR-46 Plan B: each pi ``text_delta`` / ``thinking_delta`` is
+    surfaced inline as an :class:`AssistantTextDelta` (for the SSE
+    ephemeral channel) **in addition to** the existing accumulated
+    :class:`AssistantText` flushed at ``turn_end``. Concatenation
+    invariant (ADR-18): joining the deltas of a kind for a turn equals
+    the canonical AssistantText's text for that (turn_seq, kind).
+    ``delta_seq`` is monotonic within a turn and resets across turns.
+    """
+    raw = [
+        {"type": "session", "id": "s", "cwd": "/tmp"},
+        {"type": "turn_start"},
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "thinking_delta", "delta": "let me "},
+        },
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "thinking_delta", "delta": "think"},
+        },
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "text_delta", "delta": "hello "},
+        },
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "text_delta", "delta": "world"},
+        },
+        {"type": "turn_end"},
+        {"type": "turn_start"},
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "text_delta", "delta": "again"},
+        },
+        {"type": "turn_end"},
+        {"type": "agent_end", "messages": []},
+    ]
+    out = map_pi_events(raw)
+
+    deltas = [e for e in out if isinstance(e, AssistantTextDelta)]
+    assert len(deltas) == 5  # 2 thinking + 2 text in turn 1, 1 text in turn 2
+
+    # Turn 1: 4 deltas, monotonic delta_seq starting at 1.
+    t1 = [d for d in deltas if d.turn_seq == 1]
+    assert [d.kind for d in t1] == ["thinking", "thinking", "text", "text"]
+    assert [d.text for d in t1] == ["let me ", "think", "hello ", "world"]
+    assert [d.delta_seq for d in t1] == [1, 2, 3, 4]
+
+    # Turn 2: delta_seq resets to 1.
+    t2 = [d for d in deltas if d.turn_seq == 2]
+    assert [d.delta_seq for d in t2] == [1]
+    assert t2[0].text == "again"
+
+    # Concatenation invariant (ADR-18).
+    texts = [e for e in out if isinstance(e, AssistantText)]
+    by_key = {(t.turn_seq, t.kind): t.text for t in texts}
+    assert by_key[(1, "thinking")] == "".join(
+        d.text for d in t1 if d.kind == "thinking"
+    )
+    assert by_key[(1, "text")] == "".join(
+        d.text for d in t1 if d.kind == "text"
+    )
+    assert by_key[(2, "text")] == "again"
+
+
+def test_assistant_text_delta_seq_field_is_monotonic_within_session() -> None:
+    """AssistantTextDelta participates in the shared session-wide seq
+    monotonic counter (HarnessEvent.seq), not just delta_seq — so it
+    is correctly ordered against ToolUseStart etc. in the stream."""
+    raw = [
+        {"type": "session", "id": "s", "cwd": "/tmp"},
+        {"type": "turn_start"},
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "text_delta", "delta": "a"},
+        },
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "text_delta", "delta": "b"},
+        },
+        {"type": "turn_end"},
+        {"type": "agent_end", "messages": []},
+    ]
+    out = map_pi_events(raw)
+    seqs = [e.seq for e in out]
+    assert seqs == sorted(seqs)
+    assert len(set(seqs)) == len(seqs)
 
 
 def test_session_resume_fixtures_share_session_id() -> None:

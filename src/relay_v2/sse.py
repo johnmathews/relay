@@ -95,3 +95,31 @@ class Broadcaster:
                     q.get_nowait()
                 with contextlib.suppress(asyncio.QueueFull):
                     q.put_nowait(CLOSED)
+
+    async def publish_ephemeral(
+        self, run_id: str, kind: str, data: dict[str, Any]
+    ) -> None:
+        """Fan-out of an EPHEMERAL frame (not persisted, no seq).
+        ADR-46 Plan B — used for assistant text/thinking deltas so the
+        dashboard can render an in-progress pending row as tokens
+        arrive. The wire frame is id-less, named-event
+        (``event: <kind>\\ndata: <data>``) so the browser preserves its
+        Last-Event-ID cursor across ephemeral frames (heartbeats use
+        the same shape per ADR-45). The queue carries a
+        ``_ephemeral``-marked dict; the SSE drain loop discriminates
+        on the marker before reading ``seq`` from a normal envelope.
+        Slow-consumer behaviour is identical to :meth:`publish` —
+        eviction + CLOSED sentinel; a dropped delta is recoverable
+        because the canonical :class:`AssistantText` is persisted
+        (ADR-18 invariant) and replay backfills it on reconnect."""
+        item = {"_ephemeral": True, "_kind": kind, "data": data}
+        async with self._lock:
+            subs = list(self._subs.get(run_id, ()))
+        for q in subs:
+            try:
+                q.put_nowait(item)
+            except asyncio.QueueFull:
+                with contextlib.suppress(asyncio.QueueEmpty):
+                    q.get_nowait()
+                with contextlib.suppress(asyncio.QueueFull):
+                    q.put_nowait(CLOSED)

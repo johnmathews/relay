@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from relay_v2.db.models import Event
 from relay_v2.harness import (
     AssistantText,
+    AssistantTextDelta,
     HarnessEvent,
     SessionStarted,
     ToolUseEnd,
@@ -207,5 +208,32 @@ class EventStore:
                 },
                 iter_id=iter_id,
             )
+        elif isinstance(ev, AssistantTextDelta):
+            # ADR-46 Plan B: not persisted (spec.md §3.2 has no event
+            # kind for deltas; the canonical AssistantText flush at
+            # turn_end is the persisted record). Broadcast on the
+            # ephemeral channel so the dashboard's pending-turn
+            # renderer can paint tokens as they arrive. A failed
+            # publish must not break the loop — guard and log only.
+            if self.broadcaster is not None:
+                try:
+                    await self.broadcaster.publish_ephemeral(
+                        run_id,
+                        "assistant_delta",
+                        {
+                            "iter_id": iter_id,
+                            "turn_seq": ev.turn_seq,
+                            "delta_seq": ev.delta_seq,
+                            "text": ev.text,
+                            "kind": ev.kind,
+                        },
+                    )
+                except Exception:  # noqa: BLE001
+                    _log.exception(
+                        "ephemeral broadcast failed for run %s delta %s",
+                        run_id,
+                        ev.delta_seq,
+                    )
+            return
         elif isinstance(ev, (SessionStarted, ToolUseUpdate)):
             return

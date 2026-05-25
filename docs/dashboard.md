@@ -59,7 +59,7 @@ The dashboard is a pure client of the Phase 3 REST surface
 | `lib/routes.ts` | vue-router v5, all views lazy-loaded |
 | `stores/` | Pinia = **ephemeral UI state only** (selection, toggles, the SSE event stream). Server data lives in Pinia Colada, never duplicated here (spec §9.2) |
 | `views/` | `HubView` `/`, `ProjectView` `/projects/:id`, `NewRunWizard` `/projects/:id/new-run`, `RunDetailView` `/runs/:id` |
-| `components/` | `runs/` (timeline, iters, artifacts, worktree, pause, wizard steps, `ChildrenPane`, `UsageRow`, `SignalCard`, `ToolCallCard`), `files/` (tree/viewer + render wrappers), `prompts/` (list/editor/versions), `projects/`, `shared/` (StatusBadge, ActionButton, AsyncBoundary, `ParentRunChip`) |
+| `components/` | `runs/` (timeline, iters, artifacts, worktree, pause, wizard steps, `ChildrenPane`, `UsageRow`, `SignalCard`, `ToolCallCard`, `RunHealthBadge`), `files/` (tree/viewer + render wrappers), `prompts/` (list/editor/versions), `projects/`, `shared/` (StatusBadge, ActionButton, AsyncBoundary, `ParentRunChip`) |
 
 ## State model (spec §9.2)
 
@@ -169,6 +169,38 @@ runs by default (they clutter the top-level list). A small toggle sends
 `?include_children=true` to `GET /api/runs` when enabled. The MCP tool
 `relay__list_runs` always passes `include_children=True` so MCP callers
 see the full picture.
+
+**Streaming pending-turn rows (ADR-46 Plan B).** While a turn is
+in progress the harness streams each pi `text_delta` /
+`thinking_delta` as an ephemeral `assistant_delta` SSE frame
+(`api/events.py:_event_stream` drain branch). The events store
+accumulates them into a `pendingTurns` shallowRef keyed by
+`${iterId}:${turnSeq}:${kind}`; `TimelinePane.vue` renders each
+entry as a pseudo-row below the canonical timeline
+(`data-testid="pending-turn"`, `data-pending-kind` distinguishing
+`text` vs `thinking`). The pseudo-row disappears the moment its
+canonical `assistant_text` event lands (matched on iterId + turnSeq
++ kind), or when the iter ends without a flush (cancelled / timed
+out). Pending rows are hidden under an active iter filter — deltas
+only stream for the running iter, and a historical iter view would
+mislead. The contract: deltas are not in the events table; the
+canonical `AssistantText` persisted at `turn_end` remains the
+source of truth (ADR-18). Replay (refresh / reconnect) sees no
+pending rows but the canonical row in the events list — identical
+final state.
+
+**Run health badge (ADR-45 Plan A).** The run-detail header renders a
+`RunHealthBadge` next to the `StatusBadge` for any non-terminal run.
+It consumes the backend's named `heartbeat` SSE frame (api/events.py,
+emitted on the 5s idle cadence with `{run_id, server_ts,
+last_event_ts}`) routed by the events store to a separate
+`lastHeartbeat` `shallowRef` — never into the timeline event list.
+A once-per-second ticking clock drives state transitions: ≤15s since
+the heartbeat arrived → live (green, pulsing dot); 15–60s → slow
+(amber); >60s → stalled (red). For a terminal run (`done`/`failed`/
+`cancelled`) the badge renders nothing — replay mode has no live
+stream and a stale clock would be misleading. The badge is what makes
+a quiet "pi is thinking" phase read as healthy instead of frozen.
 
 ## Toolchain mandates (ADR-26 — do not regress)
 

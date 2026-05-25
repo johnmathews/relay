@@ -68,6 +68,47 @@ post-commit observer on `EventStore.append` (ADR-10 — SSE never writes
 events, never assigns seq); a slow subscriber hits a bounded queue and
 gets a clean close (it reconnects and replay backfills).
 
+#### Heartbeat frame (ADR-45 Plan A)
+
+On an idle live stream the generator emits a named `heartbeat` SSE
+frame at `_KEEPALIVE_S` cadence (default 5s) — a successor to the
+former bare `: keepalive` comment. The frame:
+
+* uses `event: heartbeat`, payload `{run_id, server_ts, last_event_ts}`;
+* **omits** `id:` so the browser's `Last-Event-ID` cursor is unchanged
+  (heartbeats are not persisted; bumping the cursor would point at a
+  phantom DB row on reconnect — per WHATWG SSE, a message without `id`
+  leaves the last-event-id buffer alone);
+* is consumed by the dashboard's `RunHealthBadge` to render a live
+  "alive · last activity Xs ago" indicator without polling the DB.
+
+`last_event_ts` is the ts of the most recently forwarded event on
+*this* connection (or `null` if none yet — a brand-new connection
+that reconnected past the tail). Heartbeats never enter `events`,
+never bump `lastSeq`, and never trigger Colada invalidations.
+
+#### Assistant delta frame (ADR-46 Plan B)
+
+In addition to persisted events the SSE stream may carry
+`assistant_delta` frames — the harness mapper yields one
+`AssistantTextDelta` per pi `text_delta` / `thinking_delta`, and
+`EventStore.store_harness_event` routes them to
+`Broadcaster.publish_ephemeral` instead of appending. The wire frame:
+
+* `event: assistant_delta`, payload
+  `{iter_id, turn_seq, delta_seq, text, kind}` (kind ∈ `"text"`,
+  `"thinking"`);
+* **omits** `id:` — same shape as heartbeat; the browser's
+  Last-Event-ID cursor is unchanged across deltas (a dropped delta
+  is recoverable because the canonical `AssistantText` is persisted
+  and replay backfills it on reconnect).
+
+Deltas are consumed by the dashboard's pending-turn pseudo-rows
+(`TimelinePane.vue`'s `pendingTurns` prop); the persisted
+`AssistantText` flushed at `turn_end` replaces them automatically.
+The replay path returns no delta rows — deltas are never persisted
+(spec.md §3.2 carries no event kind for them; ADR-46).
+
 ### Projects
 
 | Method | Path | RelayCore method | Notes |

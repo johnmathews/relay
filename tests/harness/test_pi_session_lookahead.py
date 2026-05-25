@@ -90,9 +90,13 @@ def test_terminal_sentinel_close_still_recovers_usage() -> None:
 
 
 def test_fully_consumed_external_order_is_unchanged() -> None:
-    """Without an early break the stream is still
-    SessionStarted → AssistantText → SessionEnded (lookahead only
-    delays delivery by one slot; it never reorders)."""
+    """Without an early break the stream is
+    SessionStarted → AssistantTextDelta (one per pi text_delta, ADR-46
+    Plan B) → AssistantText (the canonical turn-end flush) →
+    SessionEnded. Lookahead only delays delivery by one slot for
+    AssistantText; AssistantTextDelta flows through immediately — it
+    is the *AssistantText* flush that gets held to be paired with the
+    next event."""
 
     async def scenario() -> list[str]:
         session = PiSession(_FakeProc(_CLEAN_STREAM))  # type: ignore[arg-type]
@@ -100,6 +104,7 @@ def test_fully_consumed_external_order_is_unchanged() -> None:
 
     assert asyncio.run(scenario()) == [
         "SessionStarted",
+        "AssistantTextDelta",
         "AssistantText",
         "SessionEnded",
     ]

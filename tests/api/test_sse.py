@@ -52,15 +52,27 @@ def _run[T](
 
 
 def _parse(frames: list[str]) -> list[dict[str, Any]]:
-    """Parse SSE id:/event:/data: frames (skip ``:`` keepalive comments)."""
+    """Parse SSE frames. Two shapes are emitted on the wire:
+
+    * ``id: <seq>\\nevent: <kind>\\ndata: <json>\\n\\n`` — persisted
+      events (carry an id so the browser tracks Last-Event-ID).
+    * ``event: heartbeat\\ndata: <json>\\n\\n`` — ephemeral liveness
+      pings with NO ``id:`` line (so the browser keeps its prior
+      cursor; heartbeats are not persisted, see ADR-45).
+
+    Old ``: keepalive`` comments are skipped if encountered (legacy).
+    """
     out: list[dict[str, Any]] = []
     for f in frames:
         if f.startswith(":"):
             continue
         lines = f.strip().split("\n")
-        sid = int(lines[0].removeprefix("id: "))
-        kind = lines[1].removeprefix("event: ")
-        data = json.loads(lines[2].removeprefix("data: "))
+        sid: int | None = None
+        if lines[0].startswith("id: "):
+            sid = int(lines[0].removeprefix("id: "))
+            lines = lines[1:]
+        kind = lines[0].removeprefix("event: ")
+        data = json.loads(lines[1].removeprefix("data: "))
         out.append({"id": sid, "event": kind, "data": data})
     return out
 
@@ -73,6 +85,30 @@ async def _drain(
 
 
 # ── Broadcaster unit test ──────────────────────────────────────────────
+
+
+def test_broadcaster_publish_ephemeral_fans_out_marked_frame() -> None:
+    """ADR-46 Plan B: ephemeral frames (assistant deltas) are
+    enqueued with a discriminator marker so the SSE drain loop can
+    format them as id-less named-event frames (vs the regular
+    seq-bearing event envelope). The marker is the dict key
+    ``_ephemeral`` carrying the wire ``kind`` and the payload data."""
+
+    async def scenario() -> None:
+        b = Broadcaster()
+        async with b.subscribe("r1") as q:
+            await b.publish_ephemeral(
+                "r1", "assistant_delta", {"turn_seq": 1, "text": "hi"}
+            )
+            item = await q.get()
+            assert isinstance(item, dict)
+            assert item.get("_ephemeral") is True
+            assert item.get("_kind") == "assistant_delta"
+            assert item.get("data") == {"turn_seq": 1, "text": "hi"}
+        # publish_ephemeral to an unsubscribed run is a no-op.
+        await b.publish_ephemeral("nobody", "assistant_delta", {"x": 1})
+
+    asyncio.run(scenario())
 
 
 def test_broadcaster_fanout_unsubscribe_and_full_policy() -> None:
@@ -337,6 +373,195 @@ def test_sse_treats_awaiting_children_as_live(tmp_path: Path) -> None:
         assert len(frames) == 1
         assert frames[0]["event"] == "subagent_dispatch"
         assert frames[0]["data"]["payload"]["child_run_id"] == "c-1"
+
+    _run(scenario, settings, harness)
+
+
+def test_live_idle_emits_heartbeat_frame(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """ADR-45 Plan A: on an idle live stream the generator emits a
+    named ``heartbeat`` SSE frame (NOT a bare ``: keepalive`` comment)
+    carrying ``{run_id, server_ts, last_event_ts}``. The heartbeat
+    has NO ``id:`` line so the browser keeps its prior Last-Event-ID
+    cursor (heartbeats are not persisted; bumping the cursor would
+    point at a phantom DB row on reconnect).
+    """
+    import relay_v2.api.events as ev_mod
+
+    # Shrink the cadence so the test does not wait 5s for the idle
+    # timeout to fire.
+    monkeypatch.setattr(ev_mod, "_KEEPALIVE_S", 0.05)
+
+    settings = _settings(tmp_path)
+    harness = ScriptedHarness([TextScript(DONE)])
+
+    async def scenario(core: RelayCore) -> None:
+        from relay_v2.orchestrator.lifecycle import set_run_status
+
+        pid = await core.register_project(tmp_path, "p")
+        run_id = await core.start_run(pid, "Go.", max_iters=2)
+        await core.wait_for_run(run_id)
+
+        # Park the run in awaiting_children so the generator takes
+        # the live path and the queue stays empty (no further events).
+        await set_run_status(core._sm, run_id, "awaiting_children", ended=False)  # noqa: SLF001
+
+        existing = await core.list_events(run_id)
+        last = existing[-1].seq
+        # Anchor at the tail so _replay yields nothing.
+
+        gen = sse_event_stream(core, run_id, last)
+        frames: list[dict[str, Any]] = []
+
+        async def consume_one_heartbeat() -> None:
+            async for f in gen:
+                parsed = _parse([f])
+                if parsed and parsed[0]["event"] == "heartbeat":
+                    frames.extend(parsed)
+                    return
+
+        await asyncio.wait_for(consume_one_heartbeat(), timeout=2)
+        await gen.aclose()
+
+        assert len(frames) == 1
+        hb = frames[0]
+        # No id: so browser cursor is preserved across heartbeats.
+        assert hb["id"] is None
+        assert hb["event"] == "heartbeat"
+        assert hb["data"]["run_id"] == run_id
+        assert "server_ts" in hb["data"]
+        # last_event_ts may be None on a brand-new connection that has
+        # not yet replayed anything; here we anchored at the tail so
+        # there's no replayed event for THIS connection — None is OK.
+        assert "last_event_ts" in hb["data"]
+
+    _run(scenario, settings, harness)
+
+
+def test_live_drain_forwards_ephemeral_frames(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """ADR-46 Plan B: the SSE drain loop renders an ephemeral queue
+    item as an id-less named-event frame — distinct from regular
+    seq-bearing event envelopes — so the browser's Last-Event-ID
+    cursor is preserved across deltas (a delta is recoverable from
+    the canonical AssistantText replay on reconnect).
+    """
+    import relay_v2.api.events as ev_mod
+
+    monkeypatch.setattr(ev_mod, "_KEEPALIVE_S", 0.05)
+
+    from relay_v2.orchestrator.lifecycle import set_run_status
+
+    settings = _settings(tmp_path)
+    harness = ScriptedHarness([TextScript(DONE)])
+
+    async def scenario(core: RelayCore) -> None:
+        pid = await core.register_project(tmp_path, "p")
+        run_id = await core.start_run(pid, "Go.", max_iters=2)
+        await core.wait_for_run(run_id)
+        await set_run_status(core._sm, run_id, "awaiting_children", ended=False)  # noqa: SLF001
+        existing = await core.list_events(run_id)
+        last = existing[-1].seq
+
+        gen = sse_event_stream(core, run_id, last)
+        frames: list[dict[str, Any]] = []
+
+        async def consume() -> None:
+            async for f in gen:
+                parsed = _parse([f])
+                if not parsed:
+                    continue
+                p = parsed[0]
+                if p["event"] == "assistant_delta":
+                    frames.append(p)
+                    return
+
+        task = asyncio.create_task(consume())
+        await asyncio.sleep(0.05)
+        await core.broadcaster.publish_ephemeral(
+            run_id,
+            "assistant_delta",
+            {
+                "iter_id": 1,
+                "turn_seq": 1,
+                "delta_seq": 1,
+                "text": "hello",
+                "kind": "text",
+            },
+        )
+        await asyncio.wait_for(task, timeout=2)
+        await gen.aclose()
+
+        assert len(frames) == 1
+        ed = frames[0]
+        # No id: — cursor preserved (heartbeat / delta share this shape).
+        assert ed["id"] is None
+        assert ed["event"] == "assistant_delta"
+        assert ed["data"] == {
+            "iter_id": 1,
+            "turn_seq": 1,
+            "delta_seq": 1,
+            "text": "hello",
+            "kind": "text",
+        }
+
+    _run(scenario, settings, harness)
+
+
+def test_live_drained_event_updates_last_event_ts(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """ADR-45: after a live-drain event is forwarded, the next
+    idle-tick heartbeat reports that event's ts as ``last_event_ts``.
+    """
+    import relay_v2.api.events as ev_mod
+
+    monkeypatch.setattr(ev_mod, "_KEEPALIVE_S", 0.05)
+
+    from relay_v2.orchestrator.lifecycle import set_run_status
+
+    settings = _settings(tmp_path)
+    harness = ScriptedHarness([TextScript(DONE)])
+
+    async def scenario(core: RelayCore) -> None:
+        pid = await core.register_project(tmp_path, "p")
+        run_id = await core.start_run(pid, "Go.", max_iters=2)
+        await core.wait_for_run(run_id)
+        await set_run_status(core._sm, run_id, "awaiting_children", ended=False)  # noqa: SLF001
+        existing = await core.list_events(run_id)
+        last = existing[-1].seq
+
+        gen = sse_event_stream(core, run_id, last)
+
+        async def consume() -> tuple[dict[str, Any], dict[str, Any]]:
+            event_frame: dict[str, Any] | None = None
+            hb_frame: dict[str, Any] | None = None
+            async for f in gen:
+                parsed = _parse([f])
+                if not parsed:
+                    continue
+                p = parsed[0]
+                if p["event"] == "subagent_dispatch":
+                    event_frame = p
+                elif p["event"] == "heartbeat" and event_frame is not None:
+                    hb_frame = p
+                    break
+            assert event_frame is not None and hb_frame is not None
+            return event_frame, hb_frame
+
+        task = asyncio.create_task(consume())
+        await asyncio.sleep(0.05)
+        await core.store_event(
+            run_id,
+            "subagent_dispatch",
+            {"child_run_id": "c-1", "role": "x", "prompt": "y"},
+        )
+        event_frame, hb_frame = await asyncio.wait_for(task, timeout=2)
+        await gen.aclose()
+
+        assert hb_frame["data"]["last_event_ts"] == event_frame["data"]["ts"]
 
     _run(scenario, settings, harness)
 

@@ -2993,3 +2993,71 @@ Three delivery models considered:
 - Variant resolution (ADR-33) is unchanged: `bundled_skill_dir(harness='pi')` selects the per-harness subdirectory under `skills/engineering-team/`. A future second variant would land as a sibling and would need either its own setting (e.g. `Settings.pi_skill_paths` defaulting to `bundled_skill_dir('claude-code')` for that harness's harness module) or per-harness Settings methods — out of scope here; today pi is the only variant.
 
 **Related ADRs:** ADR-14 (skill port from v1 — preserved), ADR-28 (Phase 6 delivery via copy — superseded for the delivery part), ADR-33 (variant subdirectory model — preserved), ADR-04 (harness isolation — `harness/skills.py` is correctly inside the harness package), ADR-12 (single-user localhost — irrelevant here because the injection is process-local, not user-facing).
+
+## ADR-45 — Live-stream liveness signal: named `heartbeat` SSE frame (Plan A) over bare keepalive comment
+
+**Status.** Accepted, 2026-05-25.
+
+**Context.** Pi's adaptive-thinking mode can sit silent for several minutes at the start of a `/engineering-team` run while the agent reads the codebase before producing its first `AssistantText` or `ToolUse`. The harness mapper (`pi.py:PiEventMapper`) only yields `AssistantText` at `turn_end` — partial deltas are accumulated, not emitted — so the orchestrator has nothing to persist during that silence and the dashboard's timeline stays at `run_started + iter_started` for the duration. Users (correctly) read "two events for 5 minutes" as "the run is hung" and reach for cancel. Process inspection confirmed the run was healthy; the dashboard simply had no way to express it.
+
+The pre-existing `: keepalive` SSE comment (15s cadence) kept the HTTP connection warm but was invisible to the browser's `EventSource` (named-event listeners only fire for `event:` frames) and carried no information.
+
+**Decision.** Replace the bare keepalive with a named `heartbeat` SSE frame at a 5s cadence (former 15s). The frame:
+
+- carries `event: heartbeat\ndata: {run_id, server_ts, last_event_ts}\n\n`;
+- **omits** the `id:` line — per WHATWG SSE, a message with no id field leaves the browser's `Last-Event-ID` buffer unchanged. Heartbeats are not persisted, so bumping the cursor would point at a phantom DB row on reconnect and break the ADR-23 replay invariant;
+- is consumed by a new frontend `RunHealthBadge` component (a sibling of the `StatusBadge` in the run-detail header) that renders a live-ticking "● live · last activity Xs ago" indicator. Thresholds: ≤15s = live (green, pulsing); 15–60s = slow (amber); >60s = stalled (red). For a terminal run the badge renders nothing — replay mode has no live stream and a stale clock would be misleading.
+
+The events store routes heartbeats to a separate `lastHeartbeat` `shallowRef` — **not** into the events list, **not** into `lastSeq`, **not** into `INVALIDATING_KINDS`. The dual-list contract (CLAUDE.md "Cross-cutting traps") is satisfied for `KNOWN_EVENT_TYPES` (yes — the browser listener must fire) but deliberately violated for `INVALIDATING_KINDS` (no — a heartbeat does not change cached run/iter state).
+
+**Alternatives considered.**
+
+- **Pi delta streaming (Plan B).** Stream pi's `text_delta` / `thinking_delta` as ephemeral SSE frames so the dashboard shows tokens appear in real time. Strictly better information density, but ~3× the code surface (harness, broadcaster, store, renderer) and only useful when pi is *producing* output — a silent thinking phase remains silent. Heartbeat is the lower-cost answer to "is this thing alive?". Plan B lands as ADR-46.
+- **Persist heartbeats as a new event kind.** Rejected: O(turns × events/run) DB writes for zero audit value; would also need to be excluded from every replay reader. The ephemeral-only design has zero schema cost.
+- **WebSocket upgrade.** Rejected: re-architects ADR-23's SSE-passive-tail model for one feature; the single-user localhost MVP gets no operational benefit from full duplex.
+
+**Consequences.**
+
+- `_KEEPALIVE_S` dropped from 15.0 → 5.0. A test seam: `tests/api/test_sse.py` monkeypatches it to sub-second values to avoid sleeping. Two new SSE generator tests assert (a) idle live stream emits a heartbeat with the documented shape, (b) a forwarded event updates `last_event_ts` reported by the next heartbeat.
+- `_parse` in the SSE test helper handles id-less frames (heartbeats). Existing event tests continue to ignore the `id:` line they expect.
+- New frontend store field `lastHeartbeat: HeartbeatSnapshot | null` with structure `{serverTs, lastEventTs, receivedAt}`. The events-store spec adds a regression that emitting `heartbeat` updates this field and does not touch the timeline / lastSeq / invalidations.
+- New `RunHealthBadge.vue` with 6 unit tests covering connecting / live / slow / stalled transitions over a fake-timer clock + the "hidden for terminal status" contract. Mounted in `RunDetailView` header next to `StatusBadge`.
+- The dual-list `KNOWN_EVENT_TYPES` (sse.ts) ↔ `INVALIDATING_KINDS` (stores/events.ts) rule is honoured: `heartbeat` is added to the former (listener registration) and intentionally absent from the latter (no cache effect). The events-store regression test asserts no `invalidate()` and no `onLifecycle()` call on heartbeat receipt.
+- The bug fix that unblocked this (live SSE store was storing the full envelope instead of `envelope.payload`, so every renderer that read `event.payload.<field>` saw undefined; surfaced as the 2026-05-25 "tool cards are empty until you refresh" regression) is folded into this ADR's PR as a separate first commit with its own regression test in `tests/events.store.spec.ts`.
+
+**Related ADRs:** ADR-23 (SSE contract — heartbeat coexists by omitting `id:`); ADR-10 (event store is single source of truth — heartbeat does NOT become an event); ADR-29 (OTel observability — heartbeat is dashboard-only, deliberately not mirrored to OTel); ADR-46 (Plan B streaming deltas, follow-up).
+
+## ADR-46 — Streaming assistant text/thinking deltas: ephemeral `assistant_delta` SSE frames (Plan B) over harness-buffered turn-end flush
+
+**Status.** Accepted, 2026-05-25.
+
+**Context.** ADR-45 (Plan A) added a heartbeat so the dashboard can read a quiet "pi is thinking" phase as healthy. Heartbeats answer "is this thing alive?" but not "what is it actually doing?". The information bottleneck is in the harness mapper: `_PiEventMapper` accumulates pi's `text_delta` / `thinking_delta` chunks per turn and only yields one `AssistantText` at `turn_end` (ADR-18 — the signaling layer must never see a partial sentinel). The orchestrator therefore has no opportunity to surface a turn until pi closes it, which can be several minutes during `/engineering-team` evaluation passes.
+
+**Decision.** Add a new normalized event `AssistantTextDelta(text, kind, turn_seq, delta_seq)` (`harness/protocol.py`) yielded by the mapper inline for **every** `text_delta` / `thinking_delta` — **in addition to**, not instead of, the existing accumulated `AssistantText` flush at `turn_end`. The accumulation buffer and turn-end flush are unchanged; deltas are an additive signal. ADR-18 concatenation invariant: joining the deltas of a (turn_seq, kind) within a turn equals the canonical `AssistantText.text` for that key. `delta_seq` is monotonic within a turn and resets across turns.
+
+Deltas are **not persisted** (spec.md §3.2 has no event kind for them; an O(deltas-per-turn) write per token is the wrong tradeoff for replay infrastructure). They flow through the SSE broadcaster's new **ephemeral channel**:
+
+- `Broadcaster.publish_ephemeral(run_id, kind, data)` enqueues `{_ephemeral: True, _kind: kind, data: data}`. Slow-consumer policy is identical to `publish` (oldest evicted, CLOSED sentinel pushed) — a dropped delta is recoverable because the canonical `AssistantText` is persisted (ADR-18 invariant) and replay backfills it on reconnect.
+- `EventStore.store_harness_event` routes `AssistantTextDelta` to `publish_ephemeral("assistant_delta", {...})` and returns without appending — sharing the dispatch path with `ToolUseUpdate` / `SessionStarted` (silently dropped from persistence).
+- `sse_event_stream`'s drain loop discriminates on the `_ephemeral` marker before reading `seq` and renders the frame as `event: <kind>\ndata: <data>\n\n` — **no `id:` line**, so the browser's Last-Event-ID cursor is unchanged (same shape as the ADR-45 heartbeat).
+
+The frontend `assistant_delta` listener (`stores/events.ts:onSseEvent`) special-cases the kind before the envelope-unwrap path (the wire shape is the inner payload directly, not the event envelope) and accumulates into a `pendingMap` keyed by `${iterId}:${turnSeq}:${kind}`. When the canonical `assistant_text` event lands, the matching pending entry is dropped; when an `iter_ended` arrives, every pending entry for that iter is dropped (covers an aborted/timed-out turn). `TimelinePane.vue` renders a pseudo-row per `pendingTurns` entry below the canonical timeline; rows disappear as soon as their canonical companion arrives. Pending rows are hidden under an active iter filter (deltas only flow for the currently running iter, so showing them in a historical iter view is misleading).
+
+**Alternatives considered.**
+
+- **Persist deltas as a new `assistant_delta` event kind.** Rejected: O(tokens × runs) DB writes for ephemeral UX state. Replay would need to coalesce them back into the canonical `AssistantText` to avoid double rendering, recreating the very state the canonical event already represents.
+- **WebSocket upgrade for the delta channel.** Rejected: re-architects ADR-23's SSE-passive-tail model. The single-user localhost MVP gets no operational benefit; ephemeral SSE frames with no `id:` are mechanically equivalent.
+- **Mirror deltas to OTel.** Rejected: not in ADR-29's iter-span / tool-span schema; would inflate trace size by 100×–1000×. Tokens belong on the canonical iter span's usage attributes (already there).
+- **Inline deltas as additional `AssistantText` flushes at sub-turn boundaries.** Rejected: violates the ADR-18 invariant that signaling sees one AssistantText per turn; would risk a false terminal-sentinel match on a partial delta.
+
+**Consequences.**
+
+- One new harness event type (`AssistantTextDelta`) in `harness/protocol.py` and the `harness/__init__.py` re-exports. `_PiEventMapper` yields it inline from both delta branches; the existing turn-end flush is unchanged. The Option-D lookahead (`PiSession.events`) treats `AssistantTextDelta` as the non-`AssistantText` else-branch — flushes any pending `AssistantText` first, then yields the delta. Ordering preserved.
+- `test_fully_consumed_external_order_is_unchanged` (lookahead test) updated from `[SessionStarted, AssistantText, SessionEnded]` to `[SessionStarted, AssistantTextDelta, AssistantText, SessionEnded]` — the contract change is captured. New mapper test `test_text_and_thinking_deltas_yield_assistant_text_delta_inline` asserts both the concatenation invariant and `delta_seq` monotonicity/reset behaviour.
+- `Broadcaster.publish_ephemeral` is a new method. `publish` is unchanged. Tests at the broadcaster, SSE-generator, and EventStore layers lock down the wire shape, the routing (delta → ephemeral, not events table), and the id-less frame format.
+- Frontend store gains a `PendingTurn` type, a `pendingMap` shallowRef, and `pendingTurns` computed. Three new tests: delta accumulation, canonical-flush prune, iter-end prune. `TimelinePane.vue` gains an optional `pendingTurns` prop and a pseudo-row template (`data-testid="pending-turn"`, `data-pending-kind`); hidden under an active iter filter. `RunDetailView.vue` wires the prop from the store.
+- Dual-list contract for `assistant_delta`: present in `sse.ts:KNOWN_EVENT_TYPES` (listener must fire); absent from `INVALIDATING_KINDS` (no cache effect; not a lifecycle event). Tests cover both.
+- ADR-18 invariant preserved: detecting the terminal sentinel still happens on the turn-complete `AssistantText`, never on a delta — `_drive_iter`'s signal-detection loop has no AssistantTextDelta branch.
+- Replay path (REST `GET /api/runs/{id}/events`) is unaffected: deltas were never persisted, so a reconnecting client sees no pending rows but the canonical `AssistantText` is in the replay — exactly the same state as if the client had been live the whole time.
+
+**Related ADRs:** ADR-18 (AssistantText turn-end flush invariant — preserved); ADR-23 (SSE contract — ephemeral coexists by omitting `id:`); ADR-10 (event store is single source of truth — deltas do NOT become events); ADR-29 (OTel — deltas deliberately not mirrored); ADR-45 (Plan A heartbeat — shares the id-less ephemeral frame shape and `publish_ephemeral`-style channel discipline).
