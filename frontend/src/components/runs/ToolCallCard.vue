@@ -25,7 +25,12 @@ const props = defineProps<{
   durationMs?: number
 }>()
 
-const COLLAPSE_LINES = 8
+// Per the live-stream UX work (2026-05-25): tool args / result are
+// the worst offenders for vertical noise in a long timeline. 5 lines
+// is enough to scan the first paragraph of a bash command or the
+// first few keys of a JSON args blob, but not enough to dominate the
+// viewport. Toggle reveals the rest in place.
+const COLLAPSE_LINES = 5
 
 function pretty(v: unknown): string {
   if (v === undefined) return ''

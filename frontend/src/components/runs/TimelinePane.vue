@@ -19,7 +19,7 @@
 // exposed via `data-event-count` (TOTAL) and `data-rendered-rows`
 // (windowed DOM count) for the plan.md live-tail parity check.
 
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import ToolCallCard from './ToolCallCard.vue'
 import SignalCard from './SignalCard.vue'
 import UsageRow from './UsageRow.vue'
@@ -226,12 +226,63 @@ const scrollEl = ref<HTMLElement | null>(null)
 const scrollTop = ref(0)
 const viewportH = ref(600)
 
+/**
+ * Pinned-to-bottom auto-scroll (2026-05-25 live-stream UX): a live
+ * run can append events while the user is also reading history. If
+ * they're at the bottom we follow the tail; if they've scrolled up
+ * we leave them where they are and surface a "Jump to latest"
+ * button. Tolerance of 50px accommodates sub-pixel rounding +
+ * keyboard scroll increments — anything closer to the bottom than
+ * that counts as "still pinned".
+ */
+const PIN_TOLERANCE_PX = 50
+const isPinned = ref(true)
+
+function distanceFromBottom(el: HTMLElement): number {
+  return el.scrollHeight - (el.scrollTop + el.clientHeight)
+}
+
 function onScroll(): void {
   const el = scrollEl.value
   if (el == null) return
   scrollTop.value = el.scrollTop
   viewportH.value = el.clientHeight
+  // A user-driven scroll updates the pin state. A programmatic
+  // scrollTop assignment (our own auto-scroll) also fires this
+  // handler, but since we always assign to the bottom in that case
+  // distanceFromBottom ≤ 0 and the pin stays true.
+  isPinned.value = distanceFromBottom(el) <= PIN_TOLERANCE_PX
 }
+
+function scrollToBottom(): void {
+  const el = scrollEl.value
+  if (el == null) return
+  el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight)
+}
+
+function jumpToLatest(): void {
+  isPinned.value = true
+  scrollToBottom()
+}
+
+/**
+ * When new rows arrive AND the user is pinned, advance the scroll
+ * position to the new tail. The scroll position is set after the
+ * next tick so the DOM has reflowed and `scrollHeight` reflects the
+ * appended rows (jsdom tests plant the geometry directly, so
+ * nextTick is enough; real browsers do the same one-frame later).
+ * Watching `rows.length` is correct even with virtualization —
+ * `rows` is the FULL folded list and gates the scroll-height
+ * spacers.
+ */
+watch(
+  () => rows.value.length,
+  async () => {
+    if (!isPinned.value) return
+    await nextTick()
+    scrollToBottom()
+  },
+)
 
 // Windowed slice. Below the threshold this returns the full list (the
 // math degenerates to [0, len]).
@@ -428,6 +479,16 @@ function onArtifactEditedClick(path: string): void {
       aria-hidden="true"
     />
 
+    <button
+      v-if="!isPinned"
+      type="button"
+      class="timeline__jump"
+      data-testid="jump-to-latest"
+      @click="jumpToLatest"
+    >
+      ↓ Jump to latest
+    </button>
+
     <!-- ADR-46 Plan B — in-progress assistant turns. Live deltas
          streamed via SSE; replaced by the canonical assistant_text
          when it lands. Hidden under an iter filter (deltas only
@@ -460,12 +521,36 @@ function onArtifactEditedClick(path: string): void {
 
 <style scoped>
 .timeline {
+  position: relative;
   max-height: 70vh;
   overflow-y: auto;
   border: 1px solid var(--color-border);
   border-radius: 8px;
   padding: 0.75rem;
   background: var(--color-bg);
+}
+
+/* Jump-to-latest pill — only rendered while the user is scrolled up
+   off the tail (pinned=false). Sits at the bottom of the timeline
+   scroll container so the click target is near the natural reading
+   position, not floating over the page. */
+.timeline__jump {
+  position: sticky;
+  bottom: 0.5rem;
+  display: block;
+  margin: 0.5rem auto 0;
+  padding: 0.3em 0.9em;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 0.82em;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+.timeline__jump:hover {
+  border-color: currentcolor;
 }
 
 .timeline__empty {

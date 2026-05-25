@@ -259,7 +259,7 @@ describe('TimelinePane', () => {
     )
   })
 
-  it('tool-call card collapses >8 lines and "show full" expands', async () => {
+  it('tool-call card collapses >5 lines and "show full" expands', async () => {
     const big = Array.from({ length: 20 }, (_, i) => `line ${i}`)
     const events: StreamEvent[] = [
       {
@@ -271,14 +271,98 @@ describe('TimelinePane', () => {
     const w = mount(TimelinePane, { props: { events } })
     const block = w.find('.tool-card__block')
     const collapsed = block.text()
-    expect(collapsed.split('\n').length).toBeLessThanOrEqual(8)
+    expect(collapsed.split('\n').length).toBeLessThanOrEqual(5)
 
     const toggle = w.find('[data-testid="tool-card-toggle"]')
     expect(toggle.exists()).toBe(true)
     await toggle.trigger('click')
     expect(w.find('.tool-card__block').text().split('\n').length).toBeGreaterThan(
-      8,
+      5,
     )
+  })
+
+  it('pinned-to-bottom: appending an event auto-scrolls to the new tail', async () => {
+    // The timeline is a live feed. When the user is already at the
+    // bottom (within a small tolerance) new events must auto-scroll
+    // the container into view. When they have scrolled up to read
+    // history the auto-scroll MUST NOT yank them away.
+    const w = mount(TimelinePane, {
+      props: {
+        events: [
+          { seq: 1, kind: 'iter_started', payload: { seq: 1, phase: null } },
+        ],
+      },
+    })
+    const scrollEl = w.get('.timeline').element as HTMLElement
+
+    // Pretend the container has been scrolled to the bottom. jsdom
+    // does not implement layout, so we plant the geometry directly.
+    Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, value: 1000 })
+    Object.defineProperty(scrollEl, 'clientHeight', { configurable: true, value: 400 })
+    scrollEl.scrollTop = 600 // == scrollHeight - clientHeight ⇒ pinned
+    await scrollEl.dispatchEvent(new Event('scroll'))
+
+    // Append a new event. The pane should advance scrollTop to the
+    // new bottom (jsdom: programmatic assignment is observable).
+    Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, value: 1400 })
+    await w.setProps({
+      events: [
+        { seq: 1, kind: 'iter_started', payload: { seq: 1, phase: null } },
+        { seq: 2, kind: 'assistant_text', payload: { text: 'hi', turn_seq: 1, kind: 'text' } },
+      ],
+    })
+    // nextTick + the watch firing requires one more flush.
+    await w.vm.$nextTick()
+    expect(scrollEl.scrollTop).toBe(1000) // 1400 - 400 = new bottom
+  })
+
+  it('unpinned: scrolling up before a new event prevents auto-scroll + shows jump button', async () => {
+    const w = mount(TimelinePane, {
+      props: {
+        events: [
+          { seq: 1, kind: 'iter_started', payload: { seq: 1, phase: null } },
+        ],
+      },
+    })
+    const scrollEl = w.get('.timeline').element as HTMLElement
+
+    // User scrolled up — well above the bottom.
+    Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, value: 1000 })
+    Object.defineProperty(scrollEl, 'clientHeight', { configurable: true, value: 400 })
+    scrollEl.scrollTop = 100
+    await scrollEl.dispatchEvent(new Event('scroll'))
+
+    // Jump-to-latest button appears when unpinned.
+    expect(w.find('[data-testid="jump-to-latest"]').exists()).toBe(true)
+
+    // Append a new event. scrollTop must NOT be moved (the user is
+    // reading history; auto-scroll would yank them).
+    Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, value: 1400 })
+    await w.setProps({
+      events: [
+        { seq: 1, kind: 'iter_started', payload: { seq: 1, phase: null } },
+        { seq: 2, kind: 'assistant_text', payload: { text: 'hi', turn_seq: 1, kind: 'text' } },
+      ],
+    })
+    await w.vm.$nextTick()
+    expect(scrollEl.scrollTop).toBe(100)
+
+    // Clicking the button re-pins and scrolls to the new tail.
+    await w.get('[data-testid="jump-to-latest"]').trigger('click')
+    expect(scrollEl.scrollTop).toBe(1000)
+  })
+
+  it('jump-to-latest button is hidden while pinned', async () => {
+    const w = mount(TimelinePane, {
+      props: {
+        events: [
+          { seq: 1, kind: 'iter_started', payload: { seq: 1, phase: null } },
+        ],
+      },
+    })
+    // No scroll event yet → defaults to pinned (matches a fresh
+    // run where the user has not scrolled at all).
+    expect(w.find('[data-testid="jump-to-latest"]').exists()).toBe(false)
   })
 
   it('virtualizes >1000 events: DOM windowed, exposed count == total', () => {
