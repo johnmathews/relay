@@ -298,6 +298,55 @@ borders. The error state on a tool row (`✗` status) still wins —
 failed step reads as "fix this" even though the type colour is
 amber.
 
+## Run-detail Phase 2 — chip-row event-kind filter
+
+`EventKindFilter.vue` is a five-chip toolbar rendered above the
+timeline in both `OverviewPanel` (cross-iter scope) and
+`IterTimelinePanel` (single-iter scope). Each chip carries a colour
+dot keyed off the same `--color-row-<kind>-border` token the per-card
+border uses, a human label, and an in-scope row count — so the chip
+row doubles as a colour legend for the per-type card palette.
+
+`src/lib/eventKinds.ts::classifyEvent` is the single source of truth
+for kind → category mapping: `tool_use_start`/`tool_use_end` →
+`tool`, `assistant_text` splits on `payload.kind` (`text` →
+`assistant`, `thinking` → `thinking`), structural / boundary kinds
+(`signal_emit`, `iter_*`, `run_*`, `subagent_*`,
+`child_runs_resolved`, `harness_session_ended`, `pause_*`) → `signal`,
+everything else → `other`. The chip row treats the count of `tool`
+events as ceil(N/2) so the chip reads as "cards visible", matching
+the start+end paired rendering.
+
+`TimelinePane.vue` accepts a `kindsFilter: ReadonlySet<KindCategory>
+| null` prop applied **after** the iter-scope walk — order is
+load-bearing because the scope walk anchors on
+`iter_started`/`iter_ended` boundaries; applying kinds first would
+lose them whenever the user hides the Signal chip. Pending
+(`assistant_delta`) rows respect the filter too, so an "Assistant
+off" filter also hides the in-flight stream. Each row carries a
+small `data-testid="row-kind-<seq>"` colour-tinted label next to
+`#seq`; the per-card background palette from 8180ace stays
+untouched (Q2 answer: belt + label, no 4px-border variant).
+
+URL contract: `?kinds=tool,signal` (comma-separated, canonical
+order). `parseKinds` returns `null` for absent / empty / unknown
+/ full-set inputs (all of which mean "show every category");
+`serializeKinds` returns `undefined` for those same cases so the
+view's `router.push` deletes the param from the URL entirely.
+`RunDetailView` is the only owner — it reads `?kinds=` via the
+route, threads `kindsFilter` down through `RunRightPane` →
+`OverviewPanel` / `IterTimelinePanel`, and on `update:kindsFilter`
+pushes a new URL. The `TimelineDisplayMenu` (expand-by-default) is
+preserved alongside the new chip row — they're orthogonal concerns
+(visibility vs. expand-state).
+
+Empty-state copy: when the kinds filter empties the scoped event
+list but the scope itself is non-empty, the timeline renders a
+"All events hidden by filter" message + a Clear button (emits
+`clearKindsFilter`, which the panel translates to a `null`
+update). When the scope is empty regardless of filter, the
+existing "No events yet." copy wins.
+
 ## Worktree pane — MVP degradation
 
 The Worktree pane shows read-only `worktree_path` + `branch` from the

@@ -1,10 +1,12 @@
 # Proposal — Run-detail view layout
 
-**Status:** Phase 1 shipped 2026-05-28
-(`docs/plans/2026-05-28-run-detail-layout-shell.md`); Phases 2–7
-remain proposed. Frontend-only; no backend, REST, SSE, OTel, sentinel,
-or schema change. Targets `RunDetailView.vue` and the panes under
-`frontend/src/components/runs/`.
+**Status:** Phases 1–2 shipped 2026-05-28
+(Phase 1: `docs/plans/2026-05-28-run-detail-layout-shell.md`;
+Phase 2: this proposal's §"Filter chips — `EventKindFilter`" as the
+spec, live-smoked + 38 new tests added in `frontend/tests/`).
+Phases 3–7 remain proposed. Frontend-only; no backend, REST, SSE,
+OTel, sentinel, or schema change. Targets `RunDetailView.vue` and the
+panes under `frontend/src/components/runs/`.
 
 ## Problem
 
@@ -396,9 +398,15 @@ Detailed plan to be produced by `writing-plans`. Anticipated phases:
    `RunRightPane`, URL plumbing, smart-default selection. No filter
    chips, no drawer, no new behaviour. Existing panes render inside
    the new shape unchanged. The view ships a working two-column
-   layout end-to-end.
+   layout end-to-end. **Shipped 2026-05-28.**
 2. **Filter chips + color coding** — `EventKindFilter`,
-   `TimelinePane` kind borders + labels, URL `&kinds=` reflection.
+   `TimelinePane` kind labels (per-card backgrounds from 8180ace
+   kept; the spec's 4px-left-border variant superseded by the kind
+   label per-row), URL `&kinds=` reflection, "all hidden" empty
+   state. The Phase 1 `TimelineDisplayMenu` (expand-by-default)
+   is preserved alongside the new chip row — they're orthogonal
+   concerns (visibility vs. expand-state) and a single combined
+   control would conflate them. **Shipped 2026-05-28.**
 3. **Follow-live pin + smart default + keyboard nav** — `f` toggle,
    pin auto-engage/disengage rules, `j`/`k`/`g o`/etc.
 4. **Pause banner** — extract `PauseAnswerForm` wrapping into
