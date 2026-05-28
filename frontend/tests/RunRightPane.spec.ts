@@ -48,6 +48,8 @@ function mountPane(over: Record<string, unknown> = {}): ReturnType<typeof mount>
       cancelling: false,
       pauseQuestion: '',
       pauseReviewPaths: [],
+      followLive: false,
+      followLiveVisible: false,
       ...over,
     },
     global: { plugins: [createPinia(), PiniaColada, makeRouter()] },
@@ -74,6 +76,40 @@ describe('RunRightPane — header', () => {
     const w = mountPane()
     await w.get('[data-testid="cancel-run"]').trigger('click')
     expect(w.emitted('cancel')).toBeTruthy()
+  })
+})
+
+describe('RunRightPane — follow-live pin', () => {
+  it('renders the pin button only when followLiveVisible', () => {
+    const off = mountPane({ followLiveVisible: false })
+    expect(off.find('[data-testid="follow-live-pin"]').exists()).toBe(false)
+
+    const on = mountPane({ followLiveVisible: true })
+    expect(on.find('[data-testid="follow-live-pin"]').exists()).toBe(true)
+  })
+
+  it('reflects followLive state via aria-pressed and label', () => {
+    const off = mountPane({ followLiveVisible: true, followLive: false })
+    const btnOff = off.get('[data-testid="follow-live-pin"]')
+    expect(btnOff.attributes('aria-pressed')).toBe('false')
+    expect(btnOff.text()).toContain('Follow live')
+
+    const on = mountPane({ followLiveVisible: true, followLive: true })
+    const btnOn = on.get('[data-testid="follow-live-pin"]')
+    expect(btnOn.attributes('aria-pressed')).toBe('true')
+    expect(btnOn.text()).toContain('Following live')
+  })
+
+  it('emits toggle-follow-live on click', async () => {
+    const w = mountPane({ followLiveVisible: true, followLive: false })
+    await w.get('[data-testid="follow-live-pin"]').trigger('click')
+    expect(w.emitted('toggle-follow-live')).toBeTruthy()
+  })
+
+  it('renders the pin alongside Cancel when both are visible', () => {
+    const w = mountPane({ followLiveVisible: true })
+    expect(w.find('[data-testid="cancel-run"]').exists()).toBe(true)
+    expect(w.find('[data-testid="follow-live-pin"]').exists()).toBe(true)
   })
 })
 

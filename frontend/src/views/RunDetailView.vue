@@ -18,7 +18,7 @@
 // Layout: two-column grid — RunSidebar (left rail) + RunRightPane
 // (right body). View selection is URL-reflected via ?view=.
 
-import { computed, onBeforeUnmount, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AsyncBoundary from '@/components/shared/AsyncBoundary.vue'
 import RunSidebar from '@/components/runs/layout/RunSidebar.vue'
@@ -151,8 +151,80 @@ watch(
 )
 
 function onSelectView(view: RunView): void {
+  // User-initiated navigation always un-pins follow-live — the click is
+  // the signal of intent ("lock onto this") regardless of what was
+  // clicked. The pin button re-engages tailing.
+  if (followLive.value) followLive.value = false
   void router.push({
     query: { ...route.query, view: serializeView(view) },
+  })
+}
+
+/**
+ * Follow-live pin (proposal §"Follow-live behaviour"). When on and the
+ * run is live (`running` / `awaiting_children`), the right pane auto-
+ * promotes its selection to the latest iter as new iters arrive.
+ *
+ * Auto-engages on first detail load when:
+ *   - status is live, AND
+ *   - the URL had no `?view=` (smart-default fired — user did not pick
+ *     a specific view).
+ *
+ * Auto-promote uses `router.replace` so navigating away with the back
+ * button doesn't have to traverse every auto-promoted iter.
+ */
+const followLive = ref(false)
+const isLive = computed(
+  () =>
+    detail.value?.status === 'running' ||
+    detail.value?.status === 'awaiting_children',
+)
+
+let followLiveBootstrapped = false
+watch(
+  detail,
+  (d) => {
+    if (d == null || followLiveBootstrapped) return
+    followLiveBootstrapped = true
+    const liveStatus =
+      d.status === 'running' || d.status === 'awaiting_children'
+    if (liveStatus && urlView.value == null) followLive.value = true
+  },
+  { immediate: true },
+)
+
+watch(
+  () => iters.value[iters.value.length - 1]?.seq ?? null,
+  (latest) => {
+    if (latest == null) return
+    if (!followLive.value) return
+    if (!isLive.value) return
+    if (
+      currentView.value.kind === 'iter' &&
+      currentView.value.seq === latest
+    )
+      return
+    void router.replace({
+      query: {
+        ...route.query,
+        view: serializeView({ kind: 'iter', seq: latest }),
+      },
+    })
+  },
+)
+
+function toggleFollowLive(): void {
+  const next = !followLive.value
+  followLive.value = next
+  if (!next) return
+  // Re-engaging: jump to the latest iter immediately.
+  const latest = iters.value[iters.value.length - 1]?.seq
+  if (latest == null) return
+  void router.replace({
+    query: {
+      ...route.query,
+      view: serializeView({ kind: 'iter', seq: latest }),
+    },
   })
 }
 
@@ -297,8 +369,11 @@ onBeforeUnmount(() => {
             :cancelling="cancelling"
             :pause-question="pauseQuestion"
             :pause-review-paths="pauseReviewPaths"
+            :follow-live="followLive"
+            :follow-live-visible="isLive"
             @cancel="onCancel"
             @resumed="onResumed"
+            @toggle-follow-live="toggleFollowLive"
           />
         </div>
       </template>

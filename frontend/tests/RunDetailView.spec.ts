@@ -568,6 +568,194 @@ describe('RunDetailView — URL ↔ view binding', () => {
   })
 })
 
+describe('RunDetailView — follow-live pin', () => {
+  beforeEach(() => {
+    GET.mockReset()
+    POST.mockReset()
+  })
+
+  function mockRunningWithIters(iterSeqs: number[]): void {
+    GET.mockImplementation((path: string) => {
+      if (path === '/api/runs/{run_id}') {
+        return Promise.resolve(
+          ok(
+            makeDetail({
+              status: 'running',
+              iters: iterSeqs.map((seq) => ({
+                seq,
+                phase: 'planning',
+                signal_kind: null,
+                signal_args: null,
+              })),
+            }),
+          ),
+        )
+      }
+      if (path === '/api/runs/{run_id}/children') {
+        return Promise.resolve(ok([]))
+      }
+      return Promise.resolve(ok([]))
+    })
+  }
+
+  it('pin renders + auto-engages on entry to a live run with no ?view=', async () => {
+    const testRouter = await makeRouter('/runs/run-1')
+    mockRunningWithIters([1])
+
+    const w = mount(RunDetailView, {
+      props: { id: 'run-1' },
+      global: {
+        plugins: [createPinia(), PiniaColada, testRouter],
+        stubs: DEFAULT_STUBS,
+      },
+    })
+    await flushPromises()
+
+    const btn = w.find('[data-testid="follow-live-pin"]')
+    expect(btn.exists()).toBe(true)
+    expect(btn.attributes('aria-pressed')).toBe('true')
+  })
+
+  it('pin does NOT auto-engage when URL already has an explicit ?view=', async () => {
+    const testRouter = await makeRouter('/runs/run-1?view=overview')
+    mockRunningWithIters([1, 2])
+
+    const w = mount(RunDetailView, {
+      props: { id: 'run-1' },
+      global: {
+        plugins: [createPinia(), PiniaColada, testRouter],
+        stubs: DEFAULT_STUBS,
+      },
+    })
+    await flushPromises()
+
+    const btn = w.get('[data-testid="follow-live-pin"]')
+    expect(btn.attributes('aria-pressed')).toBe('false')
+    expect(testRouter.currentRoute.value.query.view).toBe('overview')
+  })
+
+  it('auto-promotes ?view=iter:N to the new latest when a new iter arrives', async () => {
+    const testRouter = await makeRouter('/runs/run-1')
+    // First detail call returns one iter; subsequent calls (after the
+    // post-cancel refetch) return two. The watcher on iters.length
+    // should observe the change and replace ?view=iter:1 → iter:2.
+    let iterSeqs: number[] = [1]
+    GET.mockImplementation((path: string) => {
+      if (path === '/api/runs/{run_id}') {
+        return Promise.resolve(
+          ok(
+            makeDetail({
+              status: 'running',
+              iters: iterSeqs.map((seq) => ({
+                seq,
+                phase: 'planning',
+                signal_kind: null,
+                signal_args: null,
+              })),
+            }),
+          ),
+        )
+      }
+      if (path === '/api/runs/{run_id}/children') {
+        return Promise.resolve(ok([]))
+      }
+      return Promise.resolve(ok([]))
+    })
+    POST.mockResolvedValue(ok(makeDetail({ status: 'running' })))
+
+    const w = mount(RunDetailView, {
+      props: { id: 'run-1' },
+      global: {
+        plugins: [createPinia(), PiniaColada, testRouter],
+        stubs: DEFAULT_STUBS,
+      },
+    })
+    await flushPromises()
+    expect(testRouter.currentRoute.value.query.view).toBe('iter:1')
+
+    // A new iter arrives — flip the GET mock so the next refetch
+    // returns iters [1, 2], then trigger a detailQuery.refetch() via
+    // the cancel button (the cleanest test surface that calls
+    // `await detailQuery.refetch()` inside the view).
+    iterSeqs = [1, 2]
+    await w.get('[data-testid="cancel-run"]').trigger('click')
+    await flushPromises()
+    expect(testRouter.currentRoute.value.query.view).toBe('iter:2')
+  })
+
+  it('manual click on a non-latest iter row un-pins follow-live', async () => {
+    const testRouter = await makeRouter('/runs/run-1')
+    mockRunningWithIters([1, 2])
+
+    const w = mount(RunDetailView, {
+      props: { id: 'run-1' },
+      global: {
+        plugins: [createPinia(), PiniaColada, testRouter],
+        stubs: DEFAULT_STUBS,
+      },
+    })
+    await flushPromises()
+
+    expect(
+      w.get('[data-testid="follow-live-pin"]').attributes('aria-pressed'),
+    ).toBe('true')
+    await w.get('[data-testid="sidebar-iter-1"]').trigger('click')
+    await flushPromises()
+    expect(
+      w.get('[data-testid="follow-live-pin"]').attributes('aria-pressed'),
+    ).toBe('false')
+    expect(testRouter.currentRoute.value.query.view).toBe('iter:1')
+  })
+
+  it('clicking the pin again re-engages and jumps to the latest iter', async () => {
+    const testRouter = await makeRouter('/runs/run-1?view=overview')
+    mockRunningWithIters([1, 2, 3])
+
+    const w = mount(RunDetailView, {
+      props: { id: 'run-1' },
+      global: {
+        plugins: [createPinia(), PiniaColada, testRouter],
+        stubs: DEFAULT_STUBS,
+      },
+    })
+    await flushPromises()
+
+    // Pin starts off because URL had ?view=overview.
+    const btn = w.get('[data-testid="follow-live-pin"]')
+    expect(btn.attributes('aria-pressed')).toBe('false')
+    await btn.trigger('click')
+    await flushPromises()
+    expect(testRouter.currentRoute.value.query.view).toBe('iter:3')
+    expect(
+      w.get('[data-testid="follow-live-pin"]').attributes('aria-pressed'),
+    ).toBe('true')
+  })
+
+  it('pin is hidden on terminal status', async () => {
+    const testRouter = await makeRouter('/runs/run-1')
+    GET.mockImplementation((path: string) => {
+      if (path === '/api/runs/{run_id}') {
+        return Promise.resolve(ok(makeDetail({ status: 'done' })))
+      }
+      if (path === '/api/runs/{run_id}/children') {
+        return Promise.resolve(ok([]))
+      }
+      return Promise.resolve(ok([]))
+    })
+
+    const w = mount(RunDetailView, {
+      props: { id: 'run-1' },
+      global: {
+        plugins: [createPinia(), PiniaColada, testRouter],
+        stubs: DEFAULT_STUBS,
+      },
+    })
+    await flushPromises()
+
+    expect(w.find('[data-testid="follow-live-pin"]').exists()).toBe(false)
+  })
+})
+
 describe('RunDetailView — chip-row drives expand-by-default (no URL plumbing)', () => {
   beforeEach(() => {
     GET.mockReset()

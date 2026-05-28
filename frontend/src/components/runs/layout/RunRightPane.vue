@@ -24,22 +24,38 @@ interface RunDetail {
   iters: ReadonlyArray<Iter>
 }
 
-const props = defineProps<{
-  detail: RunDetail
-  selection: RunView
-  events: ReadonlyArray<StreamEvent>
-  pendingTurns: ReadonlyArray<PendingTurn>
-  lastHeartbeat: HeartbeatSnapshot | null
-  childCount: number
-  cancelLabel: string
-  cancelling: boolean
-  pauseQuestion: string
-  pauseReviewPaths: ReadonlyArray<string>
-}>()
+const props = withDefaults(
+  defineProps<{
+    detail: RunDetail
+    selection: RunView
+    events: ReadonlyArray<StreamEvent>
+    pendingTurns: ReadonlyArray<PendingTurn>
+    lastHeartbeat: HeartbeatSnapshot | null
+    childCount: number
+    cancelLabel: string
+    cancelling: boolean
+    pauseQuestion: string
+    pauseReviewPaths: ReadonlyArray<string>
+    /**
+     * Follow-live pin state. When true and the run is live, the parent
+     * auto-promotes the rail selection to the latest iter as new iters
+     * arrive. The button visually reflects this state and emits
+     * `toggle-follow-live` on click.
+     */
+    followLive?: boolean
+    /** Whether to render the pin button at all (hidden on terminal). */
+    followLiveVisible?: boolean
+  }>(),
+  {
+    followLive: false,
+    followLiveVisible: false,
+  },
+)
 
 const emit = defineEmits<{
   (e: 'cancel'): void
   (e: 'resumed'): void
+  (e: 'toggle-follow-live'): void
 }>()
 
 const iterCount = computed(() => props.detail.iters.length)
@@ -118,6 +134,10 @@ function onCancel(): void {
 
 function onResumed(): void {
   emit('resumed')
+}
+
+function onToggleFollowLive(): void {
+  emit('toggle-follow-live')
 }
 
 // Per-run dismissal of the red failure banner. Persisted in
@@ -202,16 +222,41 @@ const showFailure = computed(
       </dl>
 
       <div
-        v-if="isCancellable"
+        v-if="isCancellable || followLiveVisible"
         class="right-pane__actions"
       >
         <ActionButton
+          v-if="isCancellable"
           :loading="cancelling"
           data-testid="cancel-run"
           @click="onCancel"
         >
           {{ cancelLabel }}
         </ActionButton>
+        <button
+          v-if="followLiveVisible"
+          type="button"
+          class="right-pane__follow-live"
+          :class="{
+            'right-pane__follow-live--on': followLive,
+          }"
+          :aria-pressed="followLive"
+          :title="
+            followLive
+              ? 'Following latest iter — click to unpin'
+              : 'Click to follow the latest iter'
+          "
+          data-testid="follow-live-pin"
+          @click="onToggleFollowLive"
+        >
+          <span
+            aria-hidden="true"
+            class="right-pane__follow-live-glyph"
+          >⏵</span>
+          <span class="right-pane__follow-live-label">
+            {{ followLive ? 'Following live' : 'Follow live' }}
+          </span>
+        </button>
       </div>
 
       <aside
@@ -336,6 +381,41 @@ const showFailure = computed(
   align-items: center;
   gap: 0.5rem;
   flex-wrap: wrap;
+}
+
+.right-pane__follow-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.65rem;
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  color: var(--color-text-dim);
+  font: inherit;
+  font-size: 0.85em;
+  cursor: pointer;
+  transition:
+    color 80ms ease-out,
+    background 80ms ease-out,
+    border-color 80ms ease-out;
+}
+
+.right-pane__follow-live:hover,
+.right-pane__follow-live:focus-visible {
+  color: var(--color-text);
+  border-color: var(--color-accent);
+}
+
+.right-pane__follow-live--on {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+
+.right-pane__follow-live-glyph {
+  font-size: 0.9em;
+  line-height: 1;
 }
 
 .right-pane__failure {
