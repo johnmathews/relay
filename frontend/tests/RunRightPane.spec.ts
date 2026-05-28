@@ -22,7 +22,7 @@ const baseDetail = {
   prompt_id: 7,
   prompt_body: 'do the thing',
   parent_run_id: null,
-  iters: [{ seq: 1, phase: 'planning', signal_kind: null, signal_args: null }],
+  iters: [{ seq: 1, phase: 'planning', signal_kind: null, signal_args: null, exit_reason: null }],
 }
 
 function makeRouter(): ReturnType<typeof createRouter> {
@@ -124,5 +124,73 @@ describe('RunRightPane — paused', () => {
   it('does NOT render PauseAnswerForm when status != paused', () => {
     const w = mountPane()
     expect(w.findComponent({ name: 'PauseAnswerForm' }).exists()).toBe(false)
+  })
+})
+
+describe('RunRightPane — failure banner', () => {
+  it('renders the failure banner with agent_end_no_signal hint', () => {
+    const failed = {
+      ...baseDetail,
+      status: 'failed',
+      iters: [
+        {
+          seq: 1,
+          phase: 'planning',
+          signal_kind: null,
+          signal_args: null,
+          exit_reason: 'agent_end_no_signal',
+        },
+      ],
+    }
+    const w = mountPane({ detail: failed })
+    const banner = w.get('[data-testid="run-failure-banner"]')
+    expect(banner.attributes('data-reason')).toBe('agent_end_no_signal')
+    expect(banner.text()).toContain('engineering-team')
+    expect(banner.text()).toContain('closing sentinel')
+  })
+
+  it('renders the failure banner with timeout hint', () => {
+    const failed = {
+      ...baseDetail,
+      status: 'failed',
+      iters: [
+        {
+          seq: 1,
+          phase: 'planning',
+          signal_kind: null,
+          signal_args: null,
+          exit_reason: 'timeout',
+        },
+      ],
+    }
+    const w = mountPane({ detail: failed })
+    const banner = w.get('[data-testid="run-failure-banner"]')
+    expect(banner.attributes('data-reason')).toBe('timeout')
+    expect(banner.text()).toContain('iter_timeout')
+  })
+
+  it('renders marker_error inline when present', () => {
+    const failed = {
+      ...baseDetail,
+      status: 'cancelled',
+      iters: [
+        {
+          seq: 1,
+          phase: 'planning',
+          signal_kind: null,
+          signal_args: { marker_error: 'expected ", got newline at line 3' },
+          exit_reason: 'cancelled',
+        },
+      ],
+    }
+    const w = mountPane({ detail: failed })
+    const banner = w.get('[data-testid="run-failure-banner"]')
+    expect(banner.text()).toContain('Marker error:')
+    expect(banner.text()).toContain('expected')
+  })
+
+  it('does NOT render failure banner for done', () => {
+    const w = mountPane({ detail: { ...baseDetail, status: 'done' } })
+    expect(w.find('[data-testid="run-failure-banner"]').exists()).toBe(false)
   })
 })

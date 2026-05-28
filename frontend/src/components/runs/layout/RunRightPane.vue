@@ -16,7 +16,7 @@ interface RunDetail {
   id: string
   status: string
   started_at: string | null
-  ended_at: string | null
+  ended_at: string | null  // reserved — surface in the meta row in a later phase
   max_iters: number
   prompt_id: number | null
   prompt_body: string
@@ -78,8 +78,8 @@ const failureInfo = computed<{
 } | null>(() => {
   if (!FAILURE_STATUSES.has(props.detail.status)) return null
   const last = props.detail.iters[props.detail.iters.length - 1] ?? null
-  const reason = (last as { exit_reason?: string | null } | null)?.exit_reason ?? props.detail.status
-  const args = (last as { signal_args?: Record<string, unknown> | null } | null)?.signal_args ?? null
+  const reason = last?.exit_reason ?? props.detail.status
+  const args = last?.signal_args ?? null
   const markerError =
     args != null && typeof args.marker_error === 'string'
       ? args.marker_error
