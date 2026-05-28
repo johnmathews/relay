@@ -1,5 +1,13 @@
 # Run-detail layout shell — Phase 1 implementation plan
 
+**Status:** closed 2026-05-28 (all 9 tasks shipped, gate green, journal at
+`journal/260528-run-detail-layout-shell.md`).
+**Date:** 2026-05-28
+**Source proposal:** `docs/proposals/run-detail-layout.md` (Phase 1)
+**Successor plans:** Phases 2–7 (filter chips, follow-live pin, sticky
+pause banner, tool-call drawer, responsive collapse, a11y polish) each
+get their own plan when the MVP-acceptance-testing freeze thaws further.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > `superpowers:subagent-driven-development` (recommended) or
 > `superpowers:executing-plans` to implement this plan task-by-task.

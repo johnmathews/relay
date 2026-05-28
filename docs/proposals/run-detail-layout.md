@@ -1,8 +1,10 @@
 # Proposal — Run-detail view layout
 
-**Status:** proposed (2026-05-28). Frontend-only; no backend, REST, SSE,
-OTel, sentinel, or schema change. Targets `RunDetailView.vue` and the
-panes under `frontend/src/components/runs/`.
+**Status:** Phase 1 shipped 2026-05-28
+(`docs/plans/2026-05-28-run-detail-layout-shell.md`); Phases 2–7
+remain proposed. Frontend-only; no backend, REST, SSE, OTel, sentinel,
+or schema change. Targets `RunDetailView.vue` and the panes under
+`frontend/src/components/runs/`.
 
 ## Problem
 
