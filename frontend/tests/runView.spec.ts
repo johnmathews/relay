@@ -3,6 +3,7 @@ import {
   parseView,
   serializeView,
   smartDefault,
+  type RunView,
 } from '../src/lib/runView'
 
 describe('parseView', () => {
@@ -34,6 +35,9 @@ describe('parseView', () => {
     expect(parseView({ view: 'iter:' })).toBeNull()
     expect(parseView({ view: 'foo' })).toBeNull()
     expect(parseView({ view: 'artifact:' })).toBeNull()
+    expect(parseView({ view: 'iter:0' })).toBeNull()
+    expect(parseView({ view: 'iter:-1' })).toBeNull()
+    expect(parseView({ view: 'iter:1e2' })).toBeNull()
   })
 
   it('accepts an array query value (router quirk) by taking the first', () => {
@@ -63,8 +67,24 @@ describe('serializeView', () => {
   })
 })
 
+describe('parseView ∘ serializeView round-trip', () => {
+  const cases: RunView[] = [
+    { kind: 'overview' },
+    { kind: 'iter', seq: 1 },
+    { kind: 'iter', seq: 42 },
+    { kind: 'artifact', path: 'plan.md' },
+    { kind: 'artifact', path: 'discussions/260528-foo.md' },
+  ]
+  for (const view of cases) {
+    it(`round-trips ${JSON.stringify(view)}`, () => {
+      const serialised = serializeView(view)
+      expect(parseView({ view: serialised })).toEqual(view)
+    })
+  }
+})
+
 describe('smartDefault', () => {
-  const baseIters = [{ seq: 1, phase: 'planning' }, { seq: 2, phase: 'planning' }]
+  const baseIters = [{ seq: 1 }, { seq: 2 }]
 
   it('returns latest iter for running with iters', () => {
     expect(smartDefault({ status: 'running', iters: baseIters })).toEqual({

@@ -32,6 +32,7 @@ export function parseView(query: QueryShape): RunView | null {
   if (raw.startsWith('iter:')) {
     const tail = raw.slice('iter:'.length)
     if (tail === '') return null
+    if (!/^\d+$/.test(tail)) return null
     const seq = Number(tail)
     if (!Number.isInteger(seq) || seq < 1) return null
     return { kind: 'iter', seq }
