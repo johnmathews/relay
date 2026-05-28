@@ -5,6 +5,7 @@ import { createRouter, createMemoryHistory } from 'vue-router'
 import TimelinePane from '../src/components/runs/TimelinePane.vue'
 import type { StreamEvent } from '../src/stores/events'
 import { useBrowserUiStore } from '../src/stores/files'
+import type { KindCategory } from '../src/lib/eventKinds'
 
 // Realistic relay event kinds + payloads (spec §3.2 / src/relay_v2/
 // events.py / orchestrator/loop.py — NOT invented).
@@ -820,5 +821,116 @@ describe('TimelinePane', () => {
     expect(t).toContain('iter-two msg')
     expect(w.find('[data-kind="run_started"]').exists()).toBe(true)
     expect(w.find('[data-kind="run_ended"]').exists()).toBe(true)
+  })
+})
+
+describe('TimelinePane — Phase 2 kinds filter', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    const r = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div/>' } }],
+    })
+    config.global.plugins = [r]
+  })
+
+  it('renders a kind label next to seq for every row', () => {
+    const w = mount(TimelinePane, { props: { events: MIXED } })
+    // assistant_text row (seq 3) gets the 'Assistant' label
+    expect(w.get('[data-testid="row-kind-3"]').text()).toBe('Assistant')
+    expect(w.get('[data-testid="row-kind-3"]').attributes('data-kind')).toBe(
+      'assistant',
+    )
+    // tool_use_start row (seq 4) labelled 'Tool calls'
+    expect(w.get('[data-testid="row-kind-4"]').attributes('data-kind')).toBe(
+      'tool',
+    )
+    // signal_emit (seq 6) → Signals
+    expect(w.get('[data-testid="row-kind-6"]').attributes('data-kind')).toBe(
+      'signal',
+    )
+    // iter_started (seq 2) — also folds into Signals
+    expect(w.get('[data-testid="row-kind-2"]').attributes('data-kind')).toBe(
+      'signal',
+    )
+    // some_future_kind (seq 9) → Other
+    expect(w.get('[data-testid="row-kind-9"]').attributes('data-kind')).toBe(
+      'other',
+    )
+  })
+
+  it('hides events whose category is not in kindsFilter', () => {
+    const w = mount(TimelinePane, {
+      props: {
+        events: MIXED,
+        kindsFilter: new Set<KindCategory>(['tool']),
+      },
+    })
+    // The tool row stays
+    expect(w.find('[data-row-type="tool"]').exists()).toBe(true)
+    // assistant_text + signal_emit + boundary + future-kind all hidden
+    expect(w.find('[data-row-type="assistant"]').exists()).toBe(false)
+    expect(w.find('[data-row-type="signal"]').exists()).toBe(false)
+    expect(w.find('[data-kind="run_started"]').exists()).toBe(false)
+    expect(w.find('[data-kind="some_future_kind"]').exists()).toBe(false)
+  })
+
+  it('respects iter scope before kinds — boundary events drive the iter walk', () => {
+    const w = mount(TimelinePane, {
+      props: {
+        events: MIXED,
+        selectedIterSeq: 1,
+        // Hiding signals would lose the iter_started/iter_ended
+        // boundaries IF kinds were applied before scope. The
+        // production code scopes first, so iter 1's tool + assistant
+        // events survive.
+        kindsFilter: new Set<KindCategory>(['tool', 'assistant']),
+      },
+    })
+    expect(w.find('[data-row-type="tool"]').exists()).toBe(true)
+    expect(w.find('[data-row-type="assistant"]').exists()).toBe(true)
+    // The iter_started row itself IS filtered out (it's a signal) but
+    // its presence in the source list correctly drove the walk.
+    expect(w.find('[data-kind="iter_started"]').exists()).toBe(false)
+  })
+
+  it('hides pendingTurns whose kind is not in kindsFilter', () => {
+    const w = mount(TimelinePane, {
+      props: {
+        events: [
+          { seq: 1, kind: 'iter_started', payload: { seq: 1, phase: null } },
+        ],
+        pendingTurns: [
+          { iterId: 1, turnSeq: 1, kind: 'text' as const, text: 'hi' },
+          { iterId: 1, turnSeq: 1, kind: 'thinking' as const, text: 'pondering' },
+        ],
+        kindsFilter: new Set<KindCategory>(['thinking']),
+      },
+    })
+    const pending = w.findAll('[data-testid="pending-turn"]')
+    expect(pending).toHaveLength(1)
+    expect(pending[0]!.attributes('data-pending-kind')).toBe('thinking')
+  })
+
+  it('surfaces "all hidden by filter" + Clear button when filter empties the scope', async () => {
+    const w = mount(TimelinePane, {
+      props: {
+        events: MIXED,
+        // No row in MIXED classifies as "thinking" — every chip-on
+        // here hides the entire scope.
+        kindsFilter: new Set<KindCategory>(['thinking']),
+      },
+    })
+    expect(w.find('[data-testid="timeline-all-hidden"]').exists()).toBe(true)
+    await w.get('[data-testid="timeline-clear-kinds"]').trigger('click')
+    expect(w.emitted('clearKindsFilter')).toBeTruthy()
+  })
+
+  it('does NOT show the all-hidden state when the underlying scope is also empty', () => {
+    const w = mount(TimelinePane, {
+      props: { events: [], kindsFilter: new Set<KindCategory>(['tool']) },
+    })
+    expect(w.find('[data-testid="timeline-all-hidden"]').exists()).toBe(false)
+    expect(w.text()).toContain('No events yet.')
   })
 })

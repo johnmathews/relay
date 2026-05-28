@@ -567,3 +567,74 @@ describe('RunDetailView — URL ↔ view binding', () => {
     expect(w.find('[data-testid="iter-timeline-panel"]').exists()).toBe(true)
   })
 })
+
+describe('RunDetailView — Phase 2 kinds chip URL plumbing', () => {
+  beforeEach(() => {
+    GET.mockReset()
+    POST.mockReset()
+  })
+
+  it('parses ?kinds= and reflects it as off-state chips', async () => {
+    const testRouter = await makeRouter('/runs/run-1?view=overview&kinds=tool')
+
+    GET.mockImplementation((path: string) => {
+      if (path === '/api/runs/{run_id}') {
+        return Promise.resolve(ok(makeDetail({ status: 'done' })))
+      }
+      if (path === '/api/runs/{run_id}/children') {
+        return Promise.resolve(ok([]))
+      }
+      return Promise.resolve(ok([]))
+    })
+
+    const w = mount(RunDetailView, {
+      props: { id: 'run-1' },
+      global: {
+        plugins: [createPinia(), PiniaColada, testRouter],
+        stubs: DEFAULT_STUBS,
+      },
+    })
+    await flushPromises()
+
+    // Only the tool chip is on; the others should render as is-off.
+    const tool = w.get('[data-testid="kind-chip-tool"]')
+    expect(tool.attributes('aria-pressed')).toBe('true')
+    const assistant = w.get('[data-testid="kind-chip-assistant"]')
+    expect(assistant.attributes('aria-pressed')).toBe('false')
+  })
+
+  it('pushes ?kinds= when a chip is clicked, drops it again when filter clears', async () => {
+    const testRouter = await makeRouter('/runs/run-1?view=overview')
+
+    GET.mockImplementation((path: string) => {
+      if (path === '/api/runs/{run_id}') {
+        return Promise.resolve(ok(makeDetail({ status: 'done' })))
+      }
+      if (path === '/api/runs/{run_id}/children') {
+        return Promise.resolve(ok([]))
+      }
+      return Promise.resolve(ok([]))
+    })
+
+    const w = mount(RunDetailView, {
+      props: { id: 'run-1' },
+      global: {
+        plugins: [createPinia(), PiniaColada, testRouter],
+        stubs: DEFAULT_STUBS,
+      },
+    })
+    await flushPromises()
+
+    // First click — turn `tool` off → URL gets the other four.
+    await w.get('[data-testid="kind-chip-tool"]').trigger('click')
+    await flushPromises()
+    expect(testRouter.currentRoute.value.query.kinds).toBe(
+      'assistant,thinking,signal,other',
+    )
+
+    // Click Clear → kinds drops from the URL entirely.
+    await w.get('[data-testid="kind-filter-clear"]').trigger('click')
+    await flushPromises()
+    expect(testRouter.currentRoute.value.query.kinds).toBeUndefined()
+  })
+})

@@ -48,6 +48,7 @@ function mountPane(over: Record<string, unknown> = {}): ReturnType<typeof mount>
       cancelling: false,
       pauseQuestion: '',
       pauseReviewPaths: [],
+      kindsFilter: null,
       ...over,
     },
     global: { plugins: [createPinia(), PiniaColada, makeRouter()] },
