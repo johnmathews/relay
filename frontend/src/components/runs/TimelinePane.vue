@@ -1073,9 +1073,33 @@ function onArtifactEditedClick(path: string): void {
   background: var(--color-surface-hover);
 }
 
-.timeline__card-header:hover,
+/* Hover lifts the whole collapsed card — stronger border + subtle
+   shadow + slightly raised origin — so the row reads as "clickable"
+   before you reach the inner Copy/Expand buttons. Earlier rounds
+   only tinted the header bg, which was nearly invisible against the
+   per-type pastel surface. Applied to the collapsed state only;
+   expanded cards already advertise their interactivity via the body.
+   The clickable inline-card variant (artifact_edited with a runId)
+   gets the same treatment via the second selector. */
+.timeline__row--card.timeline__row--collapsed:hover,
+.timeline__row--card.timeline__row--collapsed:focus-within,
+.timeline__row[data-row-type='artifact_edited']:has(button.timeline__card-header--inline):hover,
+.timeline__row[data-row-type='artifact_edited']:has(button.timeline__card-header--inline):focus-within {
+  border-color: var(--color-border-strong);
+  box-shadow: 0 2px 6px var(--color-shadow);
+  transform: translateY(-1px);
+}
+
+.timeline__row--card,
+.timeline__row[data-row-type='artifact_edited'],
+.timeline__row[data-row-type='usage'] {
+  transition:
+    border-color 120ms ease-out,
+    box-shadow 120ms ease-out,
+    transform 120ms ease-out;
+}
+
 .timeline__card-header:focus-visible {
-  background: var(--color-surface-hover);
   outline: none;
 }
 
