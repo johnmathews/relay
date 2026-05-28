@@ -154,6 +154,13 @@ interface Row {
   event: StreamEvent
   /** Paired tool_use_end payload, when this is a tool row. */
   toolEnd?: Record<string, unknown>
+  /** Pre-computed smart preview for the card header. Populated in
+   *  the `rows` computed so the template doesn't re-run the
+   *  per-tool string-matching logic 3× per row per render
+   *  (`v-if`, `:title`, text node). Empty string for boundary /
+   *  pause / usage / artifact_edited (they render their own
+   *  body). */
+  preview: string
 }
 
 /**
@@ -173,6 +180,7 @@ const rows = computed<Row[]>(() => {
         kind: ev.kind,
         type: 'tool',
         event: ev,
+        preview: '',
       })
       const tid = typeof p.tool_id === 'string' ? p.tool_id : null
       if (tid != null) toolIndex.set(tid, idx)
@@ -188,6 +196,7 @@ const rows = computed<Row[]>(() => {
           type: 'tool',
           event: ev,
           toolEnd: p,
+          preview: '',
         })
       }
     } else if (ev.kind === 'signal_emit') {
@@ -196,6 +205,7 @@ const rows = computed<Row[]>(() => {
         kind: ev.kind,
         type: 'signal',
         event: ev,
+        preview: '',
       })
     } else if (ev.kind === 'assistant_text') {
       // Split assistant_text by payload.kind so the type-default
@@ -209,6 +219,7 @@ const rows = computed<Row[]>(() => {
         kind: ev.kind,
         type: p.kind === 'thinking' ? 'thinking' : 'assistant',
         event: ev,
+        preview: '',
       })
     } else if (ev.kind === 'pause_requested' || ev.kind === 'pause_resolved') {
       out.push({
@@ -216,6 +227,7 @@ const rows = computed<Row[]>(() => {
         kind: ev.kind,
         type: 'pause',
         event: ev,
+        preview: '',
       })
     } else if (ev.kind === 'harness_session_ended') {
       out.push({
@@ -223,6 +235,7 @@ const rows = computed<Row[]>(() => {
         kind: ev.kind,
         type: 'usage',
         event: ev,
+        preview: '',
       })
     } else if (ev.kind === 'artifact_edited') {
       // 14c — ADR-40. One-line row: path · sha-before → sha-after ·
@@ -232,6 +245,7 @@ const rows = computed<Row[]>(() => {
         kind: ev.kind,
         type: 'artifact_edited',
         event: ev,
+        preview: '',
       })
     } else if (
       ev.kind === 'iter_started' ||
@@ -244,6 +258,7 @@ const rows = computed<Row[]>(() => {
         kind: ev.kind,
         type: 'boundary',
         event: ev,
+        preview: '',
       })
     } else {
       // Unknown / future kind — render generically, never throw.
@@ -252,8 +267,19 @@ const rows = computed<Row[]>(() => {
         kind: ev.kind,
         type: 'generic',
         event: ev,
+        preview: '',
       })
     }
+  }
+  // Fill smart previews in a single post-pass. We do this AFTER the
+  // loop so tool rows have their paired `toolEnd` attached first —
+  // previewFor only reads `event.payload` (not `toolEnd`) today, but
+  // the post-pass is the right place to grow if a future preview
+  // wants timing/result data too. Computing once here means the
+  // template uses `row.preview` instead of calling `previewFor(row)`
+  // three times (`v-if`, `:title`, text) per row per render.
+  for (const r of out) {
+    r.preview = previewFor(r)
   }
   return out
 })
@@ -362,35 +388,6 @@ function getCopyText(row: Row): string {
   }
 }
 
-const popoverOpen = ref(false)
-
-/**
- * Order matters — this is the display order in the gear popover.
- * Boundary / pause / usage / artifact_edited rows are
- * intrinsically small (one-liners) and have no useful collapsed
- * state, so the popover deliberately omits them; the COLLAPSIBLE
- * Set above is the same scope.
- */
-const COLLAPSIBLE_TYPE_ORDER: readonly TimelineRowType[] = [
-  'assistant',
-  'thinking',
-  'tool',
-  'signal',
-  'generic',
-] as const
-
-const TYPE_LABEL: Record<TimelineRowType, string> = {
-  assistant: 'Assistant',
-  thinking: 'Thinking',
-  tool: 'Tool calls',
-  signal: 'Signals',
-  generic: 'Other',
-}
-
-function togglePopover(): void {
-  popoverOpen.value = !popoverOpen.value
-}
-
 async function copyRow(row: Row): Promise<void> {
   const text = getCopyText(row)
   if (text === '') return
@@ -479,6 +476,163 @@ function shortSha(v: unknown): string {
   return `${v.slice(0, 4)}…`
 }
 
+/* Card-header helpers — these drive the per-row header strip
+   (#seq · glyph · name · status · duration · smart-preview) that the
+   user always sees, collapsed or expanded. The preview is a per-tool
+   summary so a 50-row development iter is scannable without expanding
+   anything. */
+
+const PREVIEW_MAX = 140
+
+function truncatePreview(s: string): string {
+  if (s.length <= PREVIEW_MAX) return s
+  return `${s.slice(0, PREVIEW_MAX - 1)}…`
+}
+
+function glyphFor(row: Row): string {
+  switch (row.type) {
+    case 'tool':
+      return '⚒'
+    case 'signal':
+      return '⚑'
+    case 'assistant':
+      return '▣'
+    case 'thinking':
+      return '◌'
+    case 'generic':
+      return '◇'
+    default:
+      return '·'
+  }
+}
+
+function headerName(row: Row): string {
+  const p = row.event.payload
+  switch (row.type) {
+    case 'tool':
+      return asStr(p.name, 'tool')
+    case 'signal':
+      return asStr(p.kind, 'signal')
+    case 'assistant':
+      return 'assistant'
+    case 'thinking':
+      return 'thinking'
+    case 'generic':
+      return row.kind
+    default:
+      return row.kind
+  }
+}
+
+type RowStatus = 'ok' | 'err' | 'pending'
+
+function statusFor(row: Row): RowStatus | null {
+  if (row.type !== 'tool') return null
+  if (row.toolEnd == null) return 'pending'
+  return row.toolEnd.is_error === true ? 'err' : 'ok'
+}
+
+function statusGlyphFor(row: Row): string {
+  const s = statusFor(row)
+  if (s === 'ok') return '✓'
+  if (s === 'err') return '✗'
+  if (s === 'pending') return '…'
+  return ''
+}
+
+function statusTitleFor(row: Row): string {
+  const s = statusFor(row)
+  if (s === 'ok') return 'Completed'
+  if (s === 'err') return 'Errored'
+  if (s === 'pending') return 'In flight'
+  return ''
+}
+
+function durationFor(row: Row): string {
+  if (row.type !== 'tool') return ''
+  const ms = asNum(row.toolEnd?.duration_ms)
+  if (ms == null) return ''
+  if (ms < 1000) return `${ms}ms`
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
+  const sec = Math.round(ms / 1000)
+  return `${Math.floor(sec / 60)}m ${sec % 60}s`
+}
+
+function firstLine(s: string): string {
+  for (const line of s.split('\n')) {
+    if (line.trim() !== '') return line.trim()
+  }
+  return ''
+}
+
+/** A one-line summary shown in the row header that stays visible even
+ *  when the body is collapsed. Per-tool-aware: bash → `$ <command>`,
+ *  read → `← <path>`, write/edit → `→ <path>`, grep → `? <pattern>`,
+ *  glob → `* <pattern>`, task → description; assistant/thinking → the
+ *  first non-empty line; generic → stringified payload. Returns empty
+ *  string when there is nothing to summarise. */
+function previewFor(row: Row): string {
+  const p = row.event.payload
+  if (row.type === 'tool') {
+    // Pi emits tool names in either casing (`Bash` / `bash`) depending
+    // on the underlying provider. Normalise to lowercase for matching;
+    // the header still renders the original-cased name from the
+    // payload via headerName(). Args keys vary too — bash uses
+    // `command`, read/write/edit use `file_path` or `path`.
+    const name = asStr(p.name, '').toLowerCase()
+    const args =
+      typeof p.args === 'object' && p.args !== null
+        ? (p.args as Record<string, unknown>)
+        : null
+    if (args == null) return ''
+    const argStr = (k: string): string =>
+      typeof args[k] === 'string' ? (args[k] as string) : ''
+    const filePath =
+      argStr('file_path') || argStr('path') || argStr('filename')
+    const pattern = argStr('pattern')
+    if (name === 'bash') {
+      const cmd = argStr('command')
+      if (cmd === '') return ''
+      return truncatePreview(`$ ${cmd.replace(/\s+/g, ' ').trim()}`)
+    }
+    if (name === 'write' || name === 'edit') {
+      return filePath === '' ? '' : truncatePreview(`→ ${filePath}`)
+    }
+    if (name === 'read') {
+      return filePath === '' ? '' : truncatePreview(`← ${filePath}`)
+    }
+    if (name === 'grep') {
+      return pattern === '' ? '' : truncatePreview(`? ${pattern}`)
+    }
+    if (name === 'glob') {
+      return pattern === '' ? '' : truncatePreview(`* ${pattern}`)
+    }
+    if (name === 'task' || name === 'agent') {
+      const d = argStr('description') || argStr('prompt')
+      return d === '' ? '' : truncatePreview(d)
+    }
+    const keys = Object.keys(args)
+    if (keys.length === 0) return ''
+    const k = keys[0]!
+    const v = args[k]
+    const vs = typeof v === 'string' ? v : JSON.stringify(v)
+    return truncatePreview(`${k}: ${vs}`)
+  }
+  if (row.type === 'assistant' || row.type === 'thinking') {
+    const t = typeof p.text === 'string' ? p.text : ''
+    return truncatePreview(firstLine(t))
+  }
+  if (row.type === 'generic') {
+    return truncatePreview(generic(row.event))
+  }
+  return ''
+}
+
+function onHeaderClick(row: Row): void {
+  if (!isCollapsible(row.type)) return
+  toggleRow(row)
+}
+
 /**
  * 14e: clicking an `artifact_edited` row opens the artifacts panel at
  * the file's CURRENT on-disk state (deliberately not a historical diff
@@ -519,59 +673,6 @@ function onArtifactEditedClick(path: string): void {
     :data-virtualized="virtualized"
     @scroll="onScroll"
   >
-    <div class="timeline__topbar">
-      <button
-        type="button"
-        class="timeline__gear"
-        data-testid="display-gear"
-        :aria-expanded="popoverOpen"
-        title="Choose which row types are expanded by default"
-        @click.stop="togglePopover"
-      >
-        <span aria-hidden="true">⚙</span>
-        <span class="timeline__gear-label">Display</span>
-      </button>
-      <div
-        v-if="popoverOpen"
-        class="timeline__popover"
-        data-testid="display-popover"
-        @click.stop
-      >
-        <p class="timeline__popover-title">
-          Expand by default
-        </p>
-        <ul class="timeline__popover-list">
-          <li
-            v-for="t in COLLAPSIBLE_TYPE_ORDER"
-            :key="t"
-            class="timeline__popover-row"
-          >
-            <button
-              type="button"
-              class="timeline__popover-toggle"
-              :class="{ 'is-on': prefs.isExpandedByDefault(t) }"
-              :data-testid="`display-toggle-${t}`"
-              @click="prefs.toggle(t)"
-            >
-              <span
-                class="timeline__popover-dot"
-                aria-hidden="true"
-              />
-              {{ TYPE_LABEL[t] }}
-            </button>
-          </li>
-        </ul>
-        <button
-          type="button"
-          class="timeline__popover-reset"
-          data-testid="display-reset"
-          @click="prefs.reset"
-        >
-          Reset to defaults
-        </button>
-      </div>
-    </div>
-
     <p
       v-if="rows.length === 0"
       class="timeline__empty"
@@ -591,113 +692,184 @@ function onArtifactEditedClick(path: string): void {
         :key="row.key"
         class="timeline__row"
         :class="{
+          'timeline__row--card': isCollapsible(row.type),
+          'timeline__row--inline': !isCollapsible(row.type),
           'timeline__row--collapsible': isCollapsible(row.type),
-          'timeline__row--collapsed': !isRowExpanded(row),
+          'timeline__row--collapsed':
+            isCollapsible(row.type) && !isRowExpanded(row),
           'timeline__row--assistant': row.type === 'assistant',
+          'timeline__row--error': statusFor(row) === 'err',
         }"
         :data-kind="row.kind"
         :data-row-type="row.type"
       >
-        <span class="timeline__seq">#{{ row.event.seq }}</span>
-
-        <div class="timeline__row-controls">
-          <button
-            type="button"
-            class="timeline__row-btn"
-            data-testid="copy-step"
-            title="Copy step content"
-            @click="copyRow(row)"
+        <!-- Collapsible rows render as a bordered card with a clickable
+             header strip (seq + glyph + name + status + duration +
+             smart preview) and a body that hides when collapsed. -->
+        <template v-if="isCollapsible(row.type)">
+          <header
+            class="timeline__card-header"
+            :data-testid="`row-header-${row.event.seq}`"
+            :aria-expanded="isRowExpanded(row)"
+            role="button"
+            tabindex="0"
+            @click="onHeaderClick(row)"
+            @keydown.enter.prevent="onHeaderClick(row)"
+            @keydown.space.prevent="onHeaderClick(row)"
           >
-            ⧉
-          </button>
-          <button
-            v-if="isCollapsible(row.type)"
-            type="button"
-            class="timeline__row-btn"
-            data-testid="toggle-step"
-            :title="isRowExpanded(row) ? 'Collapse' : 'Expand'"
-            @click="toggleRow(row)"
+            <span class="timeline__card-seq">#{{ row.event.seq }}</span>
+            <span
+              class="timeline__card-glyph"
+              aria-hidden="true"
+            >{{ glyphFor(row) }}</span>
+            <span class="timeline__card-name">{{ headerName(row) }}</span>
+            <span
+              v-if="statusFor(row)"
+              class="timeline__card-status"
+              :data-status="statusFor(row)"
+              :title="statusTitleFor(row)"
+            >{{ statusGlyphFor(row) }}</span>
+            <span
+              v-if="durationFor(row)"
+              class="timeline__card-duration"
+            >{{ durationFor(row) }}</span>
+            <span
+              v-if="row.preview"
+              class="timeline__card-preview"
+              :title="row.preview"
+            >{{ row.preview }}</span>
+            <span class="timeline__card-spacer" />
+            <div
+              class="timeline__card-controls"
+              @click.stop
+            >
+              <button
+                type="button"
+                class="timeline__row-btn"
+                data-testid="copy-step"
+                title="Copy step content to clipboard"
+                @click="copyRow(row)"
+              >
+                <span
+                  class="timeline__row-btn-glyph"
+                  aria-hidden="true"
+                >⧉</span>
+                <span class="timeline__row-btn-label">Copy</span>
+              </button>
+              <button
+                type="button"
+                class="timeline__row-btn"
+                data-testid="toggle-step"
+                :aria-expanded="isRowExpanded(row)"
+                :title="isRowExpanded(row) ? 'Collapse this step' : 'Expand this step'"
+                @click="toggleRow(row)"
+              >
+                <span
+                  class="timeline__row-btn-glyph"
+                  aria-hidden="true"
+                >{{ isRowExpanded(row) ? '▾' : '▸' }}</span>
+                <span class="timeline__row-btn-label">
+                  {{ isRowExpanded(row) ? 'Collapse' : 'Expand' }}
+                </span>
+              </button>
+            </div>
+          </header>
+
+          <div
+            v-if="isRowExpanded(row)"
+            class="timeline__card-body"
           >
-            {{ isRowExpanded(row) ? '▾' : '▸' }}
+            <ToolCallCard
+              v-if="row.type === 'tool'"
+              :name="asStr(row.event.payload.name, 'tool')"
+              :args="row.event.payload.args"
+              :result="row.toolEnd?.result"
+              :is-error="row.toolEnd?.is_error === true"
+              :duration-ms="asNum(row.toolEnd?.duration_ms)"
+            />
+            <SignalCard
+              v-else-if="row.type === 'signal'"
+              :seq="row.event.seq"
+              :signal-kind="asStr(row.event.payload.kind, 'signal')"
+              :args="row.event.payload.args"
+            />
+            <p
+              v-else-if="row.type === 'assistant' || row.type === 'thinking'"
+              class="timeline__text"
+            >
+              {{ text(row.event) }}
+            </p>
+            <code
+              v-else
+              class="timeline__bmeta"
+            >
+              {{ generic(row.event) }}
+            </code>
+          </div>
+        </template>
+
+        <!-- One-liner rows (boundary / pause / usage / artifact_edited)
+             keep their existing inline layout — they carry their own
+             chrome and gain nothing from the card structure. -->
+        <template v-else>
+          <span class="timeline__seq">#{{ row.event.seq }}</span>
+          <div class="timeline__row-controls timeline__row-controls--inline">
+            <button
+              type="button"
+              class="timeline__row-btn"
+              data-testid="copy-step"
+              title="Copy step content to clipboard"
+              @click="copyRow(row)"
+            >
+              <span
+                class="timeline__row-btn-glyph"
+                aria-hidden="true"
+              >⧉</span>
+              <span class="timeline__row-btn-label">Copy</span>
+            </button>
+          </div>
+
+          <div
+            v-if="row.type === 'boundary'"
+            class="timeline__boundary"
+          >
+            <span class="timeline__btag">{{ row.kind }}</span>
+            <code class="timeline__bmeta">{{ generic(row.event) }}</code>
+          </div>
+
+          <div
+            v-else-if="row.type === 'pause'"
+            class="timeline__pause"
+          >
+            <span class="timeline__btag">{{ row.kind }}</span>
+            <code class="timeline__bmeta">{{ generic(row.event) }}</code>
+          </div>
+
+          <UsageRow
+            v-else-if="row.type === 'usage'"
+            :event="row.event"
+          />
+
+          <button
+            v-else-if="row.type === 'artifact_edited'"
+            type="button"
+            class="timeline__edit"
+            data-testid="artifact-edited-row"
+            :title="runId ? 'Open this artifact' : ''"
+            @click="onArtifactEditedClick(asStr(row.event.payload.path, ''))"
+          >
+            <span class="timeline__edit-glyph">✎</span>
+            <code class="timeline__edit-path">{{ asStr(row.event.payload.path, '?') }}</code>
+            <span class="timeline__edit-sha">
+              {{ shortSha(row.event.payload.sha256_before) }}
+              →
+              {{ shortSha(row.event.payload.sha256_after) }}
+            </span>
+            <span class="timeline__edit-editor">·
+              {{ asStr(row.event.payload.editor, 'dashboard') }}
+            </span>
           </button>
-        </div>
-
-        <ToolCallCard
-          v-if="row.type === 'tool'"
-          :name="asStr(row.event.payload.name, 'tool')"
-          :args="row.event.payload.args"
-          :result="row.toolEnd?.result"
-          :is-error="row.toolEnd?.is_error === true"
-          :duration-ms="asNum(row.toolEnd?.duration_ms)"
-        />
-
-        <SignalCard
-          v-else-if="row.type === 'signal'"
-          :seq="row.event.seq"
-          :signal-kind="asStr(row.event.payload.kind, 'signal')"
-          :args="row.event.payload.args"
-        />
-
-        <div
-          v-else-if="row.type === 'assistant' || row.type === 'thinking'"
-          class="timeline__message"
-        >
-          <span class="timeline__label">
-            {{ row.type === 'thinking' ? 'thinking' : 'assistant' }}
-          </span>
-          <p class="timeline__text">
-            {{ text(row.event) }}
-          </p>
-        </div>
-
-        <div
-          v-else-if="row.type === 'boundary'"
-          class="timeline__boundary"
-        >
-          <span class="timeline__btag">{{ row.kind }}</span>
-          <code class="timeline__bmeta">{{ generic(row.event) }}</code>
-        </div>
-
-        <div
-          v-else-if="row.type === 'pause'"
-          class="timeline__pause"
-        >
-          <span class="timeline__btag">{{ row.kind }}</span>
-          <code class="timeline__bmeta">{{ generic(row.event) }}</code>
-        </div>
-
-        <UsageRow
-          v-else-if="row.type === 'usage'"
-          :event="row.event"
-        />
-
-        <button
-          v-else-if="row.type === 'artifact_edited'"
-          type="button"
-          class="timeline__edit"
-          data-testid="artifact-edited-row"
-          :title="runId ? 'Open this artifact' : ''"
-          @click="onArtifactEditedClick(asStr(row.event.payload.path, ''))"
-        >
-          <span class="timeline__edit-glyph">✎</span>
-          <code class="timeline__edit-path">{{ asStr(row.event.payload.path, '?') }}</code>
-          <span class="timeline__edit-sha">
-            {{ shortSha(row.event.payload.sha256_before) }}
-            →
-            {{ shortSha(row.event.payload.sha256_after) }}
-          </span>
-          <span class="timeline__edit-editor">·
-            {{ asStr(row.event.payload.editor, 'dashboard') }}
-          </span>
-        </button>
-
-        <div
-          v-else
-          class="timeline__generic"
-        >
-          <span class="timeline__label">{{ row.kind }}</span>
-          <code class="timeline__bmeta">{{ generic(row.event) }}</code>
-        </div>
+        </template>
       </li>
     </ol>
 
@@ -758,175 +930,217 @@ function onArtifactEditedClick(path: string): void {
   background: var(--color-bg);
 }
 
-/* Row controls — copy + expand/collapse buttons pinned to the top
-   right of every row. Always rendered (the copy button is universal
-   even for one-line rows); the toggle is omitted on non-collapsible
-   types via v-if. */
-.timeline__row {
-  position: relative;
-}
-.timeline__row-controls {
-  position: absolute;
-  top: 0.45rem;
-  right: 0.55rem;
-  display: flex;
-  gap: 0.25rem;
-  /* Always visible so the user knows every row — including nested
-     ones like `thinking` — has its own copy button. Dimmed at rest,
-     full opacity on row hover/focus. Previously opacity: 0 by
-     default; users reported they couldn't tell that nested rows
-     were copyable. */
-  opacity: 0.55;
-  transition: opacity 0.15s ease;
-}
-.timeline__row:hover .timeline__row-controls,
-.timeline__row:focus-within .timeline__row-controls {
-  opacity: 1;
-}
+/* Shared row-button look — used both inside the card header and on
+   one-liner inline rows. */
 .timeline__row-btn {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  color: var(--color-text-dim);
-  font: inherit;
-  font-size: 0.85em;
-  line-height: 1;
-  padding: 0.15em 0.4em;
-  cursor: pointer;
-}
-.timeline__row-btn:hover {
-  color: var(--color-text);
-  border-color: currentcolor;
-}
-
-/* Collapsed body: clip to ~5 lines, fade the tail so the truncation
-   is obvious. The mask-image gradient is supported in every
-   evergreen browser (Safari needs the -webkit- prefix). The user's
-   per-row toggle or a type-default flip via the gear popover lifts
-   the clip. Boundaries / pause / usage / artifact_edited rows are
-   intrinsically one-liners and never get this class. */
-.timeline__row--collapsible.timeline__row--collapsed > :not(.timeline__seq):not(.timeline__row-controls) {
-  max-height: 5em;
-  overflow: hidden;
-  -webkit-mask-image: linear-gradient(to bottom, black 70%, transparent);
-  mask-image: linear-gradient(to bottom, black 70%, transparent);
-}
-
-/* ASSISTANT highlight: a medium-thickness 70%-white border so the
-   user's intended-to-read output stands out from tool/thinking/etc.
-   rows at a glance. Applied to the row container, not the body, so
-   the seq + controls live inside the highlight box too. */
-.timeline__row--assistant {
-  border: 2px solid rgba(255, 255, 255, 0.7);
-  border-radius: 8px;
-  padding: 0.5rem 0.75rem;
-  margin: 0.35rem 0;
-  background: rgba(255, 255, 255, 0.02);
-}
-
-/* Top bar with the display-options gear. Sits inside the scroll
-   container as a sticky header so the popover anchors to the
-   gear regardless of scroll position. */
-.timeline__topbar {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  display: flex;
-  justify-content: flex-end;
-  margin: -0.25rem -0.25rem 0.5rem;
-  pointer-events: none; /* let the rows behind it scroll normally */
-}
-.timeline__gear {
-  pointer-events: auto;
   display: inline-flex;
   align-items: center;
-  gap: 0.4em;
+  gap: 0.35em;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: 6px;
   color: var(--color-text);
-  cursor: pointer;
-  font: inherit;
-  font-size: 0.85em;
-  line-height: 1;
-  padding: 0.35em 0.7em;
-}
-.timeline__gear-label {
-  font-size: 0.92em;
-}
-.timeline__gear:hover {
-  color: var(--color-text);
-  border-color: currentcolor;
-}
-.timeline__popover {
-  pointer-events: auto;
-  position: absolute;
-  top: 2.2rem;
-  right: 0.25rem;
-  min-width: 12rem;
-  padding: 0.5rem;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
-}
-.timeline__popover-title {
-  margin: 0 0 0.4rem;
-  font-size: 0.72em;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--color-text-dim);
-}
-.timeline__popover-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-}
-.timeline__popover-toggle {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  width: 100%;
-  background: none;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  color: var(--color-text);
-  cursor: pointer;
-  font: inherit;
-  font-size: 0.88em;
-  padding: 0.25em 0.4em;
-  text-align: left;
-}
-.timeline__popover-toggle:hover {
-  background: rgba(255, 255, 255, 0.04);
-}
-.timeline__popover-dot {
-  display: inline-block;
-  width: 0.55em;
-  height: 0.55em;
-  border-radius: 50%;
-  border: 1px solid var(--color-text-dim);
-}
-.timeline__popover-toggle.is-on .timeline__popover-dot {
-  background: var(--color-accent, #5b9dff);
-  border-color: var(--color-accent, #5b9dff);
-}
-.timeline__popover-reset {
-  margin-top: 0.5rem;
-  background: none;
-  border: none;
-  color: var(--color-text-dim);
-  cursor: pointer;
   font: inherit;
   font-size: 0.78em;
-  padding: 0;
-  text-decoration: underline;
+  line-height: 1;
+  padding: 0.35em 0.65em;
+  min-height: 1.9rem;
+  cursor: pointer;
 }
-.timeline__popover-reset:hover {
+.timeline__row-btn:hover,
+.timeline__row-btn:focus-visible {
   color: var(--color-text);
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-hover);
+}
+.timeline__row-btn-glyph {
+  font-size: 0.95em;
+  line-height: 1;
+}
+.timeline__row-btn-label {
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+/* ── Card-style rows (tool / signal / assistant / thinking / generic).
+   Each step is a bordered card with a header strip that's clickable as
+   a whole. The header is always visible (carries the smart preview);
+   the body hides when collapsed. */
+
+.timeline__row--card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+/* Per-row-type palette — each step type gets its own pastel surface
+   + saturated border so the timeline reads as a scannable colour
+   index even when fully collapsed. Tokens live in styles/base.css
+   with parallel light + dark values. */
+.timeline__row--card[data-row-type='assistant'] {
+  border-color: var(--color-row-assistant-border);
+  background: var(--color-row-assistant-bg);
+}
+.timeline__row--card[data-row-type='thinking'] {
+  border-color: var(--color-row-thinking-border);
+  background: var(--color-row-thinking-bg);
+}
+.timeline__row--card[data-row-type='tool'] {
+  border-color: var(--color-row-tool-border);
+  background: var(--color-row-tool-bg);
+}
+.timeline__row--card[data-row-type='signal'] {
+  border-color: var(--color-row-signal-border);
+  background: var(--color-row-signal-bg);
+}
+.timeline__row--card[data-row-type='generic'] {
+  border-color: var(--color-row-other-border);
+  background: var(--color-row-other-bg);
+}
+
+/* The error state on a tool row wins over the per-type tint — a
+   failed bash should still read as "this one is the problem" at a
+   glance, even though the type colour is amber. */
+.timeline__row--card.timeline__row--error {
+  border-color: var(--color-danger);
+}
+
+.timeline__card-header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0.6rem;
+  background: transparent;
+  border-bottom: 1px solid transparent;
+  cursor: pointer;
+  user-select: none;
+  min-height: 2.6rem;
+}
+
+.timeline__row--card:not(.timeline__row--collapsed) .timeline__card-header {
+  border-bottom-color: var(--color-border);
+  background: var(--color-surface-hover);
+}
+
+.timeline__card-header:hover,
+.timeline__card-header:focus-visible {
+  background: var(--color-surface-hover);
+  outline: none;
+}
+
+.timeline__card-seq {
+  font-family: var(--font-mono);
+  font-size: 0.78em;
+  color: var(--color-text-dim);
+  min-width: 2.6rem;
+}
+
+.timeline__card-glyph {
+  font-size: 0.95em;
+  color: var(--color-text-dim);
+  line-height: 1;
+}
+
+.timeline__card-name {
+  font-weight: 600;
+  font-family: var(--font-mono);
+  color: var(--color-text);
+}
+
+.timeline__card-status {
+  font-size: 0.95em;
+  line-height: 1;
+}
+.timeline__card-status[data-status='ok'] {
+  color: var(--color-success);
+}
+.timeline__card-status[data-status='err'] {
+  color: var(--color-danger);
+}
+.timeline__card-status[data-status='pending'] {
+  color: var(--color-warning);
+}
+
+.timeline__card-duration {
+  font-size: 0.78em;
+  color: var(--color-text-dim);
+  font-family: var(--font-mono);
+}
+
+.timeline__card-preview {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 0.82em;
+  color: var(--color-text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline__card-spacer {
+  flex: 1;
+  min-width: 0.5rem;
+}
+
+.timeline__card-preview + .timeline__card-spacer {
+  display: none;
+}
+
+.timeline__card-controls {
+  display: flex;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+
+.timeline__card-body {
+  padding: 0.6rem 0.75rem;
+  background: var(--color-surface);
+}
+
+/* Inside the body the existing per-type renderers carry their own
+   borders / padding / backgrounds that were sized for the OLD
+   uncontained row layout. Strip them so we don't get nested-card
+   visual noise. The renderers' inner detail (tool args, signal anchor,
+   etc.) is preserved. */
+.timeline__card-body :deep(.tool-card) {
+  border: none;
+  padding: 0;
+  background: transparent;
+}
+.timeline__card-body :deep(.tool-card__head) {
+  display: none;
+}
+.timeline__card-body :deep(.signal-card) {
+  border: none;
+  border-left: 3px solid var(--color-warning);
+  border-radius: 0;
+  padding: 0.1rem 0 0.1rem 0.6rem;
+  background: transparent;
+}
+
+/* ── Inline rows (boundary / pause / usage / artifact_edited).
+   Kept on the legacy positioned-control layout because they're
+   intrinsically one-liners with their own self-contained chrome. */
+
+.timeline__row--inline {
+  position: relative;
+  padding-top: 2.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.timeline__row-controls--inline {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.5rem;
+  display: flex;
+  gap: 0.35rem;
+  z-index: 1;
 }
 
 /* Jump-to-latest pill — only rendered while the user is scrolled up
@@ -946,7 +1160,7 @@ function onArtifactEditedClick(path: string): void {
   font: inherit;
   font-size: 0.82em;
   cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 2px 8px var(--color-shadow);
 }
 .timeline__jump:hover {
   border-color: currentcolor;
@@ -997,7 +1211,7 @@ function onArtifactEditedClick(path: string): void {
 }
 
 .timeline__pause {
-  border-color: #e0b341;
+  border-color: var(--color-warning);
 }
 
 .timeline__text {
@@ -1020,9 +1234,9 @@ function onArtifactEditedClick(path: string): void {
   gap: 0.45rem;
   padding: 0.25rem 0.5rem;
   font-size: 0.85em;
-  color: var(--color-text-muted, #888);
+  color: var(--color-text-dim);
   border: none;
-  border-left: 2px solid var(--color-border-subtle, #e0e0e0);
+  border-left: 2px solid var(--color-border);
   background: transparent;
   text-align: left;
   font-family: inherit;
@@ -1031,17 +1245,17 @@ function onArtifactEditedClick(path: string): void {
 }
 
 .timeline__edit:hover {
-  background: rgba(224, 179, 65, 0.07);
+  background: var(--color-warning-bg);
 }
 
 .timeline__edit:focus-visible {
-  outline: 2px solid #e0b341;
+  outline: 2px solid var(--color-warning);
   outline-offset: 1px;
 }
 
 .timeline__edit-glyph {
   font-size: 1em;
-  color: #e0b341;
+  color: var(--color-warning);
 }
 
 .timeline__edit-path {

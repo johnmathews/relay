@@ -87,8 +87,8 @@ const costLabel = computed(() => {
   align-items: center;
   padding: 0.25rem 0.5rem;
   font-size: 0.85em;
-  color: var(--color-text-muted, #888);
-  border-left: 2px solid var(--color-border-subtle, #e0e0e0);
+  color: var(--color-text-dim);
+  border-left: 2px solid var(--color-border);
 }
 .badge {
   font-weight: 600;

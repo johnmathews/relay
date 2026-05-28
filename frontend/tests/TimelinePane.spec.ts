@@ -64,14 +64,29 @@ describe('TimelinePane', () => {
     config.global.plugins = [testRouter]
   })
 
-  it('renders all mixed event types readably', () => {
+  it('renders all mixed event types readably', async () => {
     const w = mount(TimelinePane, { props: { events: MIXED } })
+    // Card header is always present for collapsible types — it carries
+    // the smart preview (tool name, signal kind, etc.) even when the
+    // body is collapsed. The card body (full ToolCallCard / SignalCard
+    // renderer) is only rendered when expanded; we click the header
+    // to expand and then assert on the body.
     const text = w.text()
+    expect(text).toContain('Looking at the code.') // assistant is expanded by default
+    expect(text).toContain('Bash') // tool name visible in card header
+
+    // Expand the tool + signal rows.
+    const toolHeader = w.get(
+      '[data-row-type="tool"] [data-testid^="row-header-"]',
+    )
+    await toolHeader.trigger('click')
+    const sigHeader = w.get(
+      '[data-row-type="signal"] [data-testid^="row-header-"]',
+    )
+    await sigHeader.trigger('click')
+
     expect(w.find('[data-testid="tool-call-card"]').exists()).toBe(true)
     expect(w.find('[data-testid="signal-card"]').exists()).toBe(true)
-    expect(text).toContain('Looking at the code.')
-    expect(text).toContain('Bash')
-    // Tool start+end merged into one card.
     expect(w.findAll('[data-testid="tool-call-card"]').length).toBe(1)
     // Boundary + unknown kinds still render (never throws).
     expect(w.find('[data-kind="run_ended"]').exists()).toBe(true)
@@ -288,8 +303,13 @@ describe('TimelinePane', () => {
     })
   })
 
-  it('signal row has the distinctive card + a linkable anchor id', () => {
+  it('signal row has the distinctive card + a linkable anchor id', async () => {
     const w = mount(TimelinePane, { props: { events: MIXED } })
+    // Signal rows are collapsed by default — expand to render the body
+    // SignalCard whose anchor we want to assert on.
+    await w
+      .get('[data-row-type="signal"] [data-testid^="row-header-"]')
+      .trigger('click')
     const sig = w.find('[data-testid="signal-card"]')
     expect(sig.exists()).toBe(true)
     expect(sig.attributes('id')).toBe('signal-6')
@@ -308,6 +328,11 @@ describe('TimelinePane', () => {
       },
     ]
     const w = mount(TimelinePane, { props: { events } })
+    // Expand the tool row's body first so the ToolCallCard's own
+    // "show full" toggle exists.
+    await w
+      .get('[data-row-type="tool"] [data-testid^="row-header-"]')
+      .trigger('click')
     const block = w.find('.tool-card__block')
     const collapsed = block.text()
     expect(collapsed.split('\n').length).toBeLessThanOrEqual(5)
@@ -320,13 +345,11 @@ describe('TimelinePane', () => {
     )
   })
 
-  it('gear button opens a popover with per-type toggles; clicking flips defaults', async () => {
-    // The popover lists the 5 collapsible types and reflects the
-    // current type-default state. Clicking a row's toggle flips the
-    // type default in the store (persisted via the store's own
-    // localStorage watch). A second open is read-from-store, so a
-    // collapsed-by-default type becomes expanded for all matching
-    // rows on the next render.
+  it('reflects timelinePrefs type-default flips into row collapsed state', async () => {
+    // The Display popover used to live inside TimelinePane; it moved
+    // to RunRightPane (TimelineDisplayMenu.vue, covered separately).
+    // What we still verify here is the contract: when the prefs store
+    // flips a type default to expanded, matching rows un-collapse.
     const events: StreamEvent[] = [
       {
         seq: 1,
@@ -338,19 +361,149 @@ describe('TimelinePane', () => {
     const row = w.get('.timeline__row')
     expect(row.classes()).toContain('timeline__row--collapsed')
 
-    // Popover hidden by default.
-    expect(w.find('[data-testid="display-popover"]').exists()).toBe(false)
-    // Click the gear to open.
-    await w.get('[data-testid="display-gear"]').trigger('click')
-    expect(w.find('[data-testid="display-popover"]').exists()).toBe(true)
-
-    // Flip the `tool` type default to expanded.
-    await w.get('[data-testid="display-toggle-tool"]').trigger('click')
+    const { useTimelinePrefsStore } = await import(
+      '../src/stores/timelinePrefs'
+    )
+    const prefs = useTimelinePrefsStore()
+    prefs.toggle('tool')
+    await w.vm.$nextTick()
     expect(row.classes()).not.toContain('timeline__row--collapsed')
+  })
 
-    // Close the popover by clicking the gear again.
-    await w.get('[data-testid="display-gear"]').trigger('click')
-    expect(w.find('[data-testid="display-popover"]').exists()).toBe(false)
+  it('renders a smart per-tool preview in the row header', async () => {
+    // The card header is always visible (carries seq, glyph, name,
+    // status, duration, AND a smart preview) so a long iter is
+    // scannable without expanding anything. The preview format is
+    // per-tool: bash → `$ <command>`, write/edit → `→ <path>`,
+    // read → `← <path>`. Tests the load-bearing UX choice from the
+    // 260528 step-card redesign.
+    const events: StreamEvent[] = [
+      {
+        seq: 1,
+        kind: 'tool_use_start',
+        payload: {
+          tool_id: 'a',
+          name: 'Bash',
+          args: { command: 'npm test --reporter=tap' },
+        },
+      },
+      {
+        seq: 2,
+        kind: 'tool_use_start',
+        payload: {
+          tool_id: 'b',
+          name: 'Write',
+          args: { file_path: 'src/lib/queries.ts' },
+        },
+      },
+      {
+        seq: 3,
+        kind: 'tool_use_start',
+        payload: {
+          tool_id: 'c',
+          name: 'Read',
+          args: { file_path: 'README.md' },
+        },
+      },
+    ]
+    const w = mount(TimelinePane, { props: { events } })
+    const previews = w
+      .findAll('.timeline__card-preview')
+      .map((el) => el.text())
+    expect(previews[0]).toContain('$ npm test')
+    expect(previews[1]).toContain('→ src/lib/queries.ts')
+    expect(previews[2]).toContain('← README.md')
+  })
+
+  it('row header glyph + name + tool duration render even when collapsed', () => {
+    const events: StreamEvent[] = [
+      {
+        seq: 1,
+        kind: 'tool_use_start',
+        payload: { tool_id: 't', name: 'Bash', args: { command: 'echo x' } },
+      },
+      {
+        seq: 2,
+        kind: 'tool_use_end',
+        payload: {
+          tool_id: 't',
+          result: 'x\n',
+          is_error: false,
+          duration_ms: 7500,
+        },
+      },
+    ]
+    const w = mount(TimelinePane, { props: { events } })
+    const header = w.get('[data-row-type="tool"] .timeline__card-header')
+    expect(header.text()).toContain('Bash')
+    expect(header.text()).toContain('7.5s')
+    expect(header.get('.timeline__card-status').attributes('data-status')).toBe(
+      'ok',
+    )
+  })
+
+  it('tags each card row with data-row-type so per-type tokens apply', () => {
+    // The pastel-per-type colour scheme keys off
+    // `data-row-type="<type>"` selectors in TimelinePane's CSS, which
+    // resolve `var(--color-row-{type}-{bg,border})` from the theme
+    // tokens in `styles/base.css`. Asserting the attribute keeps the
+    // contract guarded without coupling the test to the actual hex
+    // values (those are theme-dependent + tuned in design review).
+    const events: StreamEvent[] = [
+      {
+        seq: 1,
+        kind: 'assistant_text',
+        payload: { text: 'hi', kind: 'text' },
+      },
+      {
+        seq: 2,
+        kind: 'assistant_text',
+        payload: { text: 'pondering', kind: 'thinking' },
+      },
+      {
+        seq: 3,
+        kind: 'tool_use_start',
+        payload: { tool_id: 't', name: 'Bash', args: { command: 'ls' } },
+      },
+      {
+        seq: 4,
+        kind: 'signal_emit',
+        payload: { kind: 'phase_start', args: { phase: 'plan' } },
+      },
+      { seq: 5, kind: 'some_unknown_kind', payload: { x: 1 } },
+    ]
+    const w = mount(TimelinePane, { props: { events } })
+    const types = w
+      .findAll('.timeline__row--card')
+      .map((r) => r.attributes('data-row-type'))
+    expect(types).toEqual([
+      'assistant',
+      'thinking',
+      'tool',
+      'signal',
+      'generic',
+    ])
+  })
+
+  it('clicking the card header toggles the row body', async () => {
+    const events: StreamEvent[] = [
+      {
+        seq: 1,
+        kind: 'tool_use_start',
+        payload: { tool_id: 't', name: 'Bash', args: { command: 'ls' } },
+      },
+    ]
+    const w = mount(TimelinePane, { props: { events } })
+    const row = w.get('.timeline__row')
+    expect(row.classes()).toContain('timeline__row--collapsed')
+    await w
+      .get('[data-row-type="tool"] [data-testid^="row-header-"]')
+      .trigger('click')
+    expect(row.classes()).not.toContain('timeline__row--collapsed')
+    await w
+      .get('[data-row-type="tool"] [data-testid^="row-header-"]')
+      .trigger('click')
+    expect(row.classes()).toContain('timeline__row--collapsed')
   })
 
   it('classifies assistant_text by payload.kind: text=assistant, thinking=thinking', () => {
@@ -642,14 +795,20 @@ describe('TimelinePane', () => {
     expect(w.find('[data-kind="run_ended"]').exists()).toBe(false)
   })
 
-  it('selecting the other iter swaps the visible events', () => {
+  it('selecting the other iter swaps the visible events', async () => {
     const w = mount(TimelinePane, {
       props: { events: TWO_ITERS, selectedIterSeq: 2 },
     })
     const t = w.text()
     expect(t).toContain('iter-two msg')
     expect(t).not.toContain('iter-one msg')
-    expect(w.find('[data-testid="signal-card"]').exists()).toBe(true)
+    // The signal row is collapsed by default; the card header is
+    // visible (asserts the row is in the iter) but to inspect the
+    // SignalCard renderer we'd need to expand. Here we just verify
+    // the signal row's card header rendered.
+    expect(
+      w.find('[data-row-type="signal"] [data-testid^="row-header-"]').exists(),
+    ).toBe(true)
   })
 
   it('cleared filter (null) shows all events again', () => {
