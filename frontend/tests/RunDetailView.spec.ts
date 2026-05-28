@@ -492,7 +492,7 @@ describe('RunDetailView — URL ↔ view binding', () => {
       return Promise.resolve(ok([]))
     })
 
-    mount(RunDetailView, {
+    const w = mount(RunDetailView, {
       props: { id: 'run-1' },
       global: {
         plugins: [createPinia(), PiniaColada, testRouter],
@@ -503,6 +503,7 @@ describe('RunDetailView — URL ↔ view binding', () => {
 
     // running run with iters → smart-default is iter:N (latest iter)
     expect(testRouter.currentRoute.value.query.view).toBe('iter:2')
+    expect(w.find('[data-testid="iter-timeline-panel"]').exists()).toBe(true)
   })
 
   it('respects an existing ?view= from the URL', async () => {
@@ -564,5 +565,6 @@ describe('RunDetailView — URL ↔ view binding', () => {
     await w.get('[data-testid="sidebar-iter-1"]').trigger('click')
     await flushPromises()
     expect(testRouter.currentRoute.value.query.view).toBe('iter:1')
+    expect(w.find('[data-testid="iter-timeline-panel"]').exists()).toBe(true)
   })
 })
