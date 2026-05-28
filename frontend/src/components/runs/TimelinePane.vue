@@ -31,6 +31,12 @@ import {
   type TimelineRowType,
 } from '@/stores/timelinePrefs'
 import { serializeView } from '@/lib/runView'
+import {
+  classifyEvent,
+  classifyPending,
+  KIND_LABEL,
+  type KindCategory,
+} from '@/lib/eventKinds'
 
 /**
  * Row types that participate in the collapse / expand workflow.
@@ -47,7 +53,7 @@ const COLLAPSIBLE_TYPES = new Set([
 
 const props = defineProps<{
   /** The ordered, deduped event list from the events store. */
-  events: StreamEvent[]
+  events: ReadonlyArray<StreamEvent>
   /**
    * Optional iter-SEQ filter (W5 Iters pane). When set, only events
    * belonging to that iter are shown. Events carry no iter foreign key,
@@ -56,6 +62,15 @@ const props = defineProps<{
    * FILTER CONTRACT). `null`/`undefined` ⇒ show all iters (default).
    */
   selectedIterSeq?: number | null
+  /**
+   * Phase 2 of the run-detail layout proposal — the chip-row
+   * visibility filter. `null`/absent means "show all categories" (the
+   * default), a `Set<KindCategory>` is the proper subset that stays
+   * visible. Applied AFTER `selectedIterSeq` so the iter-scope filter
+   * can still anchor on `iter_started`/`iter_ended` boundaries even
+   * when the user has hidden the `signal` chip.
+   */
+  kindsFilter?: ReadonlySet<KindCategory> | null
   /**
    * The run this timeline belongs to. When provided (14e), an
    * `artifact_edited` row becomes a click-target that opens the
@@ -73,7 +88,11 @@ const props = defineProps<{
    * showing them in a historical iter view is misleading). Default
    * `[]` keeps older call-sites unchanged.
    */
-  pendingTurns?: PendingTurn[]
+  pendingTurns?: ReadonlyArray<PendingTurn>
+}>()
+
+const emit = defineEmits<{
+  (e: 'clearKindsFilter'): void
 }>()
 
 const router = useRouter()
@@ -87,9 +106,9 @@ const route = useRoute()
  * kept so the filtered view still shows its start/end. Unknown future
  * kinds are unaffected. With no filter set this is the identity.
  */
-const filteredEvents = computed<StreamEvent[]>(() => {
+const iterScopedEvents = computed<StreamEvent[]>(() => {
   const sel = props.selectedIterSeq
-  if (sel == null) return props.events
+  if (sel == null) return [...props.events]
   const out: StreamEvent[] = []
   let openIter: number | null = null
   for (const ev of props.events) {
@@ -110,14 +129,42 @@ const filteredEvents = computed<StreamEvent[]>(() => {
   return out
 })
 
+/**
+ * Phase 2 — chip-row visibility filter applied AFTER the iter scope.
+ * Order is load-bearing: the iter-scope walk relies on `iter_started`
+ * / `iter_ended` boundaries, which would themselves be filtered out
+ * if we applied kinds first whenever the user has hidden the Signal
+ * chip.
+ */
+const filteredEvents = computed<StreamEvent[]>(() => {
+  const kinds = props.kindsFilter ?? null
+  if (kinds == null) return iterScopedEvents.value
+  return iterScopedEvents.value.filter((ev) => kinds.has(classifyEvent(ev)))
+})
+
 /** ADR-46 Plan B: pending pseudo-rows only render in the "all iters"
  * view. Streaming deltas come from the live iter; in a historical
  * iter filter they would be misleading (and the iterId-to-payload-seq
- * mapping is one-way derivable, not two-way). */
+ * mapping is one-way derivable, not two-way). Also respects the
+ * Phase-2 kinds filter — a hidden `assistant` chip should hide its
+ * in-flight stream too. */
 const visiblePending = computed<PendingTurn[]>(() => {
   if (props.selectedIterSeq != null) return []
-  return props.pendingTurns ?? []
+  const all = props.pendingTurns ?? []
+  const kinds = props.kindsFilter ?? null
+  if (kinds == null) return [...all]
+  return all.filter((pt) => kinds.has(classifyPending(pt)))
 })
+
+function onClearKindsFilter(): void {
+  emit('clearKindsFilter')
+}
+
+/** Per-row chip-category. Reused by the header strip and the inline
+ *  layout so the kind-colour palette is named in both. */
+function categoryFor(row: Row): KindCategory {
+  return classifyEvent(row.event)
+}
 
 /** Above this many events the list is windowed. */
 const VIRTUAL_THRESHOLD = 1000
@@ -674,11 +721,31 @@ function onArtifactEditedClick(path: string): void {
     @scroll="onScroll"
   >
     <p
-      v-if="rows.length === 0"
+      v-if="rows.length === 0 && iterScopedEvents.length === 0"
       class="timeline__empty"
     >
       No events yet.
     </p>
+
+    <!-- Phase 2 — distinguish "this scope is empty" (above) from
+         "the kinds filter is hiding every event the scope has".
+         The latter is recoverable; the parent owns the chip-row
+         state so the Clear button just emits up and waits. -->
+    <div
+      v-else-if="rows.length === 0"
+      class="timeline__empty timeline__empty--filtered"
+      data-testid="timeline-all-hidden"
+    >
+      <p>All events hidden by filter.</p>
+      <button
+        type="button"
+        class="timeline__empty-clear"
+        data-testid="timeline-clear-kinds"
+        @click="onClearKindsFilter"
+      >
+        Clear filter
+      </button>
+    </div>
 
     <div
       v-if="virtualized"
@@ -718,6 +785,12 @@ function onArtifactEditedClick(path: string): void {
             @keydown.space.prevent="onHeaderClick(row)"
           >
             <span class="timeline__card-seq">#{{ row.event.seq }}</span>
+            <span
+              class="timeline__kind-label"
+              :data-kind="categoryFor(row)"
+              :data-testid="`row-kind-${row.event.seq}`"
+              :title="KIND_LABEL[categoryFor(row)]"
+            >{{ KIND_LABEL[categoryFor(row)] }}</span>
             <span
               class="timeline__card-glyph"
               aria-hidden="true"
@@ -812,7 +885,15 @@ function onArtifactEditedClick(path: string): void {
              keep their existing inline layout — they carry their own
              chrome and gain nothing from the card structure. -->
         <template v-else>
-          <span class="timeline__seq">#{{ row.event.seq }}</span>
+          <span class="timeline__seq-row">
+            <span class="timeline__seq">#{{ row.event.seq }}</span>
+            <span
+              class="timeline__kind-label"
+              :data-kind="categoryFor(row)"
+              :data-testid="`row-kind-${row.event.seq}`"
+              :title="KIND_LABEL[categoryFor(row)]"
+            >{{ KIND_LABEL[categoryFor(row)] }}</span>
+          </span>
           <div class="timeline__row-controls timeline__row-controls--inline">
             <button
               type="button"
@@ -1169,6 +1250,81 @@ function onArtifactEditedClick(path: string): void {
 .timeline__empty {
   color: var(--color-text-dim);
   margin: 0;
+}
+
+.timeline__empty--filtered {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px dashed var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface);
+}
+
+.timeline__empty--filtered p {
+  margin: 0;
+  font-size: 0.9em;
+}
+
+.timeline__empty-clear {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  color: var(--color-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.82em;
+  padding: 0.3em 0.7em;
+}
+
+.timeline__empty-clear:hover,
+.timeline__empty-clear:focus-visible {
+  background: var(--color-surface-hover);
+  outline: none;
+}
+
+/* Phase 2 — small category label rendered next to #seq in both the
+   card header and the inline-row layout. Uses the same kind-colour
+   tokens as the card border + chip dot so the row, the chip, and the
+   label are all visibly the same thing. Background is a soft tint so
+   it reads as a label, not a button. */
+.timeline__kind-label {
+  display: inline-block;
+  font-size: 0.65em;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  padding: 0.15em 0.45em;
+  border-radius: 3px;
+  border: 1px solid var(--color-row-other-border);
+  background: var(--color-row-other-bg);
+  color: var(--color-text);
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.timeline__kind-label[data-kind='assistant'] {
+  border-color: var(--color-row-assistant-border);
+  background: var(--color-row-assistant-bg);
+}
+.timeline__kind-label[data-kind='thinking'] {
+  border-color: var(--color-row-thinking-border);
+  background: var(--color-row-thinking-bg);
+}
+.timeline__kind-label[data-kind='tool'] {
+  border-color: var(--color-row-tool-border);
+  background: var(--color-row-tool-bg);
+}
+.timeline__kind-label[data-kind='signal'] {
+  border-color: var(--color-row-signal-border);
+  background: var(--color-row-signal-bg);
+}
+
+.timeline__seq-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
 }
 
 .timeline__list {

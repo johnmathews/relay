@@ -1,19 +1,71 @@
 <script setup lang="ts">
 // Right-pane body when selection.kind === 'iter'. Thin wrapper around
 // TimelinePane scoped to one iter seq via its existing
-// selected-iter-seq prop.
+// selected-iter-seq prop. Renders the Phase-2 EventKindFilter chip
+// row scoped to THIS iter's events (so the chip counts reflect the
+// iter the user is looking at, not the whole run).
 
+import { computed } from 'vue'
+import EventKindFilter from '@/components/runs/EventKindFilter.vue'
 import TimelinePane from '@/components/runs/TimelinePane.vue'
 import type { StreamEvent, PendingTurn } from '@/stores/events'
 import type { Iter } from '@/lib/queries'
+import { classifyEvent, type KindCategory } from '@/lib/eventKinds'
 
-defineProps<{
+const props = defineProps<{
   runId: string
   iterSeq: number
   iters: ReadonlyArray<Iter>
   events: ReadonlyArray<StreamEvent>
   pendingTurns: ReadonlyArray<PendingTurn>
+  kindsFilter: ReadonlySet<KindCategory> | null
 }>()
+
+const emit = defineEmits<{
+  (e: 'update:kindsFilter', value: ReadonlySet<KindCategory> | null): void
+}>()
+
+/**
+ * Per-category counts scoped to THIS iter. Re-runs the same boundary
+ * walk TimelinePane uses internally so the chip counts match the
+ * visible-without-filter row count exactly. Folding tool_use_*
+ * pairs into "one card each" is the same heuristic as OverviewPanel.
+ */
+const counts = computed<Record<KindCategory, number>>(() => {
+  const acc: Record<KindCategory, number> = {
+    assistant: 0,
+    thinking: 0,
+    tool: 0,
+    signal: 0,
+    other: 0,
+  }
+  let openIter: number | null = null
+  for (const ev of props.events) {
+    const evSeq =
+      typeof ev.payload.seq === 'number' ? ev.payload.seq : null
+    let belongs: boolean
+    if (ev.kind === 'iter_started') {
+      belongs = evSeq === props.iterSeq
+      openIter = evSeq
+    } else if (ev.kind === 'iter_ended') {
+      belongs = evSeq === props.iterSeq || openIter === props.iterSeq
+      openIter = null
+    } else {
+      belongs = openIter === props.iterSeq
+    }
+    if (belongs) acc[classifyEvent(ev)] += 1
+  }
+  acc.tool = Math.ceil(acc.tool / 2)
+  return acc
+})
+
+function onUpdate(value: ReadonlySet<KindCategory> | null): void {
+  emit('update:kindsFilter', value)
+}
+
+function onClear(): void {
+  emit('update:kindsFilter', null)
+}
 </script>
 
 <template>
@@ -27,15 +79,18 @@ defineProps<{
       </h2>
     </header>
 
-    <!-- Casts: TimelinePane's props are declared as mutable arrays
-         (events: StreamEvent[]) but the events store yields ReadonlyArray.
-         The cast is template-only — we never mutate. Phase 2 will widen
-         TimelinePane's prop types to ReadonlyArray and the cast will go. -->
+    <EventKindFilter
+      :model-value="kindsFilter"
+      :counts="counts"
+      @update:model-value="onUpdate"
+    />
     <TimelinePane
-      :events="(events as StreamEvent[])"
+      :events="events"
       :selected-iter-seq="iterSeq"
-      :pending-turns="(pendingTurns as PendingTurn[])"
+      :pending-turns="pendingTurns"
       :run-id="runId"
+      :kinds-filter="kindsFilter"
+      @clear-kinds-filter="onClear"
     />
   </div>
 </template>
@@ -44,7 +99,7 @@ defineProps<{
 .iter-timeline-panel {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 0.6rem;
 }
 
 .iter-timeline-panel__heading {
