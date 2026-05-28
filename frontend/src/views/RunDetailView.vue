@@ -74,7 +74,7 @@ const currentView = computed<RunView>(() => {
   if (urlView.value != null) return urlView.value
   const d = detail.value
   if (d == null) return { kind: 'overview' }
-  return smartDefault({ status: d.status, iters: d.iters })
+  return smartDefault({ status: d.status, iters: d.iters ?? [] })
 })
 
 /**
@@ -93,7 +93,7 @@ watch(
       return
     }
     viewBootstrapped = true
-    const v = smartDefault({ status: d.status, iters: d.iters })
+    const v = smartDefault({ status: d.status, iters: d.iters ?? [] })
     void router.replace({
       query: { ...route.query, view: serializeView(v) },
     })
@@ -257,12 +257,12 @@ onBeforeUnmount(() => {
           <RunSidebar
             :run-id="detail.id"
             :selection="currentView"
-            :iters="detail.iters"
+            :iters="detail.iters ?? []"
             :children="children"
             @update:view="onSelectView"
           />
           <RunRightPane
-            :detail="detail"
+            :detail="{ ...detail, iters: detail.iters ?? [] }"
             :selection="currentView"
             :events="eventList"
             :pending-turns="pendingTurns"

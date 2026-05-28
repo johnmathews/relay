@@ -11,11 +11,14 @@ export type RunView =
   | { kind: 'iter'; seq: number }
   | { kind: 'artifact'; path: string }
 
-type QueryShape = Record<string, string | string[] | null | undefined>
+type QueryShape = Record<string, string | string[] | null | undefined | (string | null)[]>
 
-function firstOf(v: string | string[] | null | undefined): string | null {
+function firstOf(v: string | string[] | null | undefined | (string | null)[]): string | null {
   if (v == null) return null
-  if (Array.isArray(v)) return v[0] ?? null
+  if (Array.isArray(v)) {
+    const first = v[0]
+    return first ?? null
+  }
   return v
 }
 

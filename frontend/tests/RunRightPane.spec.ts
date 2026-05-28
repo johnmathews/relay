@@ -12,6 +12,7 @@ vi.mock('@/api/client', () => ({
 }))
 
 import RunRightPane from '../src/components/runs/layout/RunRightPane.vue'
+import type { Iter } from '../src/lib/queries'
 
 const baseDetail = {
   id: 'run-1',
@@ -22,7 +23,7 @@ const baseDetail = {
   prompt_id: 7,
   prompt_body: 'do the thing',
   parent_run_id: null,
-  iters: [{ seq: 1, phase: 'planning', signal_kind: null, signal_args: null, exit_reason: null }],
+  iters: [{ seq: 1, phase: 'planning', signal_kind: null, signal_args: null, exit_reason: null }] as unknown as Iter[],
 }
 
 function makeRouter(): ReturnType<typeof createRouter> {

@@ -9,7 +9,7 @@ import OverviewPanel from './OverviewPanel.vue'
 import IterTimelinePanel from './IterTimelinePanel.vue'
 import ArtifactPanel from './ArtifactPanel.vue'
 import type { RunView } from '@/lib/runView'
-import type { HeartbeatSnapshot } from '@/stores/events'
+import type { HeartbeatSnapshot, StreamEvent, PendingTurn } from '@/stores/events'
 import type { Iter } from '@/lib/queries'
 
 interface RunDetail {
@@ -27,8 +27,8 @@ interface RunDetail {
 const props = defineProps<{
   detail: RunDetail
   selection: RunView
-  events: ReadonlyArray<unknown>
-  pendingTurns: ReadonlyArray<unknown>
+  events: ReadonlyArray<StreamEvent>
+  pendingTurns: ReadonlyArray<PendingTurn>
   lastHeartbeat: HeartbeatSnapshot | null
   childCount: number
   cancelLabel: string
