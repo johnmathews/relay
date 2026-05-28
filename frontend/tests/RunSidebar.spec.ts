@@ -1,9 +1,20 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import { createRouter, createMemoryHistory } from 'vue-router'
+import { PiniaColada } from '@pinia/colada'
+import { flushPromises } from '@vue/test-utils'
 import RunSidebar from '../src/components/runs/layout/RunSidebar.vue'
 import type { RunView } from '../src/lib/runView'
+
+// Mock the api client so runArtifactSource's listing query is observable.
+const GET = vi.fn()
+vi.mock('@/api/client', () => ({
+  api: {
+    GET: (...a: unknown[]) => GET(...a),
+    POST: vi.fn(),
+  },
+}))
 
 function makeRouter(): ReturnType<typeof createRouter> {
   return createRouter({
@@ -114,5 +125,89 @@ describe('RunSidebar', () => {
       iters: [{ seq: 1, phase: 'planning' }],
     })
     expect(w.get('[data-testid="sidebar-overview"]').attributes('aria-current')).toBeUndefined()
+  })
+})
+
+function ok<T>(data: T): { data: T; error: undefined; response: Response } {
+  return { data, error: undefined, response: new Response(null, { status: 200 }) }
+}
+
+function err(status: number, detail = 'not found'): { data: undefined; error: { detail: string }; response: Response } {
+  return {
+    data: undefined,
+    error: { detail },
+    response: new Response(null, { status }),
+  }
+}
+
+function mountWithColada(props: {
+  selection: RunView
+  iters?: Array<{ seq: number; phase: string }>
+  children?: Array<{ id: string; status: string }>
+  runId?: string
+}): ReturnType<typeof mount> {
+  return mount(RunSidebar, {
+    props: {
+      runId: props.runId ?? 'run-1',
+      selection: props.selection,
+      iters: props.iters ?? [],
+      children: props.children ?? [],
+    },
+    global: {
+      plugins: [createPinia(), PiniaColada, makeRouter()],
+    },
+  })
+}
+
+describe('RunSidebar — Artifacts section', () => {
+  beforeEach(() => { GET.mockReset() })
+
+  it('hides the Artifacts section while listing 404s ("no artifacts yet")', async () => {
+    GET.mockImplementation((path: string) => {
+      if (path.includes('/artifacts')) return Promise.resolve(err(404))
+      return Promise.resolve(ok([]))
+    })
+    const w = mountWithColada({ selection: { kind: 'overview' } })
+    await flushPromises()
+    expect(
+      w.find('[data-testid="sidebar-artifacts-section"]').exists(),
+    ).toBe(false)
+  })
+
+  it('renders the Artifacts section when listing succeeds', async () => {
+    GET.mockImplementation((path: string) => {
+      if (path.includes('/artifacts')) {
+        return Promise.resolve(
+          ok([
+            { name: 'evaluation-report.md', kind: 'file', size: 100 },
+            { name: 'improvement-plan.md', kind: 'file', size: 200 },
+          ]),
+        )
+      }
+      return Promise.resolve(ok([]))
+    })
+    const w = mountWithColada({ selection: { kind: 'overview' } })
+    await flushPromises()
+    expect(
+      w.find('[data-testid="sidebar-artifacts-section"]').exists(),
+    ).toBe(true)
+  })
+
+  it('emits update:view with { kind: artifact, path } on file select', async () => {
+    GET.mockImplementation((path: string) => {
+      if (path.includes('/artifacts')) {
+        return Promise.resolve(
+          ok([{ name: 'plan.md', kind: 'file', size: 100 }]),
+        )
+      }
+      return Promise.resolve(ok([]))
+    })
+    const w = mountWithColada({ selection: { kind: 'overview' } })
+    await flushPromises()
+    // FileTree emits `select` with the path string.
+    await w.findComponent({ name: 'FileTree' }).vm.$emit('select', 'plan.md')
+    expect(w.emitted('update:view')).toEqual([
+      [{ kind: 'artifact', path: 'plan.md' }],
+    ])
   })
 })

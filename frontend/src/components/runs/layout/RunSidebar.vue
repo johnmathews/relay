@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import StatusBadge from '@/components/shared/StatusBadge.vue'
+import FileTree from '@/components/files/FileTree.vue'
+import { runArtifactSource, ApiError } from '@/lib/queries'
 import type { RunView } from '@/lib/runView'
 
 interface IterRow {
@@ -36,6 +38,21 @@ function selectOverview(): void {
 
 function selectIter(seq: number): void {
   emit('update:view', { kind: 'iter', seq })
+}
+
+const artifactSource = computed(() => runArtifactSource(props.runId))
+const artifactRoot = artifactSource.value.useListing(() => '')
+const artifactsMissing = computed(
+  () =>
+    artifactRoot.error.value instanceof ApiError &&
+    artifactRoot.error.value.status === 404,
+)
+const artifactsLoaded = computed(
+  () => !artifactsMissing.value && artifactRoot.data.value != null,
+)
+
+function onArtifactSelect(path: string): void {
+  emit('update:view', { kind: 'artifact', path })
 }
 </script>
 
@@ -82,6 +99,26 @@ function selectIter(seq: number): void {
         <span class="run-sidebar__row-seq">#{{ iter.seq }}</span>
         <span class="run-sidebar__row-label">{{ iter.phase ?? '—' }}</span>
       </button>
+    </section>
+
+    <section
+      v-if="artifactsLoaded"
+      role="group"
+      aria-labelledby="sidebar-artifacts-heading"
+      class="run-sidebar__section"
+      data-testid="sidebar-artifacts-section"
+    >
+      <h3
+        id="sidebar-artifacts-heading"
+        class="run-sidebar__heading"
+      >
+        Artifacts
+      </h3>
+      <FileTree
+        :source="artifactSource"
+        aria-label="Run artifacts"
+        @select="onArtifactSelect"
+      />
     </section>
 
     <section
@@ -187,5 +224,9 @@ function selectIter(seq: number): void {
 
 .run-sidebar__row--overview {
   font-weight: 600;
+}
+
+.run-sidebar__section :deep(.file-tree) {
+  font-size: 0.85em;
 }
 </style>
