@@ -18,7 +18,7 @@
 // Layout: two-column grid — RunSidebar (left rail) + RunRightPane
 // (right body). View selection is URL-reflected via ?view=.
 
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AsyncBoundary from '@/components/shared/AsyncBoundary.vue'
 import RunSidebar from '@/components/runs/layout/RunSidebar.vue'
@@ -228,6 +228,140 @@ function toggleFollowLive(): void {
   })
 }
 
+/**
+ * Keyboard navigation (proposal §"Keyboard navigation"). Shipped subset:
+ *   - `j` / `↓`   → next rail row (Overview → iter:1 → … → iter:N)
+ *   - `k` / `↑`   → previous rail row
+ *   - `g o`       → jump to Overview
+ *   - `g i`       → jump to first iter
+ *   - `f`         → toggle Follow-live pin (no-op on terminal)
+ *   - `Esc`       → blur active element
+ *   - `c`         → focus the Cancel button (does NOT trigger)
+ *
+ * Deferred (artifact-tree walking + chip-row focus are extra surface):
+ *   `g a` (jump to first artifact), `h` / `l` (rail/pane focus),
+ *   `/` (focus chip row).
+ *
+ * All shortcuts no-op when focus is inside a text input / textarea /
+ * select / contenteditable, or when a modifier key is held. We write
+ * the listener directly instead of pulling in @vueuse/core — the chord
+ * state machine + focus guard would still be ours either way.
+ */
+const selectableViews = computed<RunView[]>(() => {
+  const xs: RunView[] = [{ kind: 'overview' }]
+  for (const it of iters.value) xs.push({ kind: 'iter', seq: it.seq })
+  return xs
+})
+
+function viewsEq(a: RunView, b: RunView): boolean {
+  if (a.kind !== b.kind) return false
+  if (a.kind === 'iter' && b.kind === 'iter') return a.seq === b.seq
+  if (a.kind === 'artifact' && b.kind === 'artifact') return a.path === b.path
+  return a.kind === 'overview'
+}
+
+function moveSelection(delta: number): void {
+  const xs = selectableViews.value
+  if (xs.length === 0) return
+  const cur = currentView.value
+  let idx = xs.findIndex((v) => viewsEq(v, cur))
+  // Current view isn't in the rail's selectable list (e.g. an artifact
+  // path) — entering from "outside" lands on the first / last row.
+  if (idx < 0) idx = delta > 0 ? -1 : xs.length
+  const next = Math.min(xs.length - 1, Math.max(0, idx + delta))
+  onSelectView(xs[next]!)
+}
+
+let chordPending = false
+let chordTimer: ReturnType<typeof setTimeout> | null = null
+const CHORD_TIMEOUT_MS = 800
+
+function clearChord(): void {
+  chordPending = false
+  if (chordTimer != null) clearTimeout(chordTimer)
+  chordTimer = null
+}
+
+function armChord(): void {
+  chordPending = true
+  if (chordTimer != null) clearTimeout(chordTimer)
+  chordTimer = setTimeout(clearChord, CHORD_TIMEOUT_MS)
+}
+
+function isEditableTarget(t: EventTarget | null): boolean {
+  if (!(t instanceof HTMLElement)) return false
+  if (t.isContentEditable) return true
+  const tag = t.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+}
+
+function onKeyDown(e: KeyboardEvent): void {
+  if (e.defaultPrevented) return
+  if (e.metaKey || e.ctrlKey || e.altKey) return
+  if (isEditableTarget(e.target)) return
+
+  if (chordPending) {
+    if (e.key === 'o') {
+      onSelectView({ kind: 'overview' })
+      clearChord()
+      e.preventDefault()
+      return
+    }
+    if (e.key === 'i') {
+      const first = iters.value[0]
+      if (first != null) onSelectView({ kind: 'iter', seq: first.seq })
+      clearChord()
+      e.preventDefault()
+      return
+    }
+    clearChord()
+    // Fall through — the keypress that didn't complete the chord is
+    // still eligible as a single-key shortcut.
+  }
+
+  switch (e.key) {
+    case 'j':
+    case 'ArrowDown':
+      moveSelection(1)
+      e.preventDefault()
+      return
+    case 'k':
+    case 'ArrowUp':
+      moveSelection(-1)
+      e.preventDefault()
+      return
+    case 'g':
+      armChord()
+      e.preventDefault()
+      return
+    case 'f':
+      if (isLive.value) {
+        toggleFollowLive()
+        e.preventDefault()
+      }
+      return
+    case 'Escape':
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur()
+      }
+      return
+    case 'c': {
+      const btn = document.querySelector<HTMLElement>(
+        '[data-testid="cancel-run"]',
+      )
+      if (btn != null) {
+        btn.focus()
+        e.preventDefault()
+      }
+      return
+    }
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', onKeyDown)
+})
+
 // Local view-scoped terminal check that governs whether the live SSE
 // stream is force-closed after a status refetch (see onLifecycle / onCancel
 // below). MUST mirror `stores/events.ts::TERMINAL_STATUSES` — `paused` and
@@ -337,6 +471,8 @@ const lastHeartbeat = computed(() => eventsStore.lastHeartbeat)
 const pendingTurns = computed(() => eventsStore.pendingTurns)
 
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeyDown)
+  clearChord()
   eventsStore.reset()
   currentRun.reset()
 })

@@ -756,6 +756,248 @@ describe('RunDetailView — follow-live pin', () => {
   })
 })
 
+describe('RunDetailView — keyboard navigation', () => {
+  beforeEach(() => {
+    GET.mockReset()
+    POST.mockReset()
+  })
+
+  function press(key: string): void {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }))
+  }
+
+  function mockRunWith(
+    overrides: Record<string, unknown> = {},
+  ): void {
+    GET.mockImplementation((path: string) => {
+      if (path === '/api/runs/{run_id}') {
+        return Promise.resolve(ok(makeDetail(overrides)))
+      }
+      if (path === '/api/runs/{run_id}/children') {
+        return Promise.resolve(ok([]))
+      }
+      return Promise.resolve(ok([]))
+    })
+  }
+
+  async function mountAt(
+    path: string,
+    overrides: Record<string, unknown> = {},
+    opts: { attach?: boolean } = {},
+  ): Promise<{ w: ReturnType<typeof mount>; router: Awaited<ReturnType<typeof makeRouter>> }> {
+    const router = await makeRouter(path)
+    mockRunWith(overrides)
+    const w = mount(RunDetailView, {
+      props: { id: 'run-1' },
+      attachTo: opts.attach === true ? document.body : undefined,
+      global: {
+        plugins: [createPinia(), PiniaColada, router],
+        stubs: DEFAULT_STUBS,
+      },
+    })
+    await flushPromises()
+    return { w, router }
+  }
+
+  const ITERS_3 = [1, 2, 3].map((seq) => ({
+    seq,
+    phase: 'planning',
+    signal_kind: null,
+    signal_args: null,
+  }))
+
+  it('j moves selection down through Overview → iter:1 → iter:2 → iter:3', async () => {
+    const { router } = await mountAt('/runs/run-1?view=overview', {
+      status: 'done',
+      iters: ITERS_3,
+    })
+
+    press('j')
+    await flushPromises()
+    expect(router.currentRoute.value.query.view).toBe('iter:1')
+
+    press('j')
+    await flushPromises()
+    expect(router.currentRoute.value.query.view).toBe('iter:2')
+
+    press('j')
+    await flushPromises()
+    expect(router.currentRoute.value.query.view).toBe('iter:3')
+
+    // Bottom: stays put.
+    press('j')
+    await flushPromises()
+    expect(router.currentRoute.value.query.view).toBe('iter:3')
+  })
+
+  it('k moves selection up; ArrowUp / ArrowDown match j / k', async () => {
+    const { router } = await mountAt('/runs/run-1?view=iter:3', {
+      status: 'done',
+      iters: ITERS_3,
+    })
+
+    press('ArrowUp')
+    await flushPromises()
+    expect(router.currentRoute.value.query.view).toBe('iter:2')
+
+    press('k')
+    await flushPromises()
+    expect(router.currentRoute.value.query.view).toBe('iter:1')
+
+    press('k')
+    await flushPromises()
+    expect(router.currentRoute.value.query.view).toBe('overview')
+
+    // Top: stays put.
+    press('k')
+    await flushPromises()
+    expect(router.currentRoute.value.query.view).toBe('overview')
+  })
+
+  it('g o jumps to Overview; g i jumps to the first iter', async () => {
+    const { router } = await mountAt('/runs/run-1?view=iter:3', {
+      status: 'done',
+      iters: ITERS_3,
+    })
+
+    press('g')
+    press('o')
+    await flushPromises()
+    expect(router.currentRoute.value.query.view).toBe('overview')
+
+    press('g')
+    press('i')
+    await flushPromises()
+    expect(router.currentRoute.value.query.view).toBe('iter:1')
+  })
+
+  it('an unrecognised key after g cancels the chord without applying it', async () => {
+    const { router } = await mountAt('/runs/run-1?view=overview', {
+      status: 'done',
+      iters: ITERS_3,
+    })
+
+    press('g')
+    press('z') // unrecognised — chord clears
+    await flushPromises()
+    expect(router.currentRoute.value.query.view).toBe('overview')
+
+    // The next `o` alone is also a no-op (no chord armed).
+    press('o')
+    await flushPromises()
+    expect(router.currentRoute.value.query.view).toBe('overview')
+  })
+
+  it('f toggles follow-live on a live run; no-op on terminal', async () => {
+    const { w, router } = await mountAt('/runs/run-1', {
+      status: 'running',
+      iters: [1, 2].map((seq) => ({
+        seq,
+        phase: 'planning',
+        signal_kind: null,
+        signal_args: null,
+      })),
+    })
+
+    // Pin auto-engaged (smart-default picked iter:2). f toggles off.
+    expect(
+      w.get('[data-testid="follow-live-pin"]').attributes('aria-pressed'),
+    ).toBe('true')
+    press('f')
+    await flushPromises()
+    expect(
+      w.get('[data-testid="follow-live-pin"]').attributes('aria-pressed'),
+    ).toBe('false')
+    // f again re-engages and jumps to latest (already at iter:2 so URL unchanged).
+    press('f')
+    await flushPromises()
+    expect(
+      w.get('[data-testid="follow-live-pin"]').attributes('aria-pressed'),
+    ).toBe('true')
+    expect(router.currentRoute.value.query.view).toBe('iter:2')
+
+    // Terminal: pin not rendered, f is a no-op.
+    const { w: w2 } = await mountAt('/runs/run-2?view=overview', {
+      status: 'done',
+    })
+    expect(w2.find('[data-testid="follow-live-pin"]').exists()).toBe(false)
+    press('f')
+    await flushPromises()
+    // No throw, no router change.
+    expect(w2.find('[data-testid="follow-live-pin"]').exists()).toBe(false)
+  })
+
+  it('c focuses the Cancel button on a cancellable run', async () => {
+    const { w } = await mountAt(
+      '/runs/run-1?view=overview',
+      { status: 'running' },
+      { attach: true },
+    )
+
+    press('c')
+    await flushPromises()
+    const cancel = w.get('[data-testid="cancel-run"]')
+    expect(document.activeElement).toBe(cancel.element)
+    w.unmount()
+  })
+
+  it('shortcuts are no-op while focus is in an input / textarea', async () => {
+    const { router } = await mountAt('/runs/run-1?view=overview', {
+      status: 'done',
+      iters: ITERS_3,
+    })
+
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    input.focus()
+    expect(document.activeElement).toBe(input)
+
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'j', bubbles: true }),
+    )
+    await flushPromises()
+    expect(router.currentRoute.value.query.view).toBe('overview')
+
+    document.body.removeChild(input)
+  })
+
+  it('shortcuts are no-op when a modifier (cmd / ctrl / alt) is held', async () => {
+    const { router } = await mountAt('/runs/run-1?view=overview', {
+      status: 'done',
+      iters: ITERS_3,
+    })
+
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'j', metaKey: true, bubbles: true }),
+    )
+    await flushPromises()
+    expect(router.currentRoute.value.query.view).toBe('overview')
+
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'j', ctrlKey: true, bubbles: true }),
+    )
+    await flushPromises()
+    expect(router.currentRoute.value.query.view).toBe('overview')
+  })
+
+  it('Esc blurs the active rail button', async () => {
+    const { w } = await mountAt(
+      '/runs/run-1?view=overview',
+      { status: 'running', iters: ITERS_3 },
+      { attach: true },
+    )
+
+    const row = w.get('[data-testid="sidebar-iter-2"]').element as HTMLElement
+    row.focus()
+    expect(document.activeElement).toBe(row)
+
+    press('Escape')
+    await flushPromises()
+    expect(document.activeElement).not.toBe(row)
+    w.unmount()
+  })
+})
+
 describe('RunDetailView — chip-row drives expand-by-default (no URL plumbing)', () => {
   beforeEach(() => {
     GET.mockReset()
