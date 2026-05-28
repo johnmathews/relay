@@ -475,11 +475,11 @@ function shortSha(v: unknown): string {
 }
 
 /**
- * 14e: clicking an `artifact_edited` row opens the artifacts pane at
+ * 14e: clicking an `artifact_edited` row opens the artifacts panel at
  * the file's CURRENT on-disk state (deliberately not a historical diff
  * — ADR-40 §B1 does not preserve before-content; the row reads the
  * artifact as it exists right now). We mutate the shared file-browser
- * Pinia store keyed `run:<runId>` so `ArtifactsPane`'s `FileViewer`
+ * Pinia store keyed `run:<runId>` so `RunSidebar`'s artifact section
  * picks up the selection, then scroll the pane into view. No-op if the
  * `runId` prop isn't provided (older call-sites / unit tests).
  */

@@ -108,7 +108,6 @@ function makeChildRow(
 const DEFAULT_STUBS = {
   TimelinePane: true,
   PauseAnswerForm: true,
-  ArtifactsPane: true,
   ChildrenPane: true,
   // FileTree is embedded in RunSidebar's artifacts section; stub it
   // to avoid the listing-query crash when the mock returns [] (no
@@ -153,9 +152,9 @@ async function mountView(
     props: { id: 'run-1' },
     global: {
       plugins: [createPinia(), PiniaColada, testRouter],
-      // ArtifactsPane mounts the shared FileTree (which fires its own
-      // listing query); stub it here — its behaviour is covered by
-      // ArtifactsPane.spec.ts.
+      // FileTree (in RunSidebar) is stubbed to avoid the listing-query
+      // crash when the mock returns [] (no .entries). Sidebar rendering
+      // is covered by RunSidebar.spec.ts.
       // ChildrenPane is stubbed — its internal router-links and
       // useRunChildrenQuery usage are covered by ChildrenPane.spec.ts.
       // ParentRunChip is NOT stubbed so we can assert the rendered <a>

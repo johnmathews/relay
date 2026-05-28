@@ -45,7 +45,6 @@ const artifactSource = computed(() => runArtifactSource(props.runId))
 // runId ever changed in place, artifactRoot would stay stale. Safe
 // here because vue-router unmounts the whole RunDetailView tree on
 // /runs/:id navigation — runId is effectively immutable per mount.
-// Same pattern as ArtifactsPane.vue.
 const artifactRoot = artifactSource.value.useListing(() => '')
 const artifactsMissing = computed(
   () =>
