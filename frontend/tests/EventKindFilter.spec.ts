@@ -1,10 +1,12 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import EventKindFilter from '../src/components/runs/EventKindFilter.vue'
 import {
   KIND_CATEGORIES,
   type KindCategory,
 } from '../src/lib/eventKinds'
+import { useTimelinePrefsStore } from '../src/stores/timelinePrefs'
 
 function fullCounts(
   over: Partial<Record<KindCategory, number>> = {},
@@ -19,10 +21,19 @@ function fullCounts(
   }
 }
 
-describe('EventKindFilter — chip row', () => {
+describe('EventKindFilter — chip row drives expand-by-default', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    try {
+      localStorage.removeItem('relay.timeline.expanded')
+    } catch {
+      // ignore
+    }
+  })
+
   it('renders one chip per category in canonical order', () => {
     const w = mount(EventKindFilter, {
-      props: { modelValue: null, counts: fullCounts() },
+      props: { counts: fullCounts() },
     })
     const chips = w.findAll('[data-testid^="kind-chip-"]')
     expect(chips).toHaveLength(KIND_CATEGORIES.length)
@@ -34,7 +45,6 @@ describe('EventKindFilter — chip row', () => {
   it('shows per-category counts from props', () => {
     const w = mount(EventKindFilter, {
       props: {
-        modelValue: null,
         counts: fullCounts({ tool: 3, assistant: 7 }),
       },
     })
@@ -43,78 +53,60 @@ describe('EventKindFilter — chip row', () => {
     expect(w.get('[data-testid="kind-count-signal"]').text()).toBe('0')
   })
 
-  it('renders all chips as on when modelValue is null', () => {
+  it('starts with every chip off (everything collapsed by default)', () => {
     const w = mount(EventKindFilter, {
-      props: { modelValue: null, counts: fullCounts() },
+      props: { counts: fullCounts() },
     })
     for (const k of KIND_CATEGORIES) {
       const chip = w.get(`[data-testid="kind-chip-${k}"]`)
-      expect(chip.attributes('aria-pressed')).toBe('true')
-      expect(chip.classes()).not.toContain('is-off')
+      expect(chip.attributes('aria-pressed')).toBe('false')
+      expect(chip.classes()).not.toContain('is-on')
     }
   })
 
-  it('first chip click emits a 4-element subset (the unclicked categories)', async () => {
+  it('clicking a chip flips that category in the timelinePrefs store', async () => {
+    const prefs = useTimelinePrefsStore()
     const w = mount(EventKindFilter, {
-      props: { modelValue: null, counts: fullCounts() },
+      props: { counts: fullCounts() },
     })
+    expect(prefs.isExpandedByDefault('tool')).toBe(false)
     await w.get('[data-testid="kind-chip-tool"]').trigger('click')
-    const emitted = w.emitted('update:modelValue')
-    expect(emitted).toBeTruthy()
-    const payload = emitted![0]![0] as ReadonlySet<KindCategory> | null
-    expect(payload).not.toBeNull()
-    expect(payload!.has('tool')).toBe(false)
-    expect(payload!.size).toBe(KIND_CATEGORIES.length - 1)
+    expect(prefs.isExpandedByDefault('tool')).toBe(true)
+    const chip = w.get('[data-testid="kind-chip-tool"]')
+    expect(chip.attributes('aria-pressed')).toBe('true')
+    expect(chip.classes()).toContain('is-on')
   })
 
-  it('clicking the last hidden chip on emits null (URL drops the param)', async () => {
-    const onlyTool = new Set<KindCategory>(['tool'])
+  it('the Other chip bridges to the `generic` row type', async () => {
+    // `other` (KindCategory) ↔ `generic` (TimelineRowType) — the prefs
+    // store predates the chip vocabulary; this bridge is asserted so a
+    // future rename can't break it silently.
+    const prefs = useTimelinePrefsStore()
     const w = mount(EventKindFilter, {
-      props: {
-        modelValue: new Set<KindCategory>(
-          KIND_CATEGORIES.filter((k) => !onlyTool.has(k)),
-        ),
-        counts: fullCounts(),
-      },
+      props: { counts: fullCounts() },
     })
-    // Click `tool` (currently off) → set becomes complete → null emit.
-    await w.get('[data-testid="kind-chip-tool"]').trigger('click')
-    const emitted = w.emitted('update:modelValue')
-    expect(emitted).toBeTruthy()
-    expect(emitted![0]![0]).toBeNull()
+    expect(prefs.isExpandedByDefault('generic')).toBe(false)
+    await w.get('[data-testid="kind-chip-other"]').trigger('click')
+    expect(prefs.isExpandedByDefault('generic')).toBe(true)
   })
 
-  it('renders off-state visually + via aria-pressed when a chip is hidden', () => {
+  it('shows a Reset button only when at least one chip is on', async () => {
+    const prefs = useTimelinePrefsStore()
     const w = mount(EventKindFilter, {
-      props: {
-        modelValue: new Set<KindCategory>(['assistant', 'thinking', 'signal', 'other']),
-        counts: fullCounts(),
-      },
+      props: { counts: fullCounts() },
     })
-    const tool = w.get('[data-testid="kind-chip-tool"]')
-    expect(tool.attributes('aria-pressed')).toBe('false')
-    expect(tool.classes()).toContain('is-off')
-  })
+    expect(w.find('[data-testid="kind-filter-reset"]').exists()).toBe(false)
 
-  it('renders a Clear button only when a filter is active', async () => {
-    const w = mount(EventKindFilter, {
-      props: { modelValue: null, counts: fullCounts() },
-    })
-    expect(w.find('[data-testid="kind-filter-clear"]').exists()).toBe(false)
-
-    await w.setProps({
-      modelValue: new Set<KindCategory>(['tool']),
-      counts: fullCounts(),
-    })
-    expect(w.find('[data-testid="kind-filter-clear"]').exists()).toBe(true)
-    await w.get('[data-testid="kind-filter-clear"]').trigger('click')
-    const emitted = w.emitted('update:modelValue')
-    expect(emitted![emitted!.length - 1]![0]).toBeNull()
+    prefs.toggle('tool')
+    await w.vm.$nextTick()
+    expect(w.find('[data-testid="kind-filter-reset"]').exists()).toBe(true)
+    await w.get('[data-testid="kind-filter-reset"]').trigger('click')
+    expect(prefs.isExpandedByDefault('tool')).toBe(false)
   })
 
   it('exposes role="toolbar" for assistive tech', () => {
     const w = mount(EventKindFilter, {
-      props: { modelValue: null, counts: fullCounts() },
+      props: { counts: fullCounts() },
     })
     expect(w.get('[data-testid="event-kind-filter"]').attributes('role')).toBe(
       'toolbar',

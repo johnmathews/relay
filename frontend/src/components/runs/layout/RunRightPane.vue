@@ -5,14 +5,12 @@ import RunHealthBadge from '@/components/runs/RunHealthBadge.vue'
 import ParentRunChip from '@/components/shared/ParentRunChip.vue'
 import ActionButton from '@/components/shared/ActionButton.vue'
 import PauseAnswerForm from '@/components/runs/PauseAnswerForm.vue'
-import TimelineDisplayMenu from '@/components/runs/TimelineDisplayMenu.vue'
 import OverviewPanel from './OverviewPanel.vue'
 import IterTimelinePanel from './IterTimelinePanel.vue'
 import ArtifactPanel from './ArtifactPanel.vue'
 import type { RunView } from '@/lib/runView'
 import type { HeartbeatSnapshot, StreamEvent, PendingTurn } from '@/stores/events'
 import type { Iter } from '@/lib/queries'
-import type { KindCategory } from '@/lib/eventKinds'
 
 interface RunDetail {
   id: string
@@ -37,18 +35,12 @@ const props = defineProps<{
   cancelling: boolean
   pauseQuestion: string
   pauseReviewPaths: ReadonlyArray<string>
-  kindsFilter: ReadonlySet<KindCategory> | null
 }>()
 
 const emit = defineEmits<{
   (e: 'cancel'): void
   (e: 'resumed'): void
-  (e: 'update:kindsFilter', value: ReadonlySet<KindCategory> | null): void
 }>()
-
-function onKindsFilterUpdate(value: ReadonlySet<KindCategory> | null): void {
-  emit('update:kindsFilter', value)
-}
 
 const iterCount = computed(() => props.detail.iters.length)
 const currentPhase = computed(() => {
@@ -209,16 +201,17 @@ const showFailure = computed(
         </div>
       </dl>
 
-      <div class="right-pane__actions">
+      <div
+        v-if="isCancellable"
+        class="right-pane__actions"
+      >
         <ActionButton
-          v-if="isCancellable"
           :loading="cancelling"
           data-testid="cancel-run"
           @click="onCancel"
         >
           {{ cancelLabel }}
         </ActionButton>
-        <TimelineDisplayMenu />
       </div>
 
       <aside
@@ -271,8 +264,6 @@ const showFailure = computed(
         :prompt-body="detail.prompt_body"
         :events="events"
         :pending-turns="pendingTurns"
-        :kinds-filter="kindsFilter"
-        @update:kinds-filter="onKindsFilterUpdate"
       />
       <IterTimelinePanel
         v-else-if="selection.kind === 'iter'"
@@ -281,8 +272,6 @@ const showFailure = computed(
         :iters="detail.iters"
         :events="events"
         :pending-turns="pendingTurns"
-        :kinds-filter="kindsFilter"
-        @update:kinds-filter="onKindsFilterUpdate"
       />
       <ArtifactPanel
         v-else-if="selection.kind === 'artifact'"

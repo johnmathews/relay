@@ -1,9 +1,8 @@
 <script setup lang="ts">
-// Right-pane body when selection.kind === 'iter'. Thin wrapper around
-// TimelinePane scoped to one iter seq via its existing
-// selected-iter-seq prop. Renders the Phase-2 EventKindFilter chip
-// row scoped to THIS iter's events (so the chip counts reflect the
-// iter the user is looking at, not the whole run).
+// Right-pane body when selection.kind === 'iter'. TimelinePane scoped
+// to one iter via its existing selected-iter-seq prop, with the
+// EventKindFilter chip row above it. The chip row controls per-type
+// expand-by-default (NOT visibility — every step is always rendered).
 
 import { computed } from 'vue'
 import EventKindFilter from '@/components/runs/EventKindFilter.vue'
@@ -18,18 +17,13 @@ const props = defineProps<{
   iters: ReadonlyArray<Iter>
   events: ReadonlyArray<StreamEvent>
   pendingTurns: ReadonlyArray<PendingTurn>
-  kindsFilter: ReadonlySet<KindCategory> | null
-}>()
-
-const emit = defineEmits<{
-  (e: 'update:kindsFilter', value: ReadonlySet<KindCategory> | null): void
 }>()
 
 /**
  * Per-category counts scoped to THIS iter. Re-runs the same boundary
  * walk TimelinePane uses internally so the chip counts match the
- * visible-without-filter row count exactly. Folding tool_use_*
- * pairs into "one card each" is the same heuristic as OverviewPanel.
+ * visible row count exactly. Folding tool_use_* pairs into "one card
+ * each" is the same heuristic as OverviewPanel.
  */
 const counts = computed<Record<KindCategory, number>>(() => {
   const acc: Record<KindCategory, number> = {
@@ -58,14 +52,6 @@ const counts = computed<Record<KindCategory, number>>(() => {
   acc.tool = Math.ceil(acc.tool / 2)
   return acc
 })
-
-function onUpdate(value: ReadonlySet<KindCategory> | null): void {
-  emit('update:kindsFilter', value)
-}
-
-function onClear(): void {
-  emit('update:kindsFilter', null)
-}
 </script>
 
 <template>
@@ -79,18 +65,12 @@ function onClear(): void {
       </h2>
     </header>
 
-    <EventKindFilter
-      :model-value="kindsFilter"
-      :counts="counts"
-      @update:model-value="onUpdate"
-    />
+    <EventKindFilter :counts="counts" />
     <TimelinePane
       :events="events"
       :selected-iter-seq="iterSeq"
       :pending-turns="pendingTurns"
       :run-id="runId"
-      :kinds-filter="kindsFilter"
-      @clear-kinds-filter="onClear"
     />
   </div>
 </template>

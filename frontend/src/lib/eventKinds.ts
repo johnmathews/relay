@@ -1,8 +1,7 @@
 /**
- * Event-kind categories surfaced by `EventKindFilter` (Phase 2 of the
- * run-detail layout proposal). Each relay event kind maps to one of
- * five categories so the timeline filter is a small, scannable chip
- * row rather than 11+ raw-kind toggles.
+ * Event-kind categories surfaced by `EventKindFilter`. Each relay
+ * event kind maps to one of five categories so the chip row is a
+ * small, scannable control rather than 11+ raw-kind toggles.
  *
  * The mapping is intentionally lossy: `tool_use_start` and
  * `tool_use_end` both fold to `tool` (they render as one card),
@@ -13,12 +12,14 @@
  * `assistant` (`text`) vs `thinking` (`thinking`), and everything else
  * (`artifact_edited`, future kinds) lands in `other`.
  *
- * URL contract: `?kinds=tool,signal` (comma-separated subset of
- * {@link KIND_CATEGORIES}). Absent param = all visible. Unknown tokens
- * are dropped silently.
+ * The chip row controls **expand-by-default** per category — there is
+ * NO visibility filter; every step is always rendered. The category
+ * names align 1:1 with `TimelineRowType` except `other` ↔ `generic`;
+ * {@link categoryToRowType} bridges them.
  */
 
 import type { PendingTurn, StreamEvent } from '@/stores/events'
+import type { TimelineRowType } from '@/stores/timelinePrefs'
 
 export type KindCategory =
   | 'assistant'
@@ -76,41 +77,11 @@ export function classifyPending(pt: PendingTurn): KindCategory {
 }
 
 /**
- * Parse `?kinds=…` into a set of allowed categories. Absent / empty /
- * malformed → `null` (callers treat null as "all visible"). Unknown
- * tokens are dropped; if the result is a non-empty proper subset of
- * {@link KIND_CATEGORIES} we return it, otherwise null (all-on and
- * all-off both fall back to the absent-param semantics — only a proper
- * subset is a meaningful filter).
+ * Bridge `KindCategory` → `TimelineRowType` so the chip row can drive
+ * the per-type expand-by-default in the timelinePrefs store. The names
+ * align 1:1 except for `other` ↔ `generic` (legacy of two parallel
+ * vocabularies — the prefs store predates the chip categories).
  */
-export function parseKinds(
-  query: Record<string, string | string[] | null | undefined | (string | null)[]>,
-): ReadonlySet<KindCategory> | null {
-  const raw = query.kinds
-  const first = Array.isArray(raw) ? raw[0] : raw
-  if (first == null || first === '') return null
-  const allowed = new Set<KindCategory>()
-  for (const tok of first.split(',')) {
-    const t = tok.trim() as KindCategory
-    if (KIND_CATEGORIES.includes(t)) allowed.add(t)
-  }
-  if (allowed.size === 0) return null
-  if (allowed.size === KIND_CATEGORIES.length) return null
-  return allowed
-}
-
-/**
- * Serialise a kinds set to the `?kinds=` form. `null` (or the full
- * set) → `undefined` so the caller can spread it into a `router.push`
- * query and the param drops out of the URL entirely. Preserves the
- * canonical {@link KIND_CATEGORIES} order so URLs are stable across
- * chip-click orderings.
- */
-export function serializeKinds(
-  kinds: ReadonlySet<KindCategory> | null,
-): string | undefined {
-  if (kinds == null) return undefined
-  if (kinds.size === 0) return undefined
-  if (kinds.size === KIND_CATEGORIES.length) return undefined
-  return KIND_CATEGORIES.filter((k) => kinds.has(k)).join(',')
+export function categoryToRowType(c: KindCategory): TimelineRowType {
+  return c === 'other' ? 'generic' : c
 }

@@ -2,10 +2,8 @@ import { describe, it, expect } from 'vitest'
 import {
   classifyEvent,
   classifyPending,
-  parseKinds,
-  serializeKinds,
+  categoryToRowType,
   KIND_CATEGORIES,
-  type KindCategory,
 } from '../src/lib/eventKinds'
 import type { PendingTurn, StreamEvent } from '../src/stores/events'
 
@@ -67,78 +65,20 @@ describe('classifyPending', () => {
   })
 })
 
-describe('parseKinds', () => {
-  it('returns null when ?kinds is absent', () => {
-    expect(parseKinds({})).toBeNull()
+describe('categoryToRowType', () => {
+  it('maps every chip category 1:1 except other → generic', () => {
+    expect(categoryToRowType('assistant')).toBe('assistant')
+    expect(categoryToRowType('thinking')).toBe('thinking')
+    expect(categoryToRowType('tool')).toBe('tool')
+    expect(categoryToRowType('signal')).toBe('signal')
+    expect(categoryToRowType('other')).toBe('generic')
   })
 
-  it('returns null when ?kinds is empty string', () => {
-    expect(parseKinds({ kinds: '' })).toBeNull()
+  it('covers the full KIND_CATEGORIES vocabulary (no orphans)', () => {
+    // If a future chip category is added without a matching prefs row
+    // type, this assertion catches the gap.
+    for (const c of KIND_CATEGORIES) {
+      expect(typeof categoryToRowType(c)).toBe('string')
+    }
   })
-
-  it('parses a proper subset into a Set', () => {
-    const got = parseKinds({ kinds: 'tool,signal' })
-    expect(got).not.toBeNull()
-    expect(got!.has('tool')).toBe(true)
-    expect(got!.has('signal')).toBe(true)
-    expect(got!.has('assistant')).toBe(false)
-    expect(got!.size).toBe(2)
-  })
-
-  it('drops unknown tokens silently', () => {
-    const got = parseKinds({ kinds: 'tool,xxx,signal,yyy' })
-    expect(got).not.toBeNull()
-    expect(Array.from(got!).sort()).toEqual(['signal', 'tool'])
-  })
-
-  it('returns null when all categories are present (= absent semantics)', () => {
-    expect(parseKinds({ kinds: KIND_CATEGORIES.join(',') })).toBeNull()
-  })
-
-  it('returns null when no recognised tokens', () => {
-    expect(parseKinds({ kinds: 'foo,bar' })).toBeNull()
-  })
-
-  it('takes the first value of an array query (router quirk)', () => {
-    const got = parseKinds({ kinds: ['tool', 'signal'] })
-    expect(Array.from(got!)).toEqual(['tool'])
-  })
-})
-
-describe('serializeKinds', () => {
-  it('returns undefined for null (URL drops the param)', () => {
-    expect(serializeKinds(null)).toBeUndefined()
-  })
-
-  it('returns undefined for the empty set', () => {
-    expect(serializeKinds(new Set())).toBeUndefined()
-  })
-
-  it('returns undefined when every category is in the set', () => {
-    expect(serializeKinds(new Set(KIND_CATEGORIES))).toBeUndefined()
-  })
-
-  it('serialises in canonical order regardless of insertion order', () => {
-    const s = new Set<KindCategory>(['signal', 'tool', 'assistant'])
-    expect(serializeKinds(s)).toBe('assistant,tool,signal')
-  })
-})
-
-describe('parseKinds ∘ serializeKinds round-trip', () => {
-  const cases: ReadonlyArray<ReadonlyArray<KindCategory>> = [
-    ['tool'],
-    ['tool', 'signal'],
-    ['assistant', 'thinking', 'other'],
-    ['assistant', 'thinking', 'tool', 'signal'], // proper subset
-  ]
-  for (const subset of cases) {
-    it(`round-trips ${subset.join(',')}`, () => {
-      const s = new Set<KindCategory>(subset)
-      const ser = serializeKinds(s)
-      expect(ser).not.toBeUndefined()
-      const back = parseKinds({ kinds: ser })
-      expect(back).not.toBeNull()
-      expect(Array.from(back!).sort()).toEqual([...subset].sort())
-    })
-  }
 })

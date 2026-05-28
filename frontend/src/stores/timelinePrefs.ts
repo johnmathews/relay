@@ -1,14 +1,13 @@
 // Per-type expand/collapse defaults for the run-detail timeline.
 //
-// The dashboard's verbose `/engineering-team` runs need a way to be
-// both **scannable** (collapsed by default) and **deep-divable**
-// (expand on click). Different row types have different default
-// affordances: `ASSISTANT` text is what the user is meant to read,
-// so it stays expanded; tool calls / signals / thinking deltas /
-// unknown future kinds are scannable headers — collapsed by
-// default. The user can flip a type's default via the timeline
-// gear-popover and the choice persists across reloads (per-session
-// ergonomics felt wrong in testing).
+// The dashboard's verbose `/engineering-team` runs need to be
+// **scannable** out of the box — every step starts collapsed so a
+// 1000-event iter shows as a wall of headers, not a wall of bodies.
+// The operator flips a type's default via the EventKindFilter chip
+// row above the timeline (clicking the Assistant chip lights it up
+// and every assistant row in the current run expands on next render;
+// click again to collapse). The choice persists across reloads via
+// localStorage.
 //
 // Per-row override (a single row the user has expanded against its
 // type default) lives in TimelinePane's component state, not here —
@@ -34,16 +33,16 @@ export type TimelineRowType =
 const LS_KEY = 'relay.timeline.expanded'
 
 /**
- * Source of truth for the out-of-the-box behaviour. `assistant`
- * (the `text` kind of `assistant_text` — the agent's actual reply)
- * is expanded; everything else is collapsed. Mirrored in the
+ * Source of truth for the out-of-the-box behaviour. Every row type
+ * is collapsed by default — the operator opts into expansion via the
+ * chip row, never the other way around. Mirrored in the
  * `isExpandedByDefault` fallback so an unknown row type added in
  * the future does not crash.
  */
 const DEFAULTS: Record<TimelineRowType, boolean> = {
   tool: false,
   signal: false,
-  assistant: true,
+  assistant: false,
   thinking: false,
   generic: false,
 }

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // Right-pane body when selection.kind === 'overview'. Renders the
 // run's prompt + the cross-iter live timeline (TimelinePane with
-// selectedIterSeq = null = no scope filter) + the Phase-2
-// EventKindFilter chip row tied to the URL `&kinds=` param.
+// selectedIterSeq = null = no scope filter) + the EventKindFilter
+// chip row, which controls per-type expand-by-default (NOT
+// visibility — every step is always rendered).
 
 import { computed } from 'vue'
 import EventKindFilter from '@/components/runs/EventKindFilter.vue'
@@ -15,17 +16,11 @@ const props = defineProps<{
   promptBody: string
   events: ReadonlyArray<StreamEvent>
   pendingTurns: ReadonlyArray<PendingTurn>
-  kindsFilter: ReadonlySet<KindCategory> | null
-}>()
-
-const emit = defineEmits<{
-  (e: 'update:kindsFilter', value: ReadonlySet<KindCategory> | null): void
 }>()
 
 /**
  * Per-category counts over the cross-iter event list — the chip row
- * always shows the operator how many rows EACH category contributes
- * to the current scope, regardless of which chips are currently on.
+ * shows how many rows EACH category contributes to the current scope.
  */
 const counts = computed<Record<KindCategory, number>>(() => {
   const acc: Record<KindCategory, number> = {
@@ -43,14 +38,6 @@ const counts = computed<Record<KindCategory, number>>(() => {
   acc.tool = Math.ceil(acc.tool / 2)
   return acc
 })
-
-function onUpdate(value: ReadonlySet<KindCategory> | null): void {
-  emit('update:kindsFilter', value)
-}
-
-function onClear(): void {
-  emit('update:kindsFilter', null)
-}
 </script>
 
 <template>
@@ -69,18 +56,12 @@ function onClear(): void {
       <h2 class="overview-panel__heading">
         Timeline
       </h2>
-      <EventKindFilter
-        :model-value="kindsFilter"
-        :counts="counts"
-        @update:model-value="onUpdate"
-      />
+      <EventKindFilter :counts="counts" />
       <TimelinePane
         :events="events"
         :selected-iter-seq="null"
         :pending-turns="pendingTurns"
         :run-id="runId"
-        :kinds-filter="kindsFilter"
-        @clear-kinds-filter="onClear"
       />
     </section>
   </div>

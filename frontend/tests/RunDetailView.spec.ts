@@ -568,42 +568,22 @@ describe('RunDetailView — URL ↔ view binding', () => {
   })
 })
 
-describe('RunDetailView — Phase 2 kinds chip URL plumbing', () => {
+describe('RunDetailView — chip-row drives expand-by-default (no URL plumbing)', () => {
   beforeEach(() => {
     GET.mockReset()
     POST.mockReset()
+    try {
+      localStorage.removeItem('relay.timeline.expanded')
+    } catch {
+      // ignore
+    }
   })
 
-  it('parses ?kinds= and reflects it as off-state chips', async () => {
-    const testRouter = await makeRouter('/runs/run-1?view=overview&kinds=tool')
-
-    GET.mockImplementation((path: string) => {
-      if (path === '/api/runs/{run_id}') {
-        return Promise.resolve(ok(makeDetail({ status: 'done' })))
-      }
-      if (path === '/api/runs/{run_id}/children') {
-        return Promise.resolve(ok([]))
-      }
-      return Promise.resolve(ok([]))
-    })
-
-    const w = mount(RunDetailView, {
-      props: { id: 'run-1' },
-      global: {
-        plugins: [createPinia(), PiniaColada, testRouter],
-        stubs: DEFAULT_STUBS,
-      },
-    })
-    await flushPromises()
-
-    // Only the tool chip is on; the others should render as is-off.
-    const tool = w.get('[data-testid="kind-chip-tool"]')
-    expect(tool.attributes('aria-pressed')).toBe('true')
-    const assistant = w.get('[data-testid="kind-chip-assistant"]')
-    expect(assistant.attributes('aria-pressed')).toBe('false')
-  })
-
-  it('pushes ?kinds= when a chip is clicked, drops it again when filter clears', async () => {
+  it('clicking a chip flips the timelinePrefs store, not the URL', async () => {
+    // The pre-merge feature mirrored chip state to `?kinds=`. The new
+    // contract: clicking a chip toggles `timelinePrefs` (persisted in
+    // localStorage), and the URL stays clean. No more visibility
+    // filter — every step is always rendered.
     const testRouter = await makeRouter('/runs/run-1?view=overview')
 
     GET.mockImplementation((path: string) => {
@@ -625,16 +605,14 @@ describe('RunDetailView — Phase 2 kinds chip URL plumbing', () => {
     })
     await flushPromises()
 
-    // First click — turn `tool` off → URL gets the other four.
     await w.get('[data-testid="kind-chip-tool"]').trigger('click')
     await flushPromises()
-    expect(testRouter.currentRoute.value.query.kinds).toBe(
-      'assistant,thinking,signal,other',
-    )
-
-    // Click Clear → kinds drops from the URL entirely.
-    await w.get('[data-testid="kind-filter-clear"]').trigger('click')
-    await flushPromises()
+    // URL stays clean — chip state isn't a query param anymore.
     expect(testRouter.currentRoute.value.query.kinds).toBeUndefined()
+    // Chip reads as on (the assertion that the store flipped lives
+    // in the per-component EventKindFilter spec).
+    expect(
+      w.get('[data-testid="kind-chip-tool"]').attributes('aria-pressed'),
+    ).toBe('true')
   })
 })

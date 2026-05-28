@@ -1,80 +1,58 @@
 <script setup lang="ts">
 // Persistent chip row above the timeline. Five toggles (Assistant /
-// Thinking / Tool calls / Signals / Other) — clicking a chip toggles
-// that category's visibility in the timeline below.
+// Thinking / Tool calls / Signals / Other) — clicking a chip flips
+// that category's **expand-by-default** state in the timelinePrefs
+// store. A "lit" chip means rows of that type are expanded out-of-the
+// box; a dim chip means they're collapsed and the user has to click a
+// row's header to read it. There is no visibility filter — every step
+// is always rendered. This is the merge of the previous chip-row
+// visibility filter and the Display popover.
 //
-// The chip row doubles as the legend for the per-card colour palette
-// shipped in 8180ace: each chip's dot uses the same
-// `--color-row-<kind>-border` token the cards do, so the operator can
-// build a one-glance mental map of colour → kind.
-//
-// State model: visibility is "all on" by default. A `null` v-model
-// value means all categories are visible (and the URL has no
-// `&kinds=` param — see `lib/eventKinds.ts::serializeKinds`). A
-// non-null `Set<KindCategory>` is the proper subset that should
-// remain visible. Toggling the last chip off doesn't disappear the
-// timeline silently — TimelinePane renders an "all hidden by filter"
-// affordance with a Clear button that emits `null`.
+// The chip dot keeps the per-category colour (matches the card border
+// hue shipped in 8180ace) and the count badge still shows how many
+// rows of that kind the current scope contains, so the row doubles
+// as a colour legend + live activity readout.
 
 import { computed } from 'vue'
 import {
   KIND_CATEGORIES,
   KIND_LABEL,
+  categoryToRowType,
   type KindCategory,
 } from '@/lib/eventKinds'
+import { useTimelinePrefsStore } from '@/stores/timelinePrefs'
 
-const props = defineProps<{
+defineProps<{
   /**
-   * Allowed categories, or null for "show all". Mirrors the URL
-   * `&kinds=` param shape. Parent owns parsing/serialising; this
-   * component is a pure UI control.
-   */
-  modelValue: ReadonlySet<KindCategory> | null
-  /**
-   * Per-category count IN THE CURRENT SCOPE (cross-iter for the
-   * Overview body, iter-scoped for an Iter body). The counts reflect
-   * the unfiltered event list — so toggling a chip off shows the
-   * operator how many rows they are hiding.
+   * Per-category counts IN THE CURRENT SCOPE (cross-iter for the
+   * Overview body, iter-scoped for an Iter body). Always shown on the
+   * chip so the operator sees "how many rows of this kind exist"
+   * regardless of expand state.
    */
   counts: Readonly<Record<KindCategory, number>>
 }>()
 
-const emit = defineEmits<{
-  (e: 'update:modelValue', value: ReadonlySet<KindCategory> | null): void
-}>()
+const prefs = useTimelinePrefsStore()
 
-function isVisible(k: KindCategory): boolean {
-  if (props.modelValue == null) return true
-  return props.modelValue.has(k)
+function isExpanded(k: KindCategory): boolean {
+  return prefs.isExpandedByDefault(categoryToRowType(k))
 }
 
-/**
- * Toggle a single category. If the result is the empty set we keep
- * the empty set (so the timeline can surface "all hidden" + Clear) —
- * we don't auto-collapse to `null`. If the result is the full set we
- * emit `null` so the URL drops the param entirely.
- */
 function onToggle(k: KindCategory): void {
-  const current = props.modelValue
-  // Compute the next set against the EFFECTIVE current set, which is
-  // "all categories" when modelValue is null. That way the first
-  // chip click hides exactly one category instead of clearing four.
-  const next = new Set<KindCategory>(
-    current == null ? KIND_CATEGORIES : current,
-  )
-  if (next.has(k)) next.delete(k)
-  else next.add(k)
-  if (next.size === KIND_CATEGORIES.length) {
-    emit('update:modelValue', null)
-    return
-  }
-  emit('update:modelValue', next)
+  prefs.toggle(categoryToRowType(k))
 }
 
-const hasFilter = computed(() => props.modelValue != null)
+function chipTitle(k: KindCategory): string {
+  const verb = isExpanded(k) ? 'Collapse' : 'Expand'
+  return `${verb} ${KIND_LABEL[k]} steps by default`
+}
 
-function onClear(): void {
-  emit('update:modelValue', null)
+const hasAnyExpanded = computed(() =>
+  KIND_CATEGORIES.some((k) => isExpanded(k)),
+)
+
+function onResetDefaults(): void {
+  prefs.reset()
 }
 </script>
 
@@ -82,7 +60,7 @@ function onClear(): void {
   <div
     class="kind-filter"
     role="toolbar"
-    aria-label="Filter timeline by event kind"
+    aria-label="Toggle expand-by-default per event kind"
     data-testid="event-kind-filter"
   >
     <button
@@ -90,11 +68,11 @@ function onClear(): void {
       :key="k"
       type="button"
       class="kind-filter__chip"
-      :class="{ 'is-off': !isVisible(k) }"
+      :class="{ 'is-on': isExpanded(k) }"
       :data-kind="k"
       :data-testid="`kind-chip-${k}`"
-      :aria-pressed="isVisible(k)"
-      :title="isVisible(k) ? `Hide ${KIND_LABEL[k]}` : `Show ${KIND_LABEL[k]}`"
+      :aria-pressed="isExpanded(k)"
+      :title="chipTitle(k)"
       @click="onToggle(k)"
     >
       <span
@@ -109,14 +87,14 @@ function onClear(): void {
       >{{ counts[k] }}</span>
     </button>
     <button
-      v-if="hasFilter"
+      v-if="hasAnyExpanded"
       type="button"
-      class="kind-filter__clear"
-      data-testid="kind-filter-clear"
-      title="Show every kind"
-      @click="onClear"
+      class="kind-filter__reset"
+      data-testid="kind-filter-reset"
+      title="Collapse every kind by default"
+      @click="onResetDefaults"
     >
-      Clear filter
+      Reset to collapsed
     </button>
   </div>
 </template>
@@ -147,7 +125,7 @@ function onClear(): void {
   line-height: 1;
   padding: 0.4em 0.7em;
   min-height: 1.9rem;
-  transition: opacity 0.12s ease, border-color 0.12s ease;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
 }
 
 .kind-filter__chip:hover,
@@ -157,13 +135,33 @@ function onClear(): void {
   outline: none;
 }
 
-/* Filtered-off state — chip is still readable (count visible) but
-   visibly de-emphasised so the on/off state reads at a glance even
-   when colour is not the primary cue. */
-.kind-filter__chip.is-off {
-  opacity: 0.45;
-  text-decoration: line-through;
-  text-decoration-thickness: 1px;
+/* Lit ("expanded by default") state — chip takes its category's
+   pastel background + border so the operator can read at a glance
+   which kinds will be opened on first render. Matches the card
+   palette tokens shipped in 8180ace. */
+.kind-filter__chip.is-on[data-kind='assistant'] {
+  background: var(--color-row-assistant-bg);
+  border-color: var(--color-row-assistant-border);
+}
+.kind-filter__chip.is-on[data-kind='thinking'] {
+  background: var(--color-row-thinking-bg);
+  border-color: var(--color-row-thinking-border);
+}
+.kind-filter__chip.is-on[data-kind='tool'] {
+  background: var(--color-row-tool-bg);
+  border-color: var(--color-row-tool-border);
+}
+.kind-filter__chip.is-on[data-kind='signal'] {
+  background: var(--color-row-signal-bg);
+  border-color: var(--color-row-signal-border);
+}
+.kind-filter__chip.is-on[data-kind='other'] {
+  background: var(--color-row-other-bg);
+  border-color: var(--color-row-other-border);
+}
+
+.kind-filter__chip.is-on .kind-filter__label {
+  font-weight: 600;
 }
 
 .kind-filter__dot {
@@ -194,7 +192,6 @@ function onClear(): void {
 }
 
 .kind-filter__label {
-  font-weight: 500;
   letter-spacing: 0.02em;
 }
 
@@ -205,7 +202,7 @@ function onClear(): void {
   font-family: var(--font-mono);
 }
 
-.kind-filter__clear {
+.kind-filter__reset {
   margin-left: auto;
   background: none;
   border: none;
@@ -217,8 +214,8 @@ function onClear(): void {
   text-decoration: underline;
 }
 
-.kind-filter__clear:hover,
-.kind-filter__clear:focus-visible {
+.kind-filter__reset:hover,
+.kind-filter__reset:focus-visible {
   color: var(--color-text);
   outline: none;
 }

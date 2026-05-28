@@ -40,11 +40,6 @@ import {
   smartDefault,
   type RunView,
 } from '@/lib/runView'
-import {
-  parseKinds,
-  serializeKinds,
-  type KindCategory,
-} from '@/lib/eventKinds'
 
 const props = defineProps<{ id: string }>()
 
@@ -111,27 +106,6 @@ function onSelectView(view: RunView): void {
   void router.push({
     query: { ...route.query, view: serializeView(view) },
   })
-}
-
-/**
- * Phase 2 — kinds chip-row state mirrored to `?kinds=`. Source of
- * truth is the URL; mutations push through the router. `null` (the
- * default) means "all categories visible" and the param drops from
- * the URL entirely (see `serializeKinds`).
- */
-const currentKinds = computed<ReadonlySet<KindCategory> | null>(
-  () => parseKinds(route.query),
-)
-
-function onUpdateKinds(value: ReadonlySet<KindCategory> | null): void {
-  const serialized = serializeKinds(value)
-  const next = { ...route.query }
-  if (serialized == null) {
-    delete next.kinds
-  } else {
-    next.kinds = serialized
-  }
-  void router.push({ query: next })
 }
 
 // Local view-scoped terminal check that governs whether the live SSE
@@ -311,10 +285,8 @@ onBeforeUnmount(() => {
             :cancelling="cancelling"
             :pause-question="pauseQuestion"
             :pause-review-paths="pauseReviewPaths"
-            :kinds-filter="currentKinds"
             @cancel="onCancel"
             @resumed="onResumed"
-            @update:kinds-filter="onUpdateKinds"
           />
         </div>
       </template>

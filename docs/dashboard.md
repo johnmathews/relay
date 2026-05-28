@@ -261,22 +261,6 @@ layout (`.timeline__row--inline`) with a single Copy button
 anchored top-right. They never get the card treatment because
 they have nothing to collapse into.
 
-**Display menu.** The "Expand by default" popover (which row types
-expand on first render) is mounted by `RunRightPane` next to the
-cancel button via `TimelineDisplayMenu.vue` — it consumes the
-global `useTimelinePrefsStore` so its position is independent of
-the timeline. It used to float at the top of the timeline scroll
-container (sticky + `pointer-events: none` + an absolute popover);
-that was hard to anchor visually and the user reported it as
-"floating awkwardly" — the new location is in the right-pane
-chrome where every other action lives.
-
-The button itself reads AS a dropdown trigger (not a status pill):
-gear glyph + "Display" label + a trailing chevron `▾` that rotates
-180° when the popover is open, and `aria-haspopup="menu"` +
-`aria-expanded` reflecting the open state. Pattern: GitHub filter
-pills, Linear's Display options, Tailwind UI menu buttons.
-
 **Per-type colour palette.** Each row type renders with a pastel
 background + saturated border keyed off `data-row-type` on the
 card root:
@@ -298,54 +282,59 @@ borders. The error state on a tool row (`✗` status) still wins —
 failed step reads as "fix this" even though the type colour is
 amber.
 
-## Run-detail Phase 2 — chip-row event-kind filter
+## Chip row — per-type expand-by-default
 
-`EventKindFilter.vue` is a five-chip toolbar rendered above the
-timeline in both `OverviewPanel` (cross-iter scope) and
-`IterTimelinePanel` (single-iter scope). Each chip carries a colour
-dot keyed off the same `--color-row-<kind>-border` token the per-card
-border uses, a human label, and an in-scope row count — so the chip
-row doubles as a colour legend for the per-type card palette.
+`EventKindFilter.vue` is a five-chip toolbar (Assistant / Thinking /
+Tool calls / Signals / Other) rendered above the timeline in both
+`OverviewPanel` (cross-iter scope) and `IterTimelinePanel` (iter
+scope). Clicking a chip flips that category's **expand-by-default**
+state in the `useTimelinePrefsStore` (persisted in
+`localStorage['relay.timeline.expanded']`); a lit chip means every
+row of that kind opens its body on first render, a dim chip means
+the row stays as a one-line header until the operator clicks
+through.
+
+There is **no visibility filter** — every step is always rendered.
+The chip row is the merger of the old `?kinds=` URL-driven
+visibility filter and the retired `TimelineDisplayMenu` popover.
+Operators were never asking to hide steps; they were asking to
+control how much was unfolded at once. Defaults: all five types
+collapsed.
+
+Each chip carries:
+
+- A colour dot keyed off `--color-row-<kind>-border` (same token the
+  per-card border uses — chip row doubles as colour legend).
+- A human label.
+- An in-scope row count. `tool` is rendered as `ceil(N/2)` so the
+  chip number matches the number of CARDS the operator sees (the
+  timeline pairs `tool_use_start` + `tool_use_end` into one card).
+
+Visual treatment for the "lit" state pulls in the matching pastel:
+`background: var(--color-row-<kind>-bg)` + `border-color:
+var(--color-row-<kind>-border)` + `font-weight: 600` on the label.
+A `Reset to collapsed` link appears on the right whenever at least
+one chip is on.
+
+The `other` chip category bridges to the `generic` row type in the
+prefs store via `categoryToRowType` in `src/lib/eventKinds.ts` —
+the two vocabularies predate the merge (chip row uses `other`, the
+prefs store uses `generic`), and the bridge is asserted in
+`tests/eventKinds.spec.ts` so a future rename can't break it
+silently.
 
 `src/lib/eventKinds.ts::classifyEvent` is the single source of truth
 for kind → category mapping: `tool_use_start`/`tool_use_end` →
 `tool`, `assistant_text` splits on `payload.kind` (`text` →
 `assistant`, `thinking` → `thinking`), structural / boundary kinds
 (`signal_emit`, `iter_*`, `run_*`, `subagent_*`,
-`child_runs_resolved`, `harness_session_ended`, `pause_*`) → `signal`,
-everything else → `other`. The chip row treats the count of `tool`
-events as ceil(N/2) so the chip reads as "cards visible", matching
-the start+end paired rendering.
+`child_runs_resolved`, `harness_session_ended`, `pause_*`) →
+`signal`, everything else → `other`.
 
-`TimelinePane.vue` accepts a `kindsFilter: ReadonlySet<KindCategory>
-| null` prop applied **after** the iter-scope walk — order is
-load-bearing because the scope walk anchors on
-`iter_started`/`iter_ended` boundaries; applying kinds first would
-lose them whenever the user hides the Signal chip. Pending
-(`assistant_delta`) rows respect the filter too, so an "Assistant
-off" filter also hides the in-flight stream. Each row carries a
-small `data-testid="row-kind-<seq>"` colour-tinted label next to
-`#seq`; the per-card background palette from 8180ace stays
-untouched (Q2 answer: belt + label, no 4px-border variant).
-
-URL contract: `?kinds=tool,signal` (comma-separated, canonical
-order). `parseKinds` returns `null` for absent / empty / unknown
-/ full-set inputs (all of which mean "show every category");
-`serializeKinds` returns `undefined` for those same cases so the
-view's `router.push` deletes the param from the URL entirely.
-`RunDetailView` is the only owner — it reads `?kinds=` via the
-route, threads `kindsFilter` down through `RunRightPane` →
-`OverviewPanel` / `IterTimelinePanel`, and on `update:kindsFilter`
-pushes a new URL. The `TimelineDisplayMenu` (expand-by-default) is
-preserved alongside the new chip row — they're orthogonal concerns
-(visibility vs. expand-state).
-
-Empty-state copy: when the kinds filter empties the scoped event
-list but the scope itself is non-empty, the timeline renders a
-"All events hidden by filter" message + a Clear button (emits
-`clearKindsFilter`, which the panel translates to a `null`
-update). When the scope is empty regardless of filter, the
-existing "No events yet." copy wins.
+Per-row override (a single row the operator has expanded against
+its type default) stays in `TimelinePane`'s component state via
+`rowOverrides` — it's intentionally session-scoped (a one-off "let
+me peek at this card" shouldn't outlive a refresh).
 
 ## Worktree pane — MVP degradation
 
