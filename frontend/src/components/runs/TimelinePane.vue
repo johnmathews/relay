@@ -781,6 +781,7 @@ function onArtifactEditedClick(path: string): void {
           >
             <ToolCallCard
               v-if="row.type === 'tool'"
+              embedded
               :name="asStr(row.event.payload.name, 'tool')"
               :args="row.event.payload.args"
               :result="row.toolEnd?.result"
@@ -789,6 +790,7 @@ function onArtifactEditedClick(path: string): void {
             />
             <SignalCard
               v-else-if="row.type === 'signal'"
+              embedded
               :seq="row.event.seq"
               :signal-kind="asStr(row.event.payload.kind, 'signal')"
               :args="row.event.payload.args"

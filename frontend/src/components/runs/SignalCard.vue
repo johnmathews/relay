@@ -17,6 +17,14 @@ const props = defineProps<{
   signalKind: string
   /** The signal args object. */
   args: unknown
+  /**
+   * When true, render without the outer border / background / head row.
+   * The timeline step-card already supplies the container chrome plus
+   * the kind label in its header; rendering a second outer banner inside
+   * it produced visible card-in-card nesting. The anchor id is kept on
+   * the root either way so `#signal-<seq>` deep links still resolve.
+   */
+  embedded?: boolean
 }>()
 
 const anchorId = computed(() => `signal-${props.seq}`)
@@ -35,11 +43,18 @@ const argsText = computed(() => {
   <div
     :id="anchorId"
     class="signal-card"
+    :class="{ 'signal-card--embedded': embedded }"
     data-testid="signal-card"
   >
     <div class="signal-card__head">
-      <span class="signal-card__tag">signal</span>
-      <span class="signal-card__kind">{{ signalKind }}</span>
+      <span
+        v-if="!embedded"
+        class="signal-card__tag"
+      >signal</span>
+      <span
+        v-if="!embedded"
+        class="signal-card__kind"
+      >{{ signalKind }}</span>
       <a
         class="signal-card__anchor"
         :href="`#${anchorId}`"
@@ -60,6 +75,23 @@ const argsText = computed(() => {
   border-radius: 6px;
   padding: 0.55rem 0.75rem;
   background: var(--color-warning-bg);
+}
+
+/* Embedded inside a timeline step-card's body: drop the outer chrome
+   (the step-card supplies it) so we don't render a banner inside a
+   banner. The anchor row collapses to a single right-aligned link. */
+.signal-card--embedded {
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+}
+.signal-card--embedded .signal-card__head {
+  justify-content: flex-end;
+  margin-bottom: 0.25rem;
+}
+.signal-card--embedded .signal-card__args {
+  margin-top: 0;
 }
 
 .signal-card__head {

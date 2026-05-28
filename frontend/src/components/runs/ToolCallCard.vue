@@ -23,6 +23,13 @@ const props = defineProps<{
   isError?: boolean
   /** Tool wall-clock in ms (`tool_use_end.duration_ms`). */
   durationMs?: number
+  /**
+   * When true, render without the outer card border / background / head row.
+   * The timeline step-card already supplies the container chrome + name +
+   * duration + ok/err glyph in its header; rendering a second outer card
+   * inside it produced visible card-in-card nesting.
+   */
+  embedded?: boolean
 }>()
 
 // Per the live-stream UX work (2026-05-25): tool args / result are
@@ -68,10 +75,13 @@ function clamp(s: string): string {
 <template>
   <div
     class="tool-card"
-    :class="{ 'tool-card--error': isError }"
+    :class="{ 'tool-card--error': isError, 'tool-card--embedded': embedded }"
     data-testid="tool-call-card"
   >
-    <div class="tool-card__head">
+    <div
+      v-if="!embedded"
+      class="tool-card__head"
+    >
       <span class="tool-card__name">{{ name }}</span>
       <span
         v-if="isError"
@@ -118,6 +128,18 @@ function clamp(s: string): string {
 
 .tool-card--error {
   border-color: var(--color-danger);
+}
+
+/* Embedded inside a timeline step-card's body: drop the outer chrome
+   (step-card supplies it) and let the inner blocks sit flush. */
+.tool-card--embedded {
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+}
+.tool-card--embedded.tool-card--error {
+  border: none;
 }
 
 .tool-card__head {
@@ -170,6 +192,22 @@ function clamp(s: string): string {
   white-space: pre-wrap;
   word-break: break-word;
   overflow-x: auto;
+}
+
+/* Embedded blocks lose their own border + bg (the step-card's body
+   already supplies a contrasting surface). They keep the monospace
+   font, scroll behavior, and the small inset so a code block reads
+   as code rather than running into the body padding. */
+.tool-card--embedded .tool-card__block {
+  border: none;
+  background: transparent;
+  padding: 0;
+}
+.tool-card--embedded .tool-card__section {
+  margin-top: 0;
+}
+.tool-card--embedded .tool-card__section + .tool-card__section {
+  margin-top: 0.55rem;
 }
 
 .tool-card__toggle {
