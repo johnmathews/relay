@@ -6,7 +6,6 @@ import type { RunView } from '@/lib/runView'
 interface IterRow {
   seq: number
   phase: string | null
-  status_kind?: string | null
 }
 
 interface ChildRow {
@@ -38,24 +37,19 @@ function selectOverview(): void {
 function selectIter(seq: number): void {
   emit('update:view', { kind: 'iter', seq })
 }
-
-const childCount = computed(() => props.children.length)
 </script>
 
 <template>
-  <aside
+  <nav
     class="run-sidebar"
-    role="listbox"
-    aria-orientation="vertical"
     aria-label="Run navigation"
     data-testid="run-sidebar"
   >
     <button
       type="button"
-      role="option"
       class="run-sidebar__row run-sidebar__row--overview"
       :class="{ 'run-sidebar__row--selected': isOverviewSelected }"
-      :aria-selected="isOverviewSelected ? 'true' : 'false'"
+      :aria-current="isOverviewSelected ? 'page' : undefined"
       data-testid="sidebar-overview"
       @click="selectOverview"
     >
@@ -79,10 +73,9 @@ const childCount = computed(() => props.children.length)
         v-for="iter in iters"
         :key="iter.seq"
         type="button"
-        role="option"
         class="run-sidebar__row"
         :class="{ 'run-sidebar__row--selected': isIterSelected(iter.seq) }"
-        :aria-selected="isIterSelected(iter.seq) ? 'true' : 'false'"
+        :aria-current="isIterSelected(iter.seq) ? 'page' : undefined"
         :data-testid="`sidebar-iter-${iter.seq}`"
         @click="selectIter(iter.seq)"
       >
@@ -92,7 +85,7 @@ const childCount = computed(() => props.children.length)
     </section>
 
     <section
-      v-if="childCount > 0"
+      v-if="children.length > 0"
       role="group"
       aria-labelledby="sidebar-children-heading"
       class="run-sidebar__section"
@@ -103,7 +96,7 @@ const childCount = computed(() => props.children.length)
         class="run-sidebar__heading"
       >
         Children
-        <span class="run-sidebar__count">{{ childCount }}</span>
+        <span class="run-sidebar__count">{{ children.length }}</span>
       </h3>
       <router-link
         v-for="child in children"
@@ -113,10 +106,10 @@ const childCount = computed(() => props.children.length)
         :data-testid="`sidebar-child-${child.id}`"
       >
         <StatusBadge :status="child.status" />
-        <span class="run-sidebar__row-label">{{ child.id.slice(0, 14) }}</span>
+        <span class="run-sidebar__row-label">{{ child.id.slice(0, 8) }}</span>
       </router-link>
     </section>
-  </aside>
+  </nav>
 </template>
 
 <style scoped>

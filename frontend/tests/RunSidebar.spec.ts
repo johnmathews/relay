@@ -16,7 +16,7 @@ function makeRouter(): ReturnType<typeof createRouter> {
 
 function mountSidebar(props: {
   selection: RunView
-  iters?: Array<{ seq: number; phase: string; status_kind?: string | null }>
+  iters?: Array<{ seq: number; phase: string }>
   children?: Array<{ id: string; status: string }>
   runId?: string
 }): ReturnType<typeof mount> {
@@ -38,7 +38,7 @@ describe('RunSidebar', () => {
     const w = mountSidebar({ selection: { kind: 'overview' } })
     const row = w.get('[data-testid="sidebar-overview"]')
     expect(row.text()).toContain('Overview')
-    expect(row.attributes('aria-selected')).toBe('true')
+    expect(row.attributes('aria-current')).toBe('page')
   })
 
   it('renders one row per iter under the ITERS section', () => {
@@ -55,7 +55,7 @@ describe('RunSidebar', () => {
     expect(rows[1]!.text()).toContain('#2')
   })
 
-  it('marks the selected iter as aria-selected', () => {
+  it('marks the selected iter with aria-current=page', () => {
     const w = mountSidebar({
       selection: { kind: 'iter', seq: 2 },
       iters: [
@@ -64,9 +64,9 @@ describe('RunSidebar', () => {
       ],
     })
     const sel = w.get('[data-testid="sidebar-iter-2"]')
-    expect(sel.attributes('aria-selected')).toBe('true')
+    expect(sel.attributes('aria-current')).toBe('page')
     const other = w.get('[data-testid="sidebar-iter-1"]')
-    expect(other.attributes('aria-selected')).toBe('false')
+    expect(other.attributes('aria-current')).toBeUndefined()
   })
 
   it('emits update:view when an iter row is clicked', async () => {
@@ -94,7 +94,7 @@ describe('RunSidebar', () => {
     )
   })
 
-  it('renders one row per child when children is non-empty', () => {
+  it('renders one row per child when children is non-empty, with truncated id and href', () => {
     const w = mountSidebar({
       selection: { kind: 'overview' },
       children: [
@@ -104,5 +104,15 @@ describe('RunSidebar', () => {
     })
     const rows = w.findAll('[data-testid^="sidebar-child-"]')
     expect(rows).toHaveLength(2)
+    expect(rows[0]!.text()).toContain('child-a')
+    expect(rows[0]!.attributes('href')).toContain('/runs/child-a')
+  })
+
+  it('clears aria-current on Overview when an iter is selected', () => {
+    const w = mountSidebar({
+      selection: { kind: 'iter', seq: 1 },
+      iters: [{ seq: 1, phase: 'planning' }],
+    })
+    expect(w.get('[data-testid="sidebar-overview"]').attributes('aria-current')).toBeUndefined()
   })
 })
