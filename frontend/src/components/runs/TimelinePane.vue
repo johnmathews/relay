@@ -20,6 +20,7 @@
 // (windowed DOM count) for the plan.md live-tail parity check.
 
 import { computed, nextTick, ref, watch } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import ToolCallCard from './ToolCallCard.vue'
 import SignalCard from './SignalCard.vue'
 import UsageRow from './UsageRow.vue'
@@ -29,6 +30,7 @@ import {
   useTimelinePrefsStore,
   type TimelineRowType,
 } from '@/stores/timelinePrefs'
+import { serializeView } from '@/lib/runView'
 
 /**
  * Row types that participate in the collapse / expand workflow.
@@ -73,6 +75,9 @@ const props = defineProps<{
    */
   pendingTurns?: PendingTurn[]
 }>()
+
+const router = useRouter()
+const route = useRoute()
 
 /**
  * Apply the W5 iter filter. We walk the (already seq-ordered) event
@@ -478,20 +483,27 @@ function shortSha(v: unknown): string {
  * 14e: clicking an `artifact_edited` row opens the artifacts panel at
  * the file's CURRENT on-disk state (deliberately not a historical diff
  * — ADR-40 §B1 does not preserve before-content; the row reads the
- * artifact as it exists right now). We mutate the shared file-browser
- * Pinia store keyed `run:<runId>` so `RunSidebar`'s artifact section
- * picks up the selection, then scroll the pane into view. No-op if the
- * `runId` prop isn't provided (older call-sites / unit tests).
+ * artifact as it exists right now). We:
+ *   1. Mutate the shared file-browser Pinia store (`run:<runId>`) so
+ *      the sidebar's Artifacts section highlights the file.
+ *   2. Push `?view=artifact:<path>` so the right pane opens the file
+ *      viewer (Phase 1 layout — ArtifactsPane is gone, the right pane
+ *      is the artifact viewer now).
+ *   3. Scroll the sidebar's Artifacts section into view.
+ * No-op if the `runId` prop isn't provided (older call-sites / unit tests).
  */
 function onArtifactEditedClick(path: string): void {
   if (props.runId == null || path === '') return
   useBrowserUiStore(`run:${props.runId}`).selectFile(path)
+  void router.push({
+    query: { ...route.query, view: serializeView({ kind: 'artifact', path }) },
+  })
   if (typeof document !== 'undefined') {
-    const el = document.querySelector('[data-testid="artifacts-pane"]')
+    const el = document.querySelector('[data-testid="sidebar-artifacts-section"]')
     if (el != null && 'scrollIntoView' in el) {
       (el as HTMLElement).scrollIntoView({
         behavior: 'smooth',
-        block: 'start',
+        block: 'nearest',
       })
     }
   }

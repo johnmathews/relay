@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { mount, config } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
+import { createRouter, createMemoryHistory } from 'vue-router'
 import TimelinePane from '../src/components/runs/TimelinePane.vue'
 import type { StreamEvent } from '../src/stores/events'
 import { useBrowserUiStore } from '../src/stores/files'
@@ -41,12 +42,26 @@ const MIXED: StreamEvent[] = [
 ]
 
 describe('TimelinePane', () => {
+  // Shared router ref — re-created per test so each test gets a clean
+  // history. Exposed at describe scope so the artifact_edited click
+  // tests can inspect currentRoute after triggering the click.
+  let testRouter: ReturnType<typeof createRouter>
+
   beforeEach(() => {
     // TimelinePane now reads `useTimelinePrefsStore` for per-type
     // expand defaults (2026-05-25). Every mount needs an active
     // Pinia or the store factory throws "no active Pinia".
     setActivePinia(createPinia())
     localStorage.removeItem('relay.timeline.expanded')
+    // TimelinePane calls useRouter() + useRoute() (Phase 1 fix —
+    // onArtifactEditedClick pushes ?view=artifact:<path>). Every mount
+    // needs a router plugin or vue-router throws "No active router".
+    // A minimal memory-history router with a catch-all is sufficient.
+    testRouter = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div/>' } }],
+    })
+    config.global.plugins = [testRouter]
   })
 
   it('renders all mixed event types readably', () => {
@@ -203,7 +218,7 @@ describe('TimelinePane', () => {
     expect(text).toContain('dead…')
   })
 
-  it('artifact_edited row is a clickable target that selects the artifact (14e)', async () => {
+  it('artifact_edited row is a clickable target that selects the artifact and pushes ?view=artifact (14e + Phase 1 fix)', async () => {
     setActivePinia(createPinia())
     const events: StreamEvent[] = [
       {
@@ -227,11 +242,22 @@ describe('TimelinePane', () => {
     // The row renders as a <button> for keyboard + a11y affordance.
     expect((row.element as HTMLElement).tagName).toBe('BUTTON')
     await row.trigger('click')
+    // Store selection still works.
     const store = useBrowserUiStore('run:run-abc')
     expect(store.selectedPath).toBe('improvement-plan.md')
+    // Phase 1 fix: router must have pushed ?view=artifact:<path> so the
+    // right pane opens the file viewer (ArtifactsPane was deleted in
+    // Phase 1 — the old [data-testid="artifacts-pane"] selector was a
+    // silent no-op; the sidebar-artifacts-section scroll target +
+    // router push is the correct post-Phase-1 behavior).
+    await vi.waitFor(() => {
+      expect(testRouter.currentRoute.value.query.view).toBe(
+        'artifact:improvement-plan.md',
+      )
+    })
   })
 
-  it('create-path artifact_edited row is also clickable (14e)', async () => {
+  it('create-path artifact_edited row is also clickable and pushes ?view=artifact (14e + Phase 1 fix)', async () => {
     setActivePinia(createPinia())
     const events: StreamEvent[] = [
       {
@@ -255,6 +281,11 @@ describe('TimelinePane', () => {
     expect(useBrowserUiStore('run:run-xyz').selectedPath).toBe(
       'discussions/notes.md',
     )
+    await vi.waitFor(() => {
+      expect(testRouter.currentRoute.value.query.view).toBe(
+        `artifact:${encodeURIComponent('discussions/notes.md')}`,
+      )
+    })
   })
 
   it('signal row has the distinctive card + a linkable anchor id', () => {

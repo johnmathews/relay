@@ -43,6 +43,11 @@ defineProps<{
          status/timing detail of the selected iter. Phase 1 keeps it
          rendered intact below the timeline; later phases (5 — drawer)
          may move per-iter detail into a richer view. -->
+    <!-- NOTE: ItersPane writes currentRun.selectedIterId on row click,
+         but the timeline above this is now scoped via the iterSeq prop
+         (from the URL ?view=iter:N). Click-to-filter is a dead action
+         in this context — kept rendered for status/timing readout only.
+         Phase 5 drawer may retire ItersPane entirely. -->
     <ItersPane :iters="(iters as Iter[])" />
   </div>
 </template>
