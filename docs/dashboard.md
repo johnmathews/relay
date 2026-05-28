@@ -254,12 +254,39 @@ pi emits `Bash` or `bash` depending on provider):
 Truncated to 140 chars with `…`. Empty string when there is no
 useful preview — the column collapses, the header still reads.
 
-**Inline rows.** `boundary` / `pause` / `usage` / `artifact_edited`
-rows are intrinsically one-liners with their own self-contained
-chrome (timing badges, file links) — they keep the legacy inline
-layout (`.timeline__row--inline`) with a single Copy button
-anchored top-right. They never get the card treatment because
-they have nothing to collapse into.
+**Inline rows.** `boundary` / `pause` rows are intrinsically
+one-liners with their own self-contained chrome (timing badges) —
+they keep the legacy inline layout (`.timeline__row--inline`) with
+a single Copy button anchored top-right. `usage` (`harness_session_ended`
+totals) and `artifact_edited` (14a/14e edits) adopt the step-card
+visual via `.timeline__card-header--inline`: same border + per-type
+pastel surface as a collapsed collapsible row, single-line
+`#seq · glyph · content · spacer · [⧉ Copy]`, no expand toggle (they
+have no body worth showing). `artifact_edited` renders as a `<button>`
+when a `runId` is provided so the row keeps its 14e click-to-navigate
+behaviour (selects the file + scrolls the sidebar's Artifacts section
+into view); without a `runId` it falls back to a non-interactive `<div>`.
+
+**Embedded card bodies.** When a tool / signal row is expanded, the
+inner `ToolCallCard` / `SignalCard` is rendered with `embedded` so it
+sheds its own outer border + background + head row (the timeline
+step-card already supplies the container chrome plus the tool/signal
+name in its header). For `ToolCallCard`, the inner `<pre>` blocks
+also lose their border + background — the step-card body is the
+visual container — while keeping the monospace font, scroll
+behaviour, and the small inset between `args` / `result` sections.
+For `SignalCard`, the head collapses to a single right-aligned
+anchor link so `#signal-<seq>` deep links still resolve. Standalone
+mounts (none today outside the timeline) are unaffected.
+
+**Hover affordance.** A collapsed step-card row lifts on hover —
+border shifts to `--color-border-strong` (a neutral strong tone that
+contrasts against every per-type pastel), a soft `0 2px 6px var(--color-shadow)`
+sits below it, and the row translates up by 1px. The same treatment
+applies to the clickable `artifact_edited` inline-card variant.
+Expanded cards keep the existing behaviour — the open body and the
+Collapse button already advertise interactivity. A 120ms ease-out
+transition makes the lift read as deliberate rather than a flash.
 
 **Per-type colour palette.** Each row type renders with a pastel
 background + saturated border keyed off `data-row-type` on the
@@ -272,6 +299,8 @@ card root:
 | tool | amber | `--color-row-tool-{bg,border}` |
 | signal | green | `--color-row-signal-{bg,border}` |
 | generic | slate | `--color-row-other-{bg,border}` |
+| usage | slate | `--color-row-other-{bg,border}` (reused) |
+| artifact_edited | amber | `--color-warning{,-bg}` (matches the pause / human-attention palette) |
 
 Light theme uses solid pastel surfaces (`#eff6ff`, `#f5f3ff`, …)
 with a saturated same-hue border (`#60a5fa`, `#a78bfa`, …). Dark
