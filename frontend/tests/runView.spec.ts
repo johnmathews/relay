@@ -113,9 +113,60 @@ describe('smartDefault', () => {
     }
   })
 
-  it('returns overview for paused (Phase 1 — Phase 4 changes this)', () => {
+  it('returns overview for paused with no reviewPaths', () => {
     expect(smartDefault({ status: 'paused', iters: baseIters })).toEqual({
       kind: 'overview',
     })
+  })
+
+  it('returns overview for paused when reviewPaths is empty', () => {
+    expect(
+      smartDefault({ status: 'paused', iters: baseIters, reviewPaths: [] }),
+    ).toEqual({ kind: 'overview' })
+  })
+
+  it('returns artifact for paused with one reviewPath', () => {
+    expect(
+      smartDefault({
+        status: 'paused',
+        iters: baseIters,
+        reviewPaths: ['improvement-plan.md'],
+      }),
+    ).toEqual({ kind: 'artifact', path: 'improvement-plan.md' })
+  })
+
+  it('returns artifact for the FIRST reviewPath when paused has many', () => {
+    expect(
+      smartDefault({
+        status: 'paused',
+        iters: baseIters,
+        reviewPaths: ['a.md', 'b.md', 'discussions/c.md'],
+      }),
+    ).toEqual({ kind: 'artifact', path: 'a.md' })
+  })
+
+  it('preserves nested artifact paths verbatim (encoding is a serializer concern)', () => {
+    expect(
+      smartDefault({
+        status: 'paused',
+        iters: baseIters,
+        reviewPaths: ['discussions/260528-notes.md'],
+      }),
+    ).toEqual({ kind: 'artifact', path: 'discussions/260528-notes.md' })
+  })
+
+  it('ignores reviewPaths for non-paused statuses', () => {
+    expect(
+      smartDefault({
+        status: 'running',
+        iters: baseIters,
+        reviewPaths: ['a.md'],
+      }),
+    ).toEqual({ kind: 'iter', seq: 2 })
+    for (const s of ['done', 'failed', 'cancelled']) {
+      expect(
+        smartDefault({ status: s, iters: baseIters, reviewPaths: ['a.md'] }),
+      ).toEqual({ kind: 'overview' })
+    }
   })
 })

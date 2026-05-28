@@ -74,13 +74,30 @@ export function serializeView(view: RunView): string {
 
 /**
  * Compute the default {@link RunView} when `?view=` is absent. Driven
- * by run status (Phase 1 — Phase 4 of the run-detail-layout proposal
- * adds the paused→review_path branch).
+ * by run status:
+ *
+ *   - `paused`              → `artifact:<first reviewPath>` if any, else `overview`
+ *   - `running` / `awaiting_children` → latest iter, else `overview`
+ *   - terminal (`done` / `failed` / `cancelled`) → `overview`
+ *
+ * The paused branch opens the file the operator is being asked to review
+ * next to the PauseAnswerForm (ADR-40/41 reviewable pauses); when no
+ * `review_paths` were declared on the paused iter (every pre-14b run,
+ * and any 14b+ pause without the attribute), `overview` is the fallback.
+ * Callers pass `reviewPaths` from `RunDetailView`'s `pauseReviewPaths`
+ * computed — it already handles the 14a–14d scalar `review_path`
+ * migration fallback.
  */
 export function smartDefault(detail: {
   status: string
   iters: ReadonlyArray<{ seq: number }>
+  reviewPaths?: ReadonlyArray<string>
 }): RunView {
+  if (detail.status === 'paused') {
+    const first = detail.reviewPaths?.[0]
+    if (first != null && first !== '') return { kind: 'artifact', path: first }
+    return { kind: 'overview' }
+  }
   if (detail.status === 'running' || detail.status === 'awaiting_children') {
     const latest = detail.iters[detail.iters.length - 1]
     if (latest != null) return { kind: 'iter', seq: latest.seq }
