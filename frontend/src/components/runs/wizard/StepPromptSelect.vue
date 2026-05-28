@@ -80,21 +80,21 @@ const showInlinePreview = ref(false)
         <input
           type="radio"
           name="prompt-mode"
-          value="existing"
-          :checked="mode === 'existing'"
-          @change="emit('update:mode', 'existing')"
-        >
-        Use a saved prompt
-      </label>
-      <label>
-        <input
-          type="radio"
-          name="prompt-mode"
           value="inline"
           :checked="mode === 'inline'"
           @change="emit('update:mode', 'inline')"
         >
         Write one inline
+      </label>
+      <label>
+        <input
+          type="radio"
+          name="prompt-mode"
+          value="existing"
+          :checked="mode === 'existing'"
+          @change="emit('update:mode', 'existing')"
+        >
+        Use a saved prompt
       </label>
     </div>
 

@@ -25,7 +25,10 @@ const latestStatus = computed<string | null>(
 </script>
 
 <template>
-  <article class="project-card">
+  <RouterLink
+    class="project-card"
+    :to="{ name: 'project', params: { id: project.id } }"
+  >
     <header class="project-card__head">
       <h3 class="project-card__name">
         {{ project.name }}
@@ -42,21 +45,7 @@ const latestStatus = computed<string | null>(
     <p class="project-card__path">
       {{ project.root_path }}
     </p>
-    <div class="project-card__actions">
-      <RouterLink
-        class="project-card__action"
-        :to="{ name: 'project', params: { id: project.id } }"
-      >
-        Open
-      </RouterLink>
-      <RouterLink
-        class="project-card__action"
-        :to="{ name: 'new-run', params: { id: project.id } }"
-      >
-        New run
-      </RouterLink>
-    </div>
-  </article>
+  </RouterLink>
 </template>
 
 <style scoped>
@@ -68,6 +57,19 @@ const latestStatus = computed<string | null>(
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.project-card:hover {
+  border-color: var(--color-accent);
+}
+
+.project-card:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
 }
 
 .project-card__head {
@@ -93,11 +95,5 @@ const latestStatus = computed<string | null>(
   font-size: 0.82em;
   color: var(--color-text-dim);
   word-break: break-all;
-}
-
-.project-card__actions {
-  display: flex;
-  gap: 1rem;
-  margin-top: 0.25rem;
 }
 </style>

@@ -73,7 +73,7 @@ describe('ProjectList', () => {
     expect(w.text()).toContain('no runs yet')
   })
 
-  it('Open / New run link to the correct named routes', async () => {
+  it('the whole card is a link to the project view (no per-card New run)', async () => {
     projectsData.value = [
       { id: 9, name: 'Delta', root_path: '/d' } as unknown as Project,
     ]
@@ -85,6 +85,9 @@ describe('ProjectList', () => {
     const links = w.findAllComponents(RouterLinkStub)
     const targets = links.map((l) => l.props('to'))
     expect(targets).toContainEqual({ name: 'project', params: { id: 9 } })
-    expect(targets).toContainEqual({ name: 'new-run', params: { id: 9 } })
+    // The wizard is only reachable from the project view — the hub does
+    // not offer a per-card "New run" shortcut.
+    expect(targets).not.toContainEqual({ name: 'new-run', params: { id: 9 } })
+    expect(targets).toHaveLength(1)
   })
 })

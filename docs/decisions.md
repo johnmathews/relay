@@ -3061,3 +3061,34 @@ The frontend `assistant_delta` listener (`stores/events.ts:onSseEvent`) special-
 - Replay path (REST `GET /api/runs/{id}/events`) is unaffected: deltas were never persisted, so a reconnecting client sees no pending rows but the canonical `AssistantText` is in the replay — exactly the same state as if the client had been live the whole time.
 
 **Related ADRs:** ADR-18 (AssistantText turn-end flush invariant — preserved); ADR-23 (SSE contract — ephemeral coexists by omitting `id:`); ADR-10 (event store is single source of truth — deltas do NOT become events); ADR-29 (OTel — deltas deliberately not mirrored); ADR-45 (Plan A heartbeat — shares the id-less ephemeral frame shape and `publish_ephemeral`-style channel discipline).
+
+
+## ADR-47 — Projects hub: whole-tile click target; New Run is a project-scoped affordance; inline prompt is the wizard default
+
+**Status:** active.
+
+**Date:** 2026-05-28.
+
+**Context.** The Projects hub originally rendered each project card with two sibling action links — "Open" (→ project view) and "New run" (→ wizard for that project) — and the New Run wizard's first step defaulted to "Use a saved prompt." In practice (a) the two card actions duplicated each other (Open and New run both required first selecting a project, so the card itself was the selection gesture); (b) "no saved prompts for this project yet — write one inline" was the empty state most of the time, so the default forced an extra click through an empty list before reaching the textarea. Both were small frictions surfaced by acceptance use.
+
+**Decision.**
+
+1. The whole project card on the hub is a single `<RouterLink>` to that project's detail view (`/projects/:id`). The action row inside the card is removed — no "Open", no "New run". Hover/focus styling moves to the card root.
+2. "New run" is no longer a hub-level affordance. The wizard is reachable only from the Project view's existing "New run" button (and its keyboard equivalent), so a run is always created against an already-selected project. This collapses the per-card action row and removes the only path that fanned out "which project do I want this run on?" choices to the hub.
+3. The New Run wizard's step-1 default mode is **"Write one inline"** (textarea + Write/Preview toggle visible on mount). "Use a saved prompt" is the secondary option and reveals the saved-prompts list when selected. Initial `Next` is disabled until the textarea has content (the existing `hasPrompt` gate is unchanged — no new state).
+
+**Alternatives considered.**
+
+- **Keep both per-card actions, add card-body click as a third path.** Rejected: three affordances doing the same thing on a single tile is noise, and the per-card "New run" link still implied "you can start a run without entering the project first," which is not actually how the wizard works (it always needs a project_id).
+- **Pick the wizard's default mode dynamically (saved if any exist, inline otherwise).** Rejected: the default would silently flip between visits as the prompt library grows, and a user who deliberately writes inline today shouldn't have to re-pick the mode tomorrow because they happened to save a prompt in between. Stable defaults are easier to muscle-memory.
+- **Add a small ADR-skip note.** Rejected: spec.md §9.1 documents hub affordances and wizard step ordering by name, so a spec change without an ADR would leave the rationale unrecorded for the next reader.
+
+**Consequences.**
+
+- `frontend/src/components/projects/ProjectCard.vue`: `<article>` → `<RouterLink>`, action row removed, hover/focus styling added.
+- `frontend/src/views/NewRunWizard.vue`: `promptMode` default `'existing' → 'inline'`.
+- `frontend/src/components/runs/wizard/StepPromptSelect.vue`: radio order swapped (inline first, saved second).
+- Tests: `ProjectList.spec.ts` asserts a single card-level link (no `new-run` route), `HubView.spec.ts` switches `RouterLink: true` → `RouterLinkStub` so the card slot renders, `NewRunWizard.spec.ts` adds an inline-default assertion and prepends a mode switch to every test that picks a saved prompt. Full gate (`npm run check`: eslint + vue-tsc + vitest 234/234) green.
+- Spec §9.1 updated to match: hub has one top-level action ("Register project"), card is a single link, wizard prompt step defaults to inline.
+
+**Related ADRs:** ADR-15 (dashboard is the primary control plane — this consolidates the hub's primary action surface); ADR-26 (frontend toolchain mandates — change uses the same vue-router/Pinia stack with no new deps).

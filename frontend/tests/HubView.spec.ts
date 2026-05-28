@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { mount, flushPromises } from '@vue/test-utils'
+import { mount, RouterLinkStub, flushPromises } from '@vue/test-utils'
 import { ref, computed, defineComponent, h } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import type { Project } from '../src/lib/queries'
@@ -31,7 +31,7 @@ function mountHub(): ReturnType<typeof mount> {
   return mount(HubView, {
     global: {
       plugins: [createPinia()],
-      stubs: { RouterLink: true },
+      stubs: { RouterLink: RouterLinkStub },
     },
   })
 }

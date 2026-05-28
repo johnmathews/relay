@@ -153,19 +153,18 @@ describe('NewRunWizard', () => {
     state.createLoading.value = false
   })
 
-  it('renders step 1 with the project prompts', async () => {
+  it('defaults to write-inline mode and shows the textarea, not the saved list', async () => {
     const { wrapper } = await mountAt()
-    const list = wrapper.get('[data-testid="prompt-list"]')
-    expect(list.text()).toContain('Refactor')
-    expect(list.text()).toContain('v2')
-    expect(list.text()).toContain('Add tests')
-  })
-
-  it('lets the user type an inline prompt instead', async () => {
-    const { wrapper } = await mountAt()
-    await wrapper.get('input[value="inline"]').setValue()
+    expect(wrapper.find('textarea[name="inline-body"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="prompt-list"]').exists()).toBe(false)
+    // Next is disabled until the user types a prompt.
+    expect(
+      (
+        wrapper.get('[data-testid="wizard-next"]')
+          .element as HTMLButtonElement
+      ).disabled,
+    ).toBe(true)
     await wrapper.get('textarea[name="inline-body"]').setValue('do the thing')
-    // Advancing past step 1 requires a non-empty prompt; Next enabled now.
     expect(
       (
         wrapper.get('[data-testid="wizard-next"]')
@@ -174,10 +173,20 @@ describe('NewRunWizard', () => {
     ).toBe(false)
   })
 
+  it('switching to the saved-prompt mode reveals the project prompts list', async () => {
+    const { wrapper } = await mountAt()
+    await wrapper.get('input[value="existing"]').setValue()
+    const list = wrapper.get('[data-testid="prompt-list"]')
+    expect(list.text()).toContain('Refactor')
+    expect(list.text()).toContain('v2')
+    expect(list.text()).toContain('Add tests')
+  })
+
   it('Start is disabled until the preview has loaded successfully', async () => {
     const { wrapper } = await mountAt()
     // Pick an existing prompt, walk to the merged Preview & Start step
     // WITHOUT a preview loaded yet.
+    await wrapper.get('input[value="existing"]').setValue()
     await wrapper.get('input[name="existing-prompt"][value="11"]').setValue()
     await wrapper.get('[data-testid="wizard-next"]').trigger('click') // → opts
     await wrapper.get('[data-testid="wizard-next"]').trigger('click') // → preview & start
@@ -191,6 +200,7 @@ describe('NewRunWizard', () => {
 
   it('enables Start after the preview loads, re-disables on prompt change', async () => {
     const { wrapper } = await mountAt()
+    await wrapper.get('input[value="existing"]').setValue()
     await wrapper.get('input[name="existing-prompt"][value="11"]').setValue()
     await wrapper.get('[data-testid="wizard-next"]').trigger('click')
     await wrapper.get('[data-testid="wizard-next"]').trigger('click')
@@ -238,6 +248,7 @@ describe('NewRunWizard', () => {
   it('Start posts exactly one prompt source + only set options, then navigates', async () => {
     state.createMutate.mockResolvedValue({ id: 'run-99' })
     const { wrapper, router } = await mountAt('5')
+    await wrapper.get('input[value="existing"]').setValue()
     await wrapper.get('input[name="existing-prompt"][value="11"]').setValue()
     await wrapper.get('[data-testid="wizard-next"]').trigger('click') // opts
     await wrapper
@@ -266,6 +277,7 @@ describe('NewRunWizard', () => {
 
   it('Cancel navigates away and never calls POST /api/runs', async () => {
     const { wrapper, router } = await mountAt('5')
+    await wrapper.get('input[value="existing"]').setValue()
     await wrapper.get('input[name="existing-prompt"][value="11"]').setValue()
     await wrapper.get('[data-testid="wizard-cancel"]').trigger('click')
     await flushPromises()
@@ -275,6 +287,7 @@ describe('NewRunWizard', () => {
 
   it('viewing the preview never calls POST /api/runs', async () => {
     const { wrapper } = await mountAt()
+    await wrapper.get('input[value="existing"]').setValue()
     await wrapper.get('input[name="existing-prompt"][value="11"]').setValue()
     await wrapper.get('[data-testid="wizard-next"]').trigger('click')
     await wrapper.get('[data-testid="wizard-next"]').trigger('click')
@@ -294,6 +307,7 @@ describe('NewRunWizard', () => {
       throw state.createError.value
     })
     const { wrapper, router } = await mountAt('5')
+    await wrapper.get('input[value="existing"]').setValue()
     await wrapper.get('input[name="existing-prompt"][value="11"]').setValue()
     await wrapper.get('[data-testid="wizard-next"]').trigger('click')
     await wrapper.get('[data-testid="wizard-next"]').trigger('click')
@@ -317,6 +331,7 @@ describe('NewRunWizard', () => {
   it('prefills Options with the server defaults so the inputs show concrete numbers', async () => {
     state.settingsDefaults.value = { max_iters: 8, iter_timeout: 600 }
     const { wrapper } = await mountAt()
+    await wrapper.get('input[value="existing"]').setValue()
     await wrapper.get('input[name="existing-prompt"][value="11"]').setValue()
     await wrapper.get('[data-testid="wizard-next"]').trigger('click') // → opts
     await flushPromises()
@@ -335,6 +350,7 @@ describe('NewRunWizard', () => {
     state.settingsDefaults.value = { max_iters: 8, iter_timeout: 600 }
     state.createMutate.mockResolvedValue({ id: 'run-100' })
     const { wrapper } = await mountAt('5')
+    await wrapper.get('input[value="existing"]').setValue()
     await wrapper.get('input[name="existing-prompt"][value="11"]').setValue()
     await wrapper.get('[data-testid="wizard-next"]').trigger('click') // → opts
     await wrapper.get('[data-testid="wizard-next"]').trigger('click') // → preview & start

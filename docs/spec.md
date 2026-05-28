@@ -781,9 +781,11 @@ artifacts, managing prompts, and registering projects.
 ### 9.1 MVP views
 
 - **Hub view** (`/`): list of registered projects with active run
-  indicators. Each project card shows the most recent run's status.
-  Top-level actions: "Register project" (form), "New run on …" (jumps
-  into the New Run wizard scoped to that project).
+  indicators. Each project card shows the most recent run's status; the
+  whole card is a single link to that project's detail view (ADR-47).
+  Top-level action: "Register project" (form). Starting a new run is a
+  project-scoped affordance — exposed on the Project view, not the hub,
+  so a run is always created against an already-selected project.
 - **Project view** (`/projects/:id`):
   - **Runs pane** — list of runs (active + recent) with status badges
     (running / done / failed / paused). Click a run to enter its
@@ -798,8 +800,10 @@ artifacts, managing prompts, and registering projects.
     `shiki`. Diffs rendered via `diff2html` when comparing two files.
   - **"New Run" button** — launches the New Run wizard.
 - **New Run wizard** (`/projects/:id/new-run`):
-  1. **Prompt selection** — pick an existing prompt from the project
-     library, or write one inline (textarea with markdown preview).
+  1. **Prompt selection** — write a prompt inline (textarea with markdown
+     preview) is the default option; "Use a saved prompt" is the
+     secondary option for picking from the project's saved-prompt
+     library (ADR-47).
   2. **Options** — `max_iters`, `iter_timeout`, model override (defaults
      from server config).
   3. **Preview** — `GET /api/runs/:id/preview` returns the rendered

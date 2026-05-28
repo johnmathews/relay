@@ -45,7 +45,7 @@ type Step = 0 | 1 | 2
 const step = ref<Step>(0)
 const STEP_TITLES = ['Prompt', 'Options', 'Preview & start'] as const
 
-const promptMode = ref<'existing' | 'inline'>('existing')
+const promptMode = ref<'existing' | 'inline'>('inline')
 const promptSource = ref<PromptSource | null>(null)
 const maxIters = ref<number | null>(null)
 const iterTimeout = ref<number | null>(null)
