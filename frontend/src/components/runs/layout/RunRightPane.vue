@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import StatusBadge from '@/components/shared/StatusBadge.vue'
 import RunHealthBadge from '@/components/runs/RunHealthBadge.vue'
 import ParentRunChip from '@/components/shared/ParentRunChip.vue'
 import ActionButton from '@/components/shared/ActionButton.vue'
 import PauseAnswerForm from '@/components/runs/PauseAnswerForm.vue'
+import TimelineDisplayMenu from '@/components/runs/TimelineDisplayMenu.vue'
 import OverviewPanel from './OverviewPanel.vue'
 import IterTimelinePanel from './IterTimelinePanel.vue'
 import ArtifactPanel from './ArtifactPanel.vue'
@@ -119,6 +120,44 @@ function onCancel(): void {
 function onResumed(): void {
   emit('resumed')
 }
+
+// Per-run dismissal of the red failure banner. Persisted in
+// localStorage keyed by run id so a reload after dismissing keeps it
+// hidden; visiting a different failed run shows that run's banner
+// again. We reset the in-component flag whenever the run id changes
+// (the view is re-keyed on /runs/:id navigation anyway, but a future
+// change might not remount).
+const DISMISS_KEY_PREFIX = 'relay.failureBanner.dismissed:'
+
+function readDismissed(runId: string): boolean {
+  try {
+    return localStorage.getItem(DISMISS_KEY_PREFIX + runId) === '1'
+  } catch {
+    return false
+  }
+}
+
+const failureDismissed = ref<boolean>(readDismissed(props.detail.id))
+
+watch(
+  () => props.detail.id,
+  (id) => {
+    failureDismissed.value = readDismissed(id)
+  },
+)
+
+function dismissFailure(): void {
+  failureDismissed.value = true
+  try {
+    localStorage.setItem(DISMISS_KEY_PREFIX + props.detail.id, '1')
+  } catch {
+    // Storage unavailable — session-only dismissal still applies.
+  }
+}
+
+const showFailure = computed(
+  () => failureInfo.value != null && !failureDismissed.value,
+)
 </script>
 
 <template>
@@ -163,25 +202,34 @@ function onResumed(): void {
         </div>
       </dl>
 
-      <div
-        v-if="isCancellable"
-        class="right-pane__actions"
-      >
+      <div class="right-pane__actions">
         <ActionButton
+          v-if="isCancellable"
           :loading="cancelling"
           data-testid="cancel-run"
           @click="onCancel"
         >
           {{ cancelLabel }}
         </ActionButton>
+        <TimelineDisplayMenu />
       </div>
 
       <aside
-        v-if="failureInfo"
+        v-if="showFailure && failureInfo"
         class="right-pane__failure"
         data-testid="run-failure-banner"
         :data-reason="failureInfo.reason"
       >
+        <button
+          type="button"
+          class="right-pane__failure-close"
+          data-testid="dismiss-failure-banner"
+          aria-label="Dismiss failure banner"
+          title="Dismiss"
+          @click="dismissFailure"
+        >
+          ×
+        </button>
         <strong class="right-pane__failure-title">
           Run {{ detail.status }} — {{ failureInfo.reason }}
         </strong>
@@ -285,23 +333,52 @@ function onResumed(): void {
 
 .right-pane__actions {
   display: flex;
+  align-items: center;
   gap: 0.5rem;
+  flex-wrap: wrap;
 }
 
 .right-pane__failure {
-  border: 1px solid #d04a4a;
-  border-left: 4px solid #d04a4a;
-  background: rgba(208, 74, 74, 0.08);
+  position: relative;
+  border: 1px solid var(--color-danger-border);
+  border-left: 4px solid var(--color-danger-border);
+  background: var(--color-danger-bg);
   border-radius: 6px;
-  padding: 0.75rem 0.9rem;
+  padding: 0.75rem 2.4rem 0.75rem 0.9rem;
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
 }
 
+.right-pane__failure-close {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.45rem;
+  width: 1.8rem;
+  height: 1.8rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--color-danger-strong);
+  font: inherit;
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.right-pane__failure-close:hover,
+.right-pane__failure-close:focus-visible {
+  border-color: var(--color-danger-border);
+  background: var(--color-surface-hover);
+}
+
 .right-pane__failure-title {
   font-family: var(--font-mono);
-  color: #b03a3a;
+  color: var(--color-danger-strong);
 }
 
 .right-pane__failure-marker,

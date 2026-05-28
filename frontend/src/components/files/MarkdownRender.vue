@@ -65,7 +65,7 @@ watch(
 }
 
 .markdown-render__error {
-  color: #ff6b6b;
+  color: var(--color-danger);
 }
 
 .markdown-render__body :deep(pre) {

@@ -234,7 +234,7 @@ const showInlinePreview = ref(false)
 
 .inline-toolbar button[aria-pressed='true'] {
   background: var(--color-accent);
-  color: #07101f;
+  color: var(--color-accent-fg);
 }
 
 .inline-body {

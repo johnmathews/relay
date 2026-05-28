@@ -55,7 +55,7 @@ function onClick(ev: MouseEvent): void {
   border-radius: 6px;
   border: 1px solid var(--color-border);
   background: var(--color-accent);
-  color: #07101f;
+  color: var(--color-accent-fg);
   font: inherit;
   font-weight: 600;
   cursor: pointer;

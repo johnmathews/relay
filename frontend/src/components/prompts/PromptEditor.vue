@@ -274,7 +274,7 @@ async function onSubmit(): Promise<void> {
 
 .prompt-editor__error {
   margin: 0;
-  color: #ff6b6b;
+  color: var(--color-danger);
   font-size: 0.85em;
 }
 

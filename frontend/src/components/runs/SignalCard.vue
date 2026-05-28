@@ -55,11 +55,11 @@ const argsText = computed(() => {
 
 <style scoped>
 .signal-card {
-  border: 1px solid #e0b341;
+  border: 1px solid var(--color-warning);
   border-left-width: 4px;
   border-radius: 6px;
   padding: 0.55rem 0.75rem;
-  background: rgba(224, 179, 65, 0.08);
+  background: var(--color-warning-bg);
 }
 
 .signal-card__head {
@@ -72,7 +72,7 @@ const argsText = computed(() => {
   font-size: 0.7em;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: #e0b341;
+  color: var(--color-warning);
   font-weight: 700;
 }
 

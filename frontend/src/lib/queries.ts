@@ -389,9 +389,11 @@ export function useProjectsQuery(): UseQueryReturn<Project[]> {
 /** `useQuery` for a single project (`GET /api/projects/{id}`). */
 export function useProjectQuery(
   id: MaybeRefOrGetter<number>,
+  enabled: MaybeRefOrGetter<boolean> = true,
 ): UseQueryReturn<Project> {
   return useQuery({
     key: () => keys.project(toValue(id)),
+    enabled: () => toValue(enabled) && toValue(id) > 0,
     query: async () =>
       unwrap(
         await api.GET('/api/projects/{project_id}', {

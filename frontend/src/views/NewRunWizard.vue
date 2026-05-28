@@ -276,7 +276,7 @@ async function start(): Promise<void> {
 }
 
 .wizard__error {
-  color: #ff6b6b;
+  color: var(--color-danger);
   font-size: 0.88em;
   margin: 0.5rem 0 0;
 }

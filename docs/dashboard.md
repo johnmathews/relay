@@ -155,6 +155,149 @@ on success, which drops the deleted row from every project run list,
 hub status, and detail/children queries (all nested under `['runs',
 …]`).
 
+## Theme system (light + dark)
+
+The dashboard supports a light and a dark palette. `styles/base.css`
+defines two parallel token sets — surfaces, borders, text, accent,
+plus semantic `--color-{danger,warning,success,running}` and the
+banner/hover/shadow helpers — and switches between them via a
+`data-theme` attribute on `<html>`. `lib/theme.ts` is the single
+writer: it persists the user's choice (`'auto' | 'light' | 'dark'`)
+under `localStorage['relay.theme']`, applies the attribute during
+`applyInitialTheme()` (called from `main.ts` **before** `app.mount`
+so the first paint already has the right palette — no FOUC), and
+re-evaluates the resolved palette when `prefers-color-scheme` flips
+while the user is in `auto`. `components/shared/ThemeToggle.vue`
+sits in the top nav and cycles `auto → light → dark → auto` on
+click.
+
+**Token rule.** Components must read `var(--color-*)` and never a
+hex literal — a theme flip is entirely token-driven. Both palettes
+target ≥ AA contrast for text (`--color-text` on `--color-bg`) and
+≥ 4.5:1 for status accents on their banner background; the failure
+banner's title in light theme is `#8e0e0e` on a near-white surface
+(~11:1). New components that need a status color should pick from
+the existing semantic tokens, not introduce new literals.
+
+## Run-detail layout shell
+
+`RunDetailView` is a two-column grid (`RunSidebar` left rail +
+`RunRightPane` right body) with selection driven by a `?view=`
+query param parsed via `lib/runView.ts`. The sidebar renders, in
+order:
+
+- **Project title row** (`[data-testid="sidebar-project-title"]`).
+  A router-link back to `/projects/:id` rendering the project's
+  `name` under a "PROJECT" eyebrow — anchors the operator in which
+  project the current run belongs to. Hidden until the project
+  query resolves so the layout doesn't reflow on hydration; the
+  query is driven off `detail.project_id` via `useProjectQuery`
+  (which now takes an optional `enabled` flag so the sentinel
+  pre-detail id `0` never fires a request).
+- **Overview** button, then per-iter rows (`#N` + phase), then the
+  artifacts file tree (hidden when listing 404s), then the children
+  list when present.
+
+`RunRightPane` renders one of `OverviewPanel` / `IterTimelinePanel`
+/ `ArtifactPanel` depending on selection. `IterTimelinePanel` is
+**only** the scoped TimelinePane — the legacy `ItersPane` is no
+longer rendered below it (the sidebar already lists every iter as
+a click-target; rendering both was confusing duplication). The
+component still exists for other call-sites but is no longer
+imported by the layout shell.
+
+## Dismissable failure banner
+
+The red `right-pane__failure` banner that appears for `failed` /
+`cancelled` runs has a `×` close affordance
+(`[data-testid="dismiss-failure-banner"]`). Clicking it sets
+`localStorage['relay.failureBanner.dismissed:<runId>'] = '1'`, so a
+reload or revisit of the same run keeps it dismissed — useful when
+the operator has read the diagnosis and wants the timeline back.
+The flag is per-run; a different failed run shows its banner again.
+
+## Timeline step cards
+
+Each collapsible step (tool / signal / assistant / thinking /
+generic) renders as a bordered card with a clickable header strip
+and a body that hides when collapsed. The header is always
+visible — that is the load-bearing UX choice for long development
+iters: a 50-step bash-heavy iter is scannable without expanding
+anything.
+
+**Header anatomy.** From left to right: `#seq` · type glyph
+(`⚒` tool / `⚑` signal / `▣` assistant / `◌` thinking / `◇`
+generic) · the tool/signal name in mono · a status icon for tool
+rows (`✓` ok / `✗` errored / `…` in-flight) · duration
+(`749ms` / `23.5s` / `1m 23s`) · the **smart preview** (per-tool,
+see below) · trailing `[⧉ Copy]` `[▸ Expand]` buttons. The whole
+header is `role="button"` and toggles the body on click / Enter /
+Space; the buttons stop event propagation so Copy doesn't
+inadvertently collapse the row. An expanded card shows a
+`border-bottom` divider on the header so the body reads as a
+distinct zone.
+
+**Smart preview.** `previewFor(row)` in `TimelinePane.vue` returns
+a one-line summary keyed off the tool name (case-insensitive —
+pi emits `Bash` or `bash` depending on provider):
+
+- `bash` → `$ <command>` (whitespace collapsed)
+- `write` / `edit` → `→ <file_path>`
+- `read` → `← <file_path>`
+- `grep` → `? <pattern>`
+- `glob` → `* <pattern>`
+- `task` / `agent` → `<description>` (or `prompt` fallback)
+- assistant / thinking → first non-empty line
+- generic → stringified payload
+- unknown tool → first arg key + value
+
+Truncated to 140 chars with `…`. Empty string when there is no
+useful preview — the column collapses, the header still reads.
+
+**Inline rows.** `boundary` / `pause` / `usage` / `artifact_edited`
+rows are intrinsically one-liners with their own self-contained
+chrome (timing badges, file links) — they keep the legacy inline
+layout (`.timeline__row--inline`) with a single Copy button
+anchored top-right. They never get the card treatment because
+they have nothing to collapse into.
+
+**Display menu.** The "Expand by default" popover (which row types
+expand on first render) is mounted by `RunRightPane` next to the
+cancel button via `TimelineDisplayMenu.vue` — it consumes the
+global `useTimelinePrefsStore` so its position is independent of
+the timeline. It used to float at the top of the timeline scroll
+container (sticky + `pointer-events: none` + an absolute popover);
+that was hard to anchor visually and the user reported it as
+"floating awkwardly" — the new location is in the right-pane
+chrome where every other action lives.
+
+The button itself reads AS a dropdown trigger (not a status pill):
+gear glyph + "Display" label + a trailing chevron `▾` that rotates
+180° when the popover is open, and `aria-haspopup="menu"` +
+`aria-expanded` reflecting the open state. Pattern: GitHub filter
+pills, Linear's Display options, Tailwind UI menu buttons.
+
+**Per-type colour palette.** Each row type renders with a pastel
+background + saturated border keyed off `data-row-type` on the
+card root:
+
+| Type | Hue | Tokens |
+|---|---|---|
+| assistant | blue | `--color-row-assistant-{bg,border}` |
+| thinking | violet | `--color-row-thinking-{bg,border}` |
+| tool | amber | `--color-row-tool-{bg,border}` |
+| signal | green | `--color-row-signal-{bg,border}` |
+| generic | slate | `--color-row-other-{bg,border}` |
+
+Light theme uses solid pastel surfaces (`#eff6ff`, `#f5f3ff`, …)
+with a saturated same-hue border (`#60a5fa`, `#a78bfa`, …). Dark
+theme uses low-alpha tints over the dark surface for the
+background (`rgba(96, 165, 250, 0.10)`, …) with higher-alpha
+borders. The error state on a tool row (`✗` status) still wins —
+`.timeline__row--error` flips the border to `--color-danger` so a
+failed step reads as "fix this" even though the type colour is
+amber.
+
 ## Worktree pane — MVP degradation
 
 The Worktree pane shows read-only `worktree_path` + `branch` from the

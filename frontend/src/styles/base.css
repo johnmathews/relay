@@ -1,14 +1,170 @@
-:root {
+/*
+ * Theme tokens.
+ *
+ * Two palettes — dark (default) and light — selected by the
+ * `data-theme` attribute on `<html>`. `lib/theme.ts` is the single
+ * writer; it persists the user choice ("auto" / "light" / "dark") in
+ * localStorage and reflects the resolved value on the root before the
+ * Vue app mounts so there is no FOUC. With `data-theme="auto"` (or
+ * absent) the dark palette wins and `@media (prefers-color-scheme:
+ * light)` flips to light — preserving the OS default story.
+ *
+ * Semantic tokens (NOT raw colors) are the public API; every component
+ * reads `var(--color-*)` and never a hex literal so a theme flip is
+ * fully driven from here. Hex values are tuned for ≥ AA contrast
+ * against their intended background in both themes (text on bg ≥ 7:1,
+ * UI/status accents ≥ 4.5:1).
+ */
+
+:root,
+:root[data-theme='dark'] {
+  /* Surfaces & text */
   --color-bg: #0f1115;
   --color-surface: #181b21;
+  --color-surface-elevated: #1f232b;
+  --color-surface-hover: rgba(255, 255, 255, 0.06);
   --color-border: #2a2f38;
+  --color-border-strong: #3a4150;
   --color-text: #e6e8eb;
   --color-text-dim: #9aa1ab;
+  --color-shadow: rgba(0, 0, 0, 0.35);
+
+  /* Accent (links / primary buttons) */
   --color-accent: #5b9dff;
+  --color-accent-soft: rgba(91, 157, 255, 0.12);
+  --color-accent-fg: #07101f;
+
+  /* Status / semantic */
+  --color-danger: #ff6b6b;
+  --color-danger-strong: #ff8a8a;
+  --color-danger-bg: rgba(255, 107, 107, 0.10);
+  --color-danger-border: #d04a4a;
+
+  --color-warning: #e0b341;
+  --color-warning-bg: rgba(224, 179, 65, 0.08);
+  --color-warning-bg-strong: rgba(224, 179, 65, 0.18);
+
+  --color-success: #4ec9a3;
+  --color-running: #f08a3e;
+
+  /* Per-row-type palette — dark theme.
+     Tuned for legibility on the dark base: low-alpha tint over the
+     surface for the background, higher-alpha for the border. The
+     header strip on a card inherits the bg via mix-blend in the row
+     CSS so the body stays calm. */
+  --color-row-assistant-bg: rgba(96, 165, 250, 0.10);
+  --color-row-assistant-border: rgba(96, 165, 250, 0.45);
+  --color-row-thinking-bg: rgba(167, 139, 250, 0.10);
+  --color-row-thinking-border: rgba(167, 139, 250, 0.45);
+  --color-row-tool-bg: rgba(251, 191, 36, 0.08);
+  --color-row-tool-border: rgba(251, 191, 36, 0.40);
+  --color-row-signal-bg: rgba(74, 222, 128, 0.09);
+  --color-row-signal-border: rgba(74, 222, 128, 0.45);
+  --color-row-other-bg: rgba(148, 163, 184, 0.07);
+  --color-row-other-border: rgba(148, 163, 184, 0.35);
+}
+
+:root[data-theme='light'] {
+  --color-bg: #f7f8fa;
+  --color-surface: #ffffff;
+  --color-surface-elevated: #ffffff;
+  --color-surface-hover: rgba(0, 0, 0, 0.05);
+  --color-border: #d8dde5;
+  --color-border-strong: #b8c0cc;
+  --color-text: #1c2128;
+  --color-text-dim: #57606a;
+  --color-shadow: rgba(15, 17, 21, 0.12);
+
+  --color-accent: #0969da;
+  --color-accent-soft: rgba(9, 105, 218, 0.10);
+  --color-accent-fg: #ffffff;
+
+  --color-danger: #b42318;
+  --color-danger-strong: #8e0e0e;
+  --color-danger-bg: rgba(180, 35, 24, 0.07);
+  --color-danger-border: #b42318;
+
+  --color-warning: #8a5d00;
+  --color-warning-bg: rgba(176, 117, 0, 0.10);
+  --color-warning-bg-strong: rgba(176, 117, 0, 0.20);
+
+  --color-success: #1f7a4d;
+  --color-running: #b15a00;
+
+  /* Per-row-type palette — light theme.
+     Pastel surfaces (very low chroma) with the same hue at higher
+     saturation for the border, mirroring the dark theme contract. */
+  --color-row-assistant-bg: #eff6ff;
+  --color-row-assistant-border: #60a5fa;
+  --color-row-thinking-bg: #f5f3ff;
+  --color-row-thinking-border: #a78bfa;
+  --color-row-tool-bg: #fef9c3;
+  --color-row-tool-border: #eab308;
+  --color-row-signal-bg: #dcfce7;
+  --color-row-signal-border: #4ade80;
+  --color-row-other-bg: #f1f5f9;
+  --color-row-other-border: #94a3b8;
+}
+
+/* Auto: follow OS preference. Only applies when no explicit data-theme
+   value is set, or when data-theme="auto". The dark palette above
+   already covers the "no preference" + "dark" branches. */
+@media (prefers-color-scheme: light) {
+  :root[data-theme='auto'],
+  :root:not([data-theme]) {
+    --color-bg: #f7f8fa;
+    --color-surface: #ffffff;
+    --color-surface-elevated: #ffffff;
+    --color-surface-hover: rgba(0, 0, 0, 0.05);
+    --color-border: #d8dde5;
+    --color-border-strong: #b8c0cc;
+    --color-text: #1c2128;
+    --color-text-dim: #57606a;
+    --color-shadow: rgba(15, 17, 21, 0.12);
+
+    --color-accent: #0969da;
+    --color-accent-soft: rgba(9, 105, 218, 0.10);
+    --color-accent-fg: #ffffff;
+
+    --color-danger: #b42318;
+    --color-danger-strong: #8e0e0e;
+    --color-danger-bg: rgba(180, 35, 24, 0.07);
+    --color-danger-border: #b42318;
+
+    --color-warning: #8a5d00;
+    --color-warning-bg: rgba(176, 117, 0, 0.10);
+    --color-warning-bg-strong: rgba(176, 117, 0, 0.20);
+
+    --color-success: #1f7a4d;
+    --color-running: #b15a00;
+
+    --color-row-assistant-bg: #eff6ff;
+    --color-row-assistant-border: #60a5fa;
+    --color-row-thinking-bg: #f5f3ff;
+    --color-row-thinking-border: #a78bfa;
+    --color-row-tool-bg: #fef9c3;
+    --color-row-tool-border: #eab308;
+    --color-row-signal-bg: #dcfce7;
+    --color-row-signal-border: #4ade80;
+    --color-row-other-bg: #f1f5f9;
+    --color-row-other-border: #94a3b8;
+  }
+}
+
+:root {
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
     'Helvetica Neue', Arial, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
     monospace;
+  color-scheme: dark light;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
 }
 
 * {
@@ -58,6 +214,10 @@ a:hover {
 .app-nav__brand {
   font-weight: 600;
   letter-spacing: 0.02em;
+}
+
+.app-nav__spacer {
+  flex: 1;
 }
 
 .app-main {

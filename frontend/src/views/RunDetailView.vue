@@ -28,6 +28,7 @@ import {
   useCancelRunMutation,
   useInvalidate,
   useRunChildrenQuery,
+  useProjectQuery,
   asAsyncState,
   type RunDetail,
 } from '@/lib/queries'
@@ -122,6 +123,17 @@ const iters = computed(() => detail.value?.iters ?? [])
 const childrenQuery = useRunChildrenQuery(() => props.id)
 const children = computed(() => childrenQuery.data.value ?? [])
 const childCount = computed(() => children.value.length)
+
+// Project lookup so the sidebar can show "which project am I in" as a
+// title at the top. Reactive on detail.project_id; an inert sentinel
+// (0) before detail lands ensures the query never fires with NaN/null.
+const projectQuery = useProjectQuery(() => detail.value?.project_id ?? 0)
+const project = computed(() => {
+  if (detail.value == null) return null
+  const p = projectQuery.data.value
+  if (p == null) return null
+  return { id: p.id, name: p.name }
+})
 
 /** Cancel button label — cascade-aware when parent has live children. */
 const cancelLabel = computed(() => {
@@ -256,6 +268,7 @@ onBeforeUnmount(() => {
         <div class="run-detail__layout">
           <RunSidebar
             :run-id="detail.id"
+            :project="project"
             :selection="currentView"
             :iters="detail.iters ?? []"
             :children="children"

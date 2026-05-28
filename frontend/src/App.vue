@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { RouterLink, RouterView } from 'vue-router'
+import ThemeToggle from '@/components/shared/ThemeToggle.vue'
 </script>
 
 <template>
@@ -11,7 +12,8 @@ import { RouterLink, RouterView } from 'vue-router'
       >
         relay
       </RouterLink>
-      <!-- Nav placeholder — populated by later Phase 4 units (W2+). -->
+      <span class="app-nav__spacer" />
+      <ThemeToggle />
     </nav>
     <main class="app-main">
       <!--

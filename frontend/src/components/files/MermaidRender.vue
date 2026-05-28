@@ -51,7 +51,7 @@ watch(
 }
 
 .mermaid-render :deep(.render-mermaid-error__note) {
-  color: #ff6b6b;
+  color: var(--color-danger);
   font-size: 0.85em;
   margin: 0 0 0.4rem;
 }

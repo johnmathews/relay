@@ -117,7 +117,7 @@ function clamp(s: string): string {
 }
 
 .tool-card--error {
-  border-color: #ff6b6b;
+  border-color: var(--color-danger);
 }
 
 .tool-card__head {
@@ -134,7 +134,7 @@ function clamp(s: string): string {
 
 .tool-card__badge {
   font-size: 0.72em;
-  color: #ff6b6b;
+  color: var(--color-danger);
   border: 1px solid currentcolor;
   border-radius: 999px;
   padding: 0 0.5em;

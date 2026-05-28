@@ -224,7 +224,7 @@ function fmtBytes(n: number): string {
 }
 
 .file-viewer__error {
-  color: #ff6b6b;
+  color: var(--color-danger);
 }
 
 .file-viewer__binary {

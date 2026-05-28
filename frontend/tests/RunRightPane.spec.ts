@@ -194,4 +194,41 @@ describe('RunRightPane — failure banner', () => {
     const w = mountPane({ detail: { ...baseDetail, status: 'done' } })
     expect(w.find('[data-testid="run-failure-banner"]').exists()).toBe(false)
   })
+
+  it('hides the failure banner after clicking dismiss and persists per run', async () => {
+    const failed = {
+      ...baseDetail,
+      id: 'run-dismiss-1',
+      status: 'failed',
+      iters: [
+        {
+          seq: 1,
+          phase: 'planning',
+          signal_kind: null,
+          signal_args: null,
+          exit_reason: 'agent_end_no_signal',
+        },
+      ],
+    }
+    try {
+      localStorage.removeItem(
+        'relay.failureBanner.dismissed:run-dismiss-1',
+      )
+    } catch {
+      // ignore
+    }
+    const w = mountPane({ detail: failed })
+    expect(w.find('[data-testid="run-failure-banner"]').exists()).toBe(true)
+    await w.get('[data-testid="dismiss-failure-banner"]').trigger('click')
+    expect(w.find('[data-testid="run-failure-banner"]').exists()).toBe(false)
+    expect(
+      localStorage.getItem('relay.failureBanner.dismissed:run-dismiss-1'),
+    ).toBe('1')
+
+    // A fresh mount with the same run id reads the dismissed flag back.
+    const w2 = mountPane({ detail: failed })
+    expect(w2.find('[data-testid="run-failure-banner"]').exists()).toBe(
+      false,
+    )
+  })
 })

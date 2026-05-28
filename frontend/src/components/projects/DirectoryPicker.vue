@@ -191,7 +191,7 @@ function select(): void {
   border: 1px solid var(--color-border);
   border-radius: 8px;
   background: var(--color-surface);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 4px 16px var(--color-shadow);
   overflow: hidden;
 }
 
@@ -256,7 +256,7 @@ function select(): void {
 }
 
 .dir-picker__entry:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--color-surface-hover);
 }
 
 .dir-picker__empty,
@@ -269,7 +269,7 @@ function select(): void {
 }
 
 .dir-picker__error {
-  color: #ff6b6b;
+  color: var(--color-danger);
 }
 
 .dir-picker__footer {

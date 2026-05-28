@@ -549,10 +549,10 @@ async function onSubmit(): Promise<void> {
 
 <style scoped>
 .pause-form {
-  border: 1px solid #e0b341;
+  border: 1px solid var(--color-warning);
   border-radius: 8px;
   padding: 1rem;
-  background: rgba(224, 179, 65, 0.07);
+  background: var(--color-warning-bg);
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
@@ -594,7 +594,7 @@ async function onSubmit(): Promise<void> {
 }
 
 .pause-form__error {
-  color: #ff6b6b;
+  color: var(--color-danger);
   margin: 0.3rem 0;
   font-size: 0.88em;
 }
@@ -634,12 +634,12 @@ async function onSubmit(): Promise<void> {
 }
 
 .pause-review__tab--active {
-  background: rgba(224, 179, 65, 0.18);
-  border-color: #e0b341;
+  background: var(--color-warning-bg-strong);
+  border-color: var(--color-warning);
 }
 
 .pause-review__tab-dirty {
-  color: #e0b341;
+  color: var(--color-warning);
   font-weight: bold;
 }
 
@@ -666,7 +666,7 @@ async function onSubmit(): Promise<void> {
   margin: 0;
   padding: 0.4rem 0.6rem;
   border-radius: 4px;
-  background: rgba(224, 179, 65, 0.12);
+  background: var(--color-warning-bg-strong);
   color: var(--color-text);
   font-size: 0.85em;
 }
@@ -730,8 +730,8 @@ async function onSubmit(): Promise<void> {
 }
 
 .pause-review__view-tab--active {
-  background: rgba(224, 179, 65, 0.18);
-  border-color: #e0b341;
+  background: var(--color-warning-bg-strong);
+  border-color: var(--color-warning);
 }
 
 .pause-review__actions {
@@ -744,7 +744,7 @@ async function onSubmit(): Promise<void> {
   margin: 0.3rem 0 0;
   padding: 0.4rem 0.6rem;
   border-radius: 4px;
-  background: rgba(224, 179, 65, 0.10);
+  background: var(--color-warning-bg);
   color: var(--color-text-dim);
   font-size: 0.85em;
 }

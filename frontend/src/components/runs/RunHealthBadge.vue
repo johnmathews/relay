@@ -135,22 +135,22 @@ const label = computed((): string => {
 }
 
 .health-badge--connecting {
-  color: #9aa1ab;
+  color: var(--color-text-dim);
 }
 
 .health-badge--live {
-  color: #4ec9a3;
+  color: var(--color-success);
 }
 .health-badge--live .health-badge__dot {
   animation: health-pulse 1.4s ease-in-out infinite;
 }
 
 .health-badge--slow {
-  color: #e0b341;
+  color: var(--color-warning);
 }
 
 .health-badge--stalled {
-  color: #ff6b6b;
+  color: var(--color-danger);
 }
 
 @keyframes health-pulse {

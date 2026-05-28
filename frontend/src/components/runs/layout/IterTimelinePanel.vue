@@ -1,10 +1,9 @@
 <script setup lang="ts">
 // Right-pane body when selection.kind === 'iter'. Thin wrapper around
 // TimelinePane scoped to one iter seq via its existing
-// selected-iter-seq prop (the same prop ItersPane drives today).
+// selected-iter-seq prop.
 
 import TimelinePane from '@/components/runs/TimelinePane.vue'
-import ItersPane from '@/components/runs/ItersPane.vue'
 import type { StreamEvent, PendingTurn } from '@/stores/events'
 import type { Iter } from '@/lib/queries'
 
@@ -38,17 +37,6 @@ defineProps<{
       :pending-turns="(pendingTurns as PendingTurn[])"
       :run-id="runId"
     />
-
-    <!-- The iter-row inspector (existing ItersPane) stays visible for
-         status/timing detail of the selected iter. Phase 1 keeps it
-         rendered intact below the timeline; later phases (5 — drawer)
-         may move per-iter detail into a richer view. -->
-    <!-- NOTE: ItersPane writes currentRun.selectedIterId on row click,
-         but the timeline above this is now scoped via the iterSeq prop
-         (from the URL ?view=iter:N). Click-to-filter is a dead action
-         in this context — kept rendered for status/timing readout only.
-         Phase 5 drawer may retire ItersPane entirely. -->
-    <ItersPane :iters="(iters as Iter[])" />
   </div>
 </template>
 

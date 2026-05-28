@@ -30,10 +30,12 @@ function mountSidebar(props: {
   iters?: Array<{ seq: number; phase: string }>
   children?: Array<{ id: string; status: string }>
   runId?: string
+  project?: { id: number; name: string } | null
 }): ReturnType<typeof mount> {
   return mount(RunSidebar, {
     props: {
       runId: props.runId ?? 'run-1',
+      project: props.project ?? null,
       selection: props.selection,
       iters: props.iters ?? [],
       children: props.children ?? [],
@@ -50,6 +52,23 @@ describe('RunSidebar', () => {
     const row = w.get('[data-testid="sidebar-overview"]')
     expect(row.text()).toContain('Overview')
     expect(row.attributes('aria-current')).toBe('page')
+  })
+
+  it('shows the project name as a title row when project is provided', () => {
+    const w = mountSidebar({
+      selection: { kind: 'overview' },
+      project: { id: 7, name: 'relay-v2' },
+    })
+    const title = w.get('[data-testid="sidebar-project-title"]')
+    expect(title.text()).toContain('relay-v2')
+    expect(title.attributes('href')).toBe('/projects/7')
+  })
+
+  it('omits the project title row when project is null (pre-hydration)', () => {
+    const w = mountSidebar({ selection: { kind: 'overview' } })
+    expect(w.find('[data-testid="sidebar-project-title"]').exists()).toBe(
+      false,
+    )
   })
 
   it('renders one row per iter under the ITERS section', () => {
@@ -145,10 +164,12 @@ function mountWithColada(props: {
   iters?: Array<{ seq: number; phase: string }>
   children?: Array<{ id: string; status: string }>
   runId?: string
+  project?: { id: number; name: string } | null
 }): ReturnType<typeof mount> {
   return mount(RunSidebar, {
     props: {
       runId: props.runId ?? 'run-1',
+      project: props.project ?? null,
       selection: props.selection,
       iters: props.iters ?? [],
       children: props.children ?? [],

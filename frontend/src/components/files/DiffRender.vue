@@ -91,7 +91,7 @@ watch(
 }
 
 .diff-render__error {
-  color: #ff6b6b;
+  color: var(--color-danger);
 }
 
 .diff-render :deep(.d2h-wrapper) {

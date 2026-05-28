@@ -53,33 +53,33 @@ const variant = computed(() =>
 }
 
 .status-badge--running {
-  color: #5b9dff;
+  color: var(--color-accent);
 }
 
 .status-badge--done {
-  color: #4ec9a3;
+  color: var(--color-success);
 }
 
 .status-badge--failed {
-  color: #ff6b6b;
+  color: var(--color-danger);
 }
 
 .status-badge--paused {
-  color: #e0b341;
+  color: var(--color-warning);
 }
 
 .status-badge--cancelled {
-  color: #9aa1ab;
+  color: var(--color-text-dim);
 }
 
 /* Amber/orange — distinct from `paused` (yellow) and `running` (blue)
    so a parent suspended on its children reads as a different state at
    a glance. See ADR-34. */
 .status-badge--awaiting_children {
-  color: #f08a3e;
+  color: var(--color-running);
 }
 
 .status-badge--unknown {
-  color: #9aa1ab;
+  color: var(--color-text-dim);
 }
 </style>

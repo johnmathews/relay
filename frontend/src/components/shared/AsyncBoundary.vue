@@ -76,7 +76,7 @@ const errorMessage = computed(() => {
 }
 
 .async-boundary__error {
-  color: #ff6b6b;
+  color: var(--color-danger);
 }
 
 .async-boundary__spinner {

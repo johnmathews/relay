@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { RouterLink } from 'vue-router'
 import StatusBadge from '@/components/shared/StatusBadge.vue'
 import FileTree from '@/components/files/FileTree.vue'
 import { runArtifactSource, ApiError } from '@/lib/queries'
@@ -15,8 +16,20 @@ interface ChildRow {
   status: string
 }
 
+interface ProjectRef {
+  id: number
+  name: string
+}
+
 const props = defineProps<{
   runId: string
+  /**
+   * The project this run belongs to. `null` until RunDetailView's
+   * project query resolves; the title row is omitted while null so
+   * the layout doesn't reflow on hydration. Once present, renders as
+   * a router-link back to the project view.
+   */
+  project: ProjectRef | null
   selection: RunView
   iters: ReadonlyArray<IterRow>
   children: ReadonlyArray<ChildRow>
@@ -71,6 +84,17 @@ function onArtifactSelect(path: string): void {
     aria-label="Run navigation"
     data-testid="run-sidebar"
   >
+    <RouterLink
+      v-if="project"
+      :to="`/projects/${project.id}`"
+      class="run-sidebar__project"
+      data-testid="sidebar-project-title"
+      :title="`Open project: ${project.name}`"
+    >
+      <span class="run-sidebar__project-eyebrow">Project</span>
+      <span class="run-sidebar__project-name">{{ project.name }}</span>
+    </RouterLink>
+
     <button
       type="button"
       class="run-sidebar__row run-sidebar__row--overview"
@@ -169,6 +193,38 @@ function onArtifactSelect(path: string): void {
   min-height: 100%;
 }
 
+.run-sidebar__project {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.5rem 0.6rem 0.6rem;
+  margin-bottom: 0.25rem;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text);
+  text-decoration: none;
+}
+
+.run-sidebar__project:hover .run-sidebar__project-name {
+  color: var(--color-accent);
+}
+
+.run-sidebar__project-eyebrow {
+  font-size: 0.7em;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-dim);
+  font-weight: 600;
+}
+
+.run-sidebar__project-name {
+  font-size: 1.05em;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .run-sidebar__section {
   display: flex;
   flex-direction: column;
@@ -210,12 +266,12 @@ function onArtifactSelect(path: string): void {
 }
 
 .run-sidebar__row:hover {
-  background: var(--color-surface-hover, rgba(255, 255, 255, 0.04));
+  background: var(--color-surface-hover);
 }
 
 .run-sidebar__row--selected {
-  border-color: var(--color-accent, #4a90d9);
-  background: rgba(74, 144, 217, 0.08);
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
 }
 
 .run-sidebar__row-seq {

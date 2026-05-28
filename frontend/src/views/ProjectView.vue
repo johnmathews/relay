@@ -733,13 +733,13 @@ async function onConfirmUnregister(): Promise<void> {
 }
 
 .project-view__unregister:hover {
-  border-color: #ff6b6b;
-  color: #ff6b6b;
+  border-color: var(--color-danger);
+  color: var(--color-danger);
 }
 
 .project-view__confirm {
   margin-top: 0.75rem;
-  border: 1px solid #ff6b6b;
+  border: 1px solid var(--color-danger);
   border-radius: 8px;
   padding: 0.85rem 1rem;
   background: var(--color-surface);
@@ -771,7 +771,7 @@ async function onConfirmUnregister(): Promise<void> {
 
 .project-view__error {
   margin: 0 0 0.5rem;
-  color: #ff6b6b;
+  color: var(--color-danger);
   font-size: 0.85em;
 }
 
@@ -797,8 +797,8 @@ async function onConfirmUnregister(): Promise<void> {
 }
 
 .project-view__prompt-action--danger:hover {
-  border-color: #ff6b6b;
-  color: #ff6b6b;
+  border-color: var(--color-danger);
+  color: var(--color-danger);
 }
 
 .project-view__path {
@@ -947,8 +947,8 @@ async function onConfirmUnregister(): Promise<void> {
 }
 
 .project-view__select-button--danger:hover:not(:disabled) {
-  border-color: #ff6b6b;
-  color: #ff6b6b;
+  border-color: var(--color-danger);
+  color: var(--color-danger);
 }
 
 .project-view__run-wrap {
