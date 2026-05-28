@@ -41,12 +41,22 @@ function selectIter(seq: number): void {
 }
 
 const artifactSource = computed(() => runArtifactSource(props.runId))
+// `useListing` is bound to the source captured at component setup; if
+// runId ever changed in place, artifactRoot would stay stale. Safe
+// here because vue-router unmounts the whole RunDetailView tree on
+// /runs/:id navigation — runId is effectively immutable per mount.
+// Same pattern as ArtifactsPane.vue.
 const artifactRoot = artifactSource.value.useListing(() => '')
 const artifactsMissing = computed(
   () =>
     artifactRoot.error.value instanceof ApiError &&
     artifactRoot.error.value.status === 404,
 )
+// Non-404 errors (500, network failure, etc.) collapse to "section
+// hidden" — the sidebar has no inline error surface. The right-pane
+// ArtifactPanel renders the artifact viewer's own error UI when the
+// user navigates into a file; the rail stays quiet. Promote to a
+// visible state when/if a sidebar error affordance lands.
 const artifactsLoaded = computed(
   () => !artifactsMissing.value && artifactRoot.data.value != null,
 )
