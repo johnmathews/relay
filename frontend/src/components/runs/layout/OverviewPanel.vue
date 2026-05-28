@@ -30,6 +30,10 @@ defineProps<{
       <h2 class="overview-panel__heading">
         Timeline
       </h2>
+      <!-- Casts: TimelinePane's props are declared as mutable arrays
+           (events: StreamEvent[]) but the events store yields ReadonlyArray.
+           The cast is template-only — we never mutate. Phase 2 will widen
+           TimelinePane's prop types to ReadonlyArray and the cast will go. -->
       <TimelinePane
         :events="(events as StreamEvent[])"
         :selected-iter-seq="null"
