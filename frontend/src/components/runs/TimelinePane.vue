@@ -810,9 +810,66 @@ function onArtifactEditedClick(path: string): void {
           </div>
         </template>
 
-        <!-- One-liner rows (boundary / pause / usage / artifact_edited)
-             keep their existing inline layout — they carry their own
-             chrome and gain nothing from the card structure. -->
+        <!-- usage / artifact_edited render as single-line step-cards:
+             same border + per-type pastel surface as a collapsed
+             collapsible row, but no expand toggle (they have no body
+             worth showing). The whole row is a click-target for
+             artifact_edited (navigates to the artifact panel). -->
+        <template v-else-if="row.type === 'usage' || row.type === 'artifact_edited'">
+          <component
+            :is="row.type === 'artifact_edited' && runId ? 'button' : 'div'"
+            class="timeline__card-header timeline__card-header--inline"
+            :data-testid="row.type === 'artifact_edited' ? 'artifact-edited-row' : `row-header-${row.event.seq}`"
+            :type="row.type === 'artifact_edited' && runId ? 'button' : undefined"
+            :title="row.type === 'artifact_edited' && runId ? 'Open this artifact' : undefined"
+            @click="row.type === 'artifact_edited'
+              ? onArtifactEditedClick(asStr(row.event.payload.path, ''))
+              : undefined"
+          >
+            <span class="timeline__card-seq">#{{ row.event.seq }}</span>
+            <span
+              class="timeline__card-glyph"
+              aria-hidden="true"
+            >{{ row.type === 'artifact_edited' ? '✎' : '∑' }}</span>
+            <template v-if="row.type === 'usage'">
+              <UsageRow :event="row.event" />
+            </template>
+            <template v-else>
+              <code class="timeline__edit-path">{{ asStr(row.event.payload.path, '?') }}</code>
+              <span class="timeline__edit-sha">
+                {{ shortSha(row.event.payload.sha256_before) }}
+                →
+                {{ shortSha(row.event.payload.sha256_after) }}
+              </span>
+              <span class="timeline__edit-editor">·
+                {{ asStr(row.event.payload.editor, 'dashboard') }}
+              </span>
+            </template>
+            <span class="timeline__card-spacer" />
+            <div
+              class="timeline__card-controls"
+              @click.stop
+            >
+              <button
+                type="button"
+                class="timeline__row-btn"
+                data-testid="copy-step"
+                title="Copy step content to clipboard"
+                @click="copyRow(row)"
+              >
+                <span
+                  class="timeline__row-btn-glyph"
+                  aria-hidden="true"
+                >⧉</span>
+                <span class="timeline__row-btn-label">Copy</span>
+              </button>
+            </div>
+          </component>
+        </template>
+
+        <!-- boundary / pause keep the legacy inline layout —
+             they render a fenced metadata block under a tag header
+             and aren't worth restructuring into the step-card shape. -->
         <template v-else>
           <span class="timeline__seq-row">
             <span class="timeline__seq">#{{ row.event.seq }}</span>
@@ -848,31 +905,6 @@ function onArtifactEditedClick(path: string): void {
             <span class="timeline__btag">{{ row.kind }}</span>
             <code class="timeline__bmeta">{{ generic(row.event) }}</code>
           </div>
-
-          <UsageRow
-            v-else-if="row.type === 'usage'"
-            :event="row.event"
-          />
-
-          <button
-            v-else-if="row.type === 'artifact_edited'"
-            type="button"
-            class="timeline__edit"
-            data-testid="artifact-edited-row"
-            :title="runId ? 'Open this artifact' : ''"
-            @click="onArtifactEditedClick(asStr(row.event.payload.path, ''))"
-          >
-            <span class="timeline__edit-glyph">✎</span>
-            <code class="timeline__edit-path">{{ asStr(row.event.payload.path, '?') }}</code>
-            <span class="timeline__edit-sha">
-              {{ shortSha(row.event.payload.sha256_before) }}
-              →
-              {{ shortSha(row.event.payload.sha256_after) }}
-            </span>
-            <span class="timeline__edit-editor">·
-              {{ asStr(row.event.payload.editor, 'dashboard') }}
-            </span>
-          </button>
         </template>
       </li>
     </ol>
@@ -1004,6 +1036,18 @@ function onArtifactEditedClick(path: string): void {
   border-color: var(--color-row-other-border);
   background: var(--color-row-other-bg);
 }
+.timeline__row[data-row-type='usage'] {
+  border: 1px solid var(--color-row-other-border);
+  background: var(--color-row-other-bg);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.timeline__row[data-row-type='artifact_edited'] {
+  border: 1px solid var(--color-warning);
+  background: var(--color-warning-bg);
+  border-radius: 8px;
+  overflow: hidden;
+}
 
 /* The error state on a tool row wins over the per-type tint — a
    failed bash should still read as "this one is the problem" at a
@@ -1033,6 +1077,25 @@ function onArtifactEditedClick(path: string): void {
 .timeline__card-header:focus-visible {
   background: var(--color-surface-hover);
   outline: none;
+}
+
+/* Inline single-line variant — used by `usage` and `artifact_edited`,
+   which adopt the step-card visual but don't toggle. As a <button>
+   (artifact_edited with a runId), reset native button affordances so
+   it blends with the surrounding card chrome; as a <div> (usage), the
+   row is non-clickable and the hover should not suggest otherwise. */
+.timeline__card-header--inline {
+  border: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  width: 100%;
+}
+.timeline__card-header--inline:not(button) {
+  cursor: default;
+}
+.timeline__card-header--inline:not(button):hover {
+  background: transparent;
 }
 
 .timeline__card-seq {
@@ -1238,36 +1301,9 @@ function onArtifactEditedClick(path: string): void {
   word-break: break-all;
 }
 
-.timeline__edit {
-  display: flex;
-  align-items: baseline;
-  gap: 0.45rem;
-  padding: 0.25rem 0.5rem;
-  font-size: 0.85em;
-  color: var(--color-text-dim);
-  border: none;
-  border-left: 2px solid var(--color-border);
-  background: transparent;
-  text-align: left;
-  font-family: inherit;
-  cursor: pointer;
-  width: 100%;
-}
-
-.timeline__edit:hover {
-  background: var(--color-warning-bg);
-}
-
-.timeline__edit:focus-visible {
-  outline: 2px solid var(--color-warning);
-  outline-offset: 1px;
-}
-
-.timeline__edit-glyph {
-  font-size: 1em;
-  color: var(--color-warning);
-}
-
+/* Path / sha / editor text utilities — used inside the `artifact_edited`
+   inline step-card header. (The legacy `.timeline__edit` button wrapper
+   was removed when artifact_edited adopted the step-card layout.) */
 .timeline__edit-path {
   font-family: var(--font-mono);
   color: var(--color-text);
@@ -1282,5 +1318,13 @@ function onArtifactEditedClick(path: string): void {
 .timeline__edit-editor {
   font-size: 0.92em;
   color: var(--color-text-dim);
+}
+
+/* UsageRow inside the inline card-header: strip its own left-border
+   + padding (the step-card chrome supplies the container) so the
+   stop-reason badge + token totals sit flush next to the glyph. */
+.timeline__card-header--inline :deep(.usage-row) {
+  border-left: none;
+  padding: 0;
 }
 </style>
