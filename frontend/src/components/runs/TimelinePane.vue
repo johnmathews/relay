@@ -24,6 +24,7 @@ import { useRouter, useRoute } from 'vue-router'
 import ToolCallCard from './ToolCallCard.vue'
 import SignalCard from './SignalCard.vue'
 import UsageRow from './UsageRow.vue'
+import TimelineMinimap from './TimelineMinimap.vue'
 import type { PendingTurn, StreamEvent } from '@/stores/events'
 import { useBrowserUiStore } from '@/stores/files'
 import {
@@ -42,6 +43,7 @@ const COLLAPSIBLE_TYPES = new Set([
   'signal',
   'assistant',
   'thinking',
+  'boundary',
   'generic',
 ])
 
@@ -291,11 +293,146 @@ const rows = computed<Row[]>(() => {
   return out
 })
 
-const virtualized = computed(() => rows.value.length > VIRTUAL_THRESHOLD)
+/**
+ * Tool-call grouping (Batch 3, 2026-05-29).
+ *
+ * Adjacent tool rows in the same iter collapse into one anchor row by
+ * default — a 50-tool burst is shown as `▶ 50 tool calls · bash, read,
+ * edit` and the operator opts into the per-tool detail by clicking the
+ * anchor. Membership rule:
+ *   • the row type is `tool` (signal/assistant/etc. break the streak)
+ *   • streaks must hit `GROUP_MIN` to collapse; lone tools render as-is
+ *   • iter boundaries (`type === 'boundary'`) also break the streak —
+ *     a tool call inside iter 3 must not group with one inside iter 4.
+ *
+ * Expand state is per-streak, keyed by the FIRST row's stable key.
+ * Default = collapsed; the operator clicks to expand and the in-group
+ * `Collapse group` chip re-collapses. State resets on remount (same
+ * lifetime as the per-row override map).
+ */
+const GROUP_MIN = 2
+
+interface GroupAnchor {
+  kind: 'group-anchor'
+  groupKey: string
+  count: number
+  /** Distinct tool names in the group, in first-seen order. */
+  names: string[]
+  /** First row in the group — used for the seq number in the header. */
+  first: Row
+}
+
+interface RowItem {
+  kind: 'row'
+  row: Row
+  /** When this row is inside an expanded group, the group key — drives
+   *  the in-group `Collapse group` chip on the first row only. */
+  inGroupKey?: string
+  /** True when this is the first row of an expanded group; used to
+   *  render the `Collapse group` chip above the row. */
+  isGroupFirst?: boolean
+}
+
+type DisplayItem = GroupAnchor | RowItem
+
+/** Expanded-group state, keyed by the first row's `Row.key`. */
+const groupExpanded = ref<Set<string>>(new Set())
+
+function isGroupExpanded(groupKey: string): boolean {
+  return groupExpanded.value.has(groupKey)
+}
+
+function toggleGroup(groupKey: string): void {
+  const next = new Set(groupExpanded.value)
+  if (next.has(groupKey)) next.delete(groupKey)
+  else next.add(groupKey)
+  groupExpanded.value = next
+}
+
+/**
+ * Format the distinct tool-name list for a group anchor. Show the
+ * first three names directly; if more remain, append `+N more` so a
+ * 50-call group is still scannable.
+ */
+const GROUP_NAMES_LIMIT = 3
+
+function formatGroupNames(names: string[]): string {
+  if (names.length === 0) return ''
+  if (names.length <= GROUP_NAMES_LIMIT) return names.join(', ')
+  const shown = names.slice(0, GROUP_NAMES_LIMIT).join(', ')
+  return `${shown} +${names.length - GROUP_NAMES_LIMIT} more`
+}
+
+/**
+ * The render-time list: rows folded so that adjacent tool rows in the
+ * same iter render as either one group anchor (collapsed) or each
+ * row prefixed by the `Collapse group` chip (expanded). The
+ * windowing math runs over this list, not the raw `rows`, so a 600-
+ * tool burst becomes a single tall item in the windowed slice and
+ * does NOT blow the height calculation.
+ */
+const displayRows = computed<DisplayItem[]>(() => {
+  const out: DisplayItem[] = []
+  let streak: Row[] = []
+
+  const flush = (): void => {
+    if (streak.length >= GROUP_MIN) {
+      const first = streak[0]!
+      const groupKey = first.key
+      if (isGroupExpanded(groupKey)) {
+        for (let i = 0; i < streak.length; i++) {
+          out.push({
+            kind: 'row',
+            row: streak[i]!,
+            inGroupKey: groupKey,
+            isGroupFirst: i === 0,
+          })
+        }
+      } else {
+        const seen = new Set<string>()
+        const names: string[] = []
+        for (const r of streak) {
+          const n = asStr(r.event.payload.name, 'tool')
+          if (!seen.has(n)) {
+            seen.add(n)
+            names.push(n)
+          }
+        }
+        out.push({
+          kind: 'group-anchor',
+          groupKey,
+          count: streak.length,
+          names,
+          first,
+        })
+      }
+    } else {
+      for (const r of streak) out.push({ kind: 'row', row: r })
+    }
+    streak = []
+  }
+
+  for (const r of rows.value) {
+    if (r.type === 'tool') {
+      streak.push(r)
+    } else {
+      flush()
+      out.push({ kind: 'row', row: r })
+    }
+  }
+  flush()
+  return out
+})
+
+const virtualized = computed(() => displayRows.value.length > VIRTUAL_THRESHOLD)
 
 const scrollEl = ref<HTMLElement | null>(null)
 const scrollTop = ref(0)
 const viewportH = ref(600)
+/** Total height of the scroll container's content. Drives the
+ *  minimap's viewport overlay sizing. Refreshed whenever the
+ *  scroll handler fires AND after rows mutate (next tick). */
+const scrollHeight = ref(0)
 
 /**
  * Pinned-to-bottom auto-scroll (2026-05-25 live-stream UX): a live
@@ -318,11 +455,24 @@ function onScroll(): void {
   if (el == null) return
   scrollTop.value = el.scrollTop
   viewportH.value = el.clientHeight
+  scrollHeight.value = el.scrollHeight
   // A user-driven scroll updates the pin state. A programmatic
   // scrollTop assignment (our own auto-scroll) also fires this
   // handler, but since we always assign to the bottom in that case
   // distanceFromBottom ≤ 0 and the pin stays true.
   isPinned.value = distanceFromBottom(el) <= PIN_TOLERANCE_PX
+}
+
+/**
+ * Programmatic scroll target from the minimap. Clamps to the valid
+ * range and unsets the auto-follow pin so jumping back up doesn't
+ * snap-to-bottom on the next event.
+ */
+function scrollToPixel(px: number): void {
+  const el = scrollEl.value
+  if (el == null) return
+  const max = Math.max(0, el.scrollHeight - el.clientHeight)
+  el.scrollTop = Math.max(0, Math.min(px, max))
 }
 
 function scrollToBottom(): void {
@@ -420,19 +570,35 @@ async function copyRow(row: Row): Promise<void> {
 watch(
   () => rows.value.length,
   async () => {
-    if (!isPinned.value) return
     await nextTick()
+    // Refresh scrollHeight so the minimap's viewport overlay
+    // doesn't lag a frame behind the appended rows.
+    const el = scrollEl.value
+    if (el != null) scrollHeight.value = el.scrollHeight
+    if (!isPinned.value) return
     scrollToBottom()
   },
 )
 
-// Windowed slice. Below the threshold this returns the full list (the
-// math degenerates to [0, len]).
+/**
+ * Compact tick descriptor for the minimap — one entry per row in the
+ * pre-grouping `rows` list (so a 717-event timeline reads as a
+ * shape-of-the-document indicator regardless of grouping state).
+ * Only the `type` is needed; the minimap colours each tick from the
+ * existing `--color-row-*-border` palette via `data-row-type`.
+ */
+const minimapTicks = computed(() =>
+  rows.value.map((r, i) => ({ type: r.type, index: i })),
+)
+
+// Windowed slice over `displayRows` (post tool-call grouping).
+// Below the threshold this returns the full list (the math
+// degenerates to [0, len]).
 const window = computed(() => {
   if (!virtualized.value) {
-    return { start: 0, end: rows.value.length, padTop: 0, padBottom: 0 }
+    return { start: 0, end: displayRows.value.length, padTop: 0, padBottom: 0 }
   }
-  const total = rows.value.length
+  const total = displayRows.value.length
   const first = Math.max(
     0,
     Math.floor(scrollTop.value / ROW_HEIGHT) - OVERSCAN,
@@ -447,8 +613,8 @@ const window = computed(() => {
   }
 })
 
-const visibleRows = computed(() =>
-  rows.value.slice(window.value.start, window.value.end),
+const visibleItems = computed(() =>
+  displayRows.value.slice(window.value.start, window.value.end),
 )
 
 function text(ev: StreamEvent): string {
@@ -459,6 +625,19 @@ function text(ev: StreamEvent): string {
 function generic(ev: StreamEvent): string {
   try {
     return JSON.stringify(ev.payload)
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Pretty-printed JSON for the expanded body of boundary / generic
+ * rows. Single-line `generic()` is still used in the row header
+ * preview where vertical space is at a premium.
+ */
+function prettyJson(ev: StreamEvent): string {
+  try {
+    return JSON.stringify(ev.payload, null, 2)
   } catch {
     return ''
   }
@@ -506,6 +685,8 @@ function glyphFor(row: Row): string {
       return '▣'
     case 'thinking':
       return '◌'
+    case 'boundary':
+      return '◆'
     case 'generic':
       return '◇'
     default:
@@ -524,8 +705,10 @@ function headerName(row: Row): string {
       return 'assistant'
     case 'thinking':
       return 'thinking'
+    case 'boundary':
+      return row.kind.replace(/_/g, ' ')
     case 'generic':
-      return row.kind
+      return row.kind.replace(/_/g, ' ')
     default:
       return row.kind
   }
@@ -629,6 +812,30 @@ function previewFor(row: Row): string {
     const t = typeof p.text === 'string' ? p.text : ''
     return truncatePreview(firstLine(t))
   }
+  if (row.type === 'boundary') {
+    // Hand-picked summary for each boundary kind. The full payload is
+    // still available in the expanded body — this just gives a useful
+    // anchor when the row is collapsed.
+    if (row.kind === 'iter_started' || row.kind === 'iter_ended') {
+      const seq = asNum(p.seq)
+      const phase = asStr(p.phase, '')
+      const stop = asStr(p.stop_reason, '')
+      const parts: string[] = []
+      if (seq != null) parts.push(`seq=${seq}`)
+      if (phase !== '') parts.push(`phase=${phase}`)
+      if (stop !== '') parts.push(`stop=${stop}`)
+      if (parts.length > 0) return truncatePreview(parts.join(' '))
+    }
+    if (row.kind === 'run_started' || row.kind === 'run_ended') {
+      const status = asStr(p.status, '')
+      const reason = asStr(p.reason, '')
+      const parts: string[] = []
+      if (status !== '') parts.push(`status=${status}`)
+      if (reason !== '') parts.push(`reason=${reason}`)
+      if (parts.length > 0) return truncatePreview(parts.join(' '))
+    }
+    return truncatePreview(generic(row.event))
+  }
   if (row.type === 'generic') {
     return truncatePreview(generic(row.event))
   }
@@ -672,298 +879,413 @@ function onArtifactEditedClick(path: string): void {
 </script>
 
 <template>
-  <div
-    ref="scrollEl"
-    class="timeline"
-    :data-event-count="rows.length"
-    :data-rendered-rows="visibleRows.length"
-    :data-virtualized="virtualized"
-    @scroll="onScroll"
-  >
-    <p
-      v-if="rows.length === 0"
-      class="timeline__empty"
-      data-testid="timeline-empty"
-    >
-      {{ emptyMessage ?? 'No events yet.' }}
-    </p>
-
-    <div
-      v-if="virtualized"
-      :style="{ height: `${window.padTop}px` }"
-      aria-hidden="true"
-    />
-
-    <ol class="timeline__list">
-      <li
-        v-for="row in visibleRows"
-        :key="row.key"
-        class="timeline__row"
-        :class="{
-          'timeline__row--card': isCollapsible(row.type),
-          'timeline__row--inline': !isCollapsible(row.type),
-          'timeline__row--collapsible': isCollapsible(row.type),
-          'timeline__row--collapsed':
-            isCollapsible(row.type) && !isRowExpanded(row),
-          'timeline__row--assistant': row.type === 'assistant',
-          'timeline__row--error': statusFor(row) === 'err',
-        }"
-        :data-kind="row.kind"
-        :data-row-type="row.type"
+  <div class="timeline-pane">
+    <div class="timeline-pane__main">
+      <div
+        ref="scrollEl"
+        class="timeline"
+        :data-event-count="rows.length"
+        :data-rendered-rows="visibleItems.length"
+        :data-virtualized="virtualized"
+        @scroll="onScroll"
       >
-        <!-- Collapsible rows render as a bordered card with a clickable
+        <p
+          v-if="rows.length === 0"
+          class="timeline__empty"
+          data-testid="timeline-empty"
+        >
+          {{ emptyMessage ?? 'No events yet.' }}
+        </p>
+
+        <div
+          v-if="virtualized"
+          :style="{ height: `${window.padTop}px` }"
+          aria-hidden="true"
+        />
+
+        <ol class="timeline__list">
+          <template
+            v-for="item in visibleItems"
+            :key="item.kind === 'group-anchor' ? `g:${item.groupKey}` : item.row.key"
+          >
+            <!-- Collapsed tool-call group anchor (Batch 3): one card
+             representing N adjacent tool rows. Click expands. -->
+            <li
+              v-if="item.kind === 'group-anchor'"
+              class="timeline__row timeline__row--card timeline__row--group"
+              data-row-type="tool"
+              data-testid="tool-group-anchor"
+              :data-group-key="item.groupKey"
+              :data-group-count="item.count"
+            >
+              <header
+                class="timeline__card-header"
+                :aria-expanded="false"
+                role="button"
+                tabindex="0"
+                :title="`Expand ${item.count} tool calls`"
+                @click="toggleGroup(item.groupKey)"
+                @keydown.enter.prevent="toggleGroup(item.groupKey)"
+                @keydown.space.prevent="toggleGroup(item.groupKey)"
+              >
+                <span class="timeline__card-seq">#{{ item.first.event.seq }}</span>
+                <span
+                  class="timeline__card-glyph"
+                  aria-hidden="true"
+                >⚒</span>
+                <span class="timeline__card-name">
+                  {{ item.count }} tool calls
+                </span>
+                <span
+                  class="timeline__card-preview"
+                  :title="item.names.join(', ')"
+                >{{ formatGroupNames(item.names) }}</span>
+                <span class="timeline__card-spacer" />
+                <div
+                  class="timeline__card-controls"
+                  @click.stop
+                >
+                  <button
+                    type="button"
+                    class="timeline__row-btn"
+                    data-testid="expand-group"
+                    title="Expand group"
+                    @click="toggleGroup(item.groupKey)"
+                  >
+                    <span
+                      class="timeline__row-btn-glyph"
+                      aria-hidden="true"
+                    >▸</span>
+                    <span class="timeline__row-btn-label">Expand</span>
+                  </button>
+                </div>
+              </header>
+            </li>
+
+            <li
+              v-else
+              class="timeline__row"
+              :class="{
+                'timeline__row--card': isCollapsible(item.row.type),
+                'timeline__row--inline': !isCollapsible(item.row.type),
+                'timeline__row--collapsible': isCollapsible(item.row.type),
+                'timeline__row--collapsed':
+                  isCollapsible(item.row.type) && !isRowExpanded(item.row),
+                'timeline__row--assistant': item.row.type === 'assistant',
+                'timeline__row--error': statusFor(item.row) === 'err',
+                'timeline__row--in-group': item.inGroupKey != null,
+                'timeline__row--group-first': item.isGroupFirst === true,
+              }"
+              :data-kind="item.row.kind"
+              :data-row-type="item.row.type"
+            >
+              <!-- Expanded-group banner on the first row of the streak. -->
+              <button
+                v-if="item.isGroupFirst && item.inGroupKey"
+                type="button"
+                class="timeline__group-collapse"
+                data-testid="collapse-group"
+                title="Collapse this group back into a single row"
+                @click="toggleGroup(item.inGroupKey)"
+              >
+                <span aria-hidden="true">▾</span>
+                Collapse group
+              </button>
+
+              <!-- Introduce a local `row` alias via a single-element v-for
+               so the existing row-rendering markup below reads as
+               before. The template subtree is the unchanged
+               row-renderer, scoped to one iteration. -->
+              <template
+                v-for="row in [item.row]"
+                :key="row.key"
+              >
+                <!-- Collapsible rows render as a bordered card with a clickable
              header strip (seq + glyph + name + status + duration +
              smart preview) and a body that hides when collapsed. -->
-        <template v-if="isCollapsible(row.type)">
-          <header
-            class="timeline__card-header"
-            :data-testid="`row-header-${row.event.seq}`"
-            :aria-expanded="isRowExpanded(row)"
-            role="button"
-            tabindex="0"
-            @click="onHeaderClick(row)"
-            @keydown.enter.prevent="onHeaderClick(row)"
-            @keydown.space.prevent="onHeaderClick(row)"
-          >
-            <span class="timeline__card-seq">#{{ row.event.seq }}</span>
-            <span
-              class="timeline__card-glyph"
-              aria-hidden="true"
-            >{{ glyphFor(row) }}</span>
-            <span class="timeline__card-name">{{ headerName(row) }}</span>
-            <span
-              v-if="statusFor(row)"
-              class="timeline__card-status"
-              :data-status="statusFor(row)"
-              :title="statusTitleFor(row)"
-            >{{ statusGlyphFor(row) }}</span>
-            <span
-              v-if="durationFor(row)"
-              class="timeline__card-duration"
-            >{{ durationFor(row) }}</span>
-            <span
-              v-if="row.preview"
-              class="timeline__card-preview"
-              :title="row.preview"
-            >{{ row.preview }}</span>
-            <span class="timeline__card-spacer" />
-            <div
-              class="timeline__card-controls"
-              @click.stop
-            >
-              <button
-                type="button"
-                class="timeline__row-btn"
-                data-testid="copy-step"
-                title="Copy step content to clipboard"
-                @click="copyRow(row)"
-              >
-                <span
-                  class="timeline__row-btn-glyph"
-                  aria-hidden="true"
-                >⧉</span>
-                <span class="timeline__row-btn-label">Copy</span>
-              </button>
-              <button
-                type="button"
-                class="timeline__row-btn"
-                data-testid="toggle-step"
-                :aria-expanded="isRowExpanded(row)"
-                :title="isRowExpanded(row) ? 'Collapse this step' : 'Expand this step'"
-                @click="toggleRow(row)"
-              >
-                <span
-                  class="timeline__row-btn-glyph"
-                  aria-hidden="true"
-                >{{ isRowExpanded(row) ? '▾' : '▸' }}</span>
-                <span class="timeline__row-btn-label">
-                  {{ isRowExpanded(row) ? 'Collapse' : 'Expand' }}
-                </span>
-              </button>
-            </div>
-          </header>
+                <template v-if="isCollapsible(row.type)">
+                  <header
+                    class="timeline__card-header"
+                    :data-testid="`row-header-${row.event.seq}`"
+                    :aria-expanded="isRowExpanded(row)"
+                    role="button"
+                    tabindex="0"
+                    @click="onHeaderClick(row)"
+                    @keydown.enter.prevent="onHeaderClick(row)"
+                    @keydown.space.prevent="onHeaderClick(row)"
+                  >
+                    <span class="timeline__card-seq">#{{ row.event.seq }}</span>
+                    <span
+                      class="timeline__card-glyph"
+                      aria-hidden="true"
+                    >{{ glyphFor(row) }}</span>
+                    <span class="timeline__card-name">{{ headerName(row) }}</span>
+                    <span
+                      v-if="statusFor(row)"
+                      class="timeline__card-status"
+                      :data-status="statusFor(row)"
+                      :title="statusTitleFor(row)"
+                    >{{ statusGlyphFor(row) }}</span>
+                    <span
+                      v-if="durationFor(row)"
+                      class="timeline__card-duration"
+                    >{{ durationFor(row) }}</span>
+                    <span
+                      v-if="row.preview"
+                      class="timeline__card-preview"
+                      :title="row.preview"
+                    >{{ row.preview }}</span>
+                    <span class="timeline__card-spacer" />
+                    <div
+                      class="timeline__card-controls"
+                      @click.stop
+                    >
+                      <button
+                        type="button"
+                        class="timeline__row-btn"
+                        data-testid="copy-step"
+                        title="Copy step content to clipboard"
+                        @click="copyRow(row)"
+                      >
+                        <span
+                          class="timeline__row-btn-glyph"
+                          aria-hidden="true"
+                        >⧉</span>
+                        <span class="timeline__row-btn-label">Copy</span>
+                      </button>
+                      <button
+                        type="button"
+                        class="timeline__row-btn"
+                        data-testid="toggle-step"
+                        :aria-expanded="isRowExpanded(row)"
+                        :title="isRowExpanded(row) ? 'Collapse this step' : 'Expand this step'"
+                        @click="toggleRow(row)"
+                      >
+                        <span
+                          class="timeline__row-btn-glyph"
+                          aria-hidden="true"
+                        >{{ isRowExpanded(row) ? '▾' : '▸' }}</span>
+                        <span class="timeline__row-btn-label">
+                          {{ isRowExpanded(row) ? 'Collapse' : 'Expand' }}
+                        </span>
+                      </button>
+                    </div>
+                  </header>
 
-          <div
-            v-if="isRowExpanded(row)"
-            class="timeline__card-body"
-          >
-            <ToolCallCard
-              v-if="row.type === 'tool'"
-              embedded
-              :name="asStr(row.event.payload.name, 'tool')"
-              :args="row.event.payload.args"
-              :result="row.toolEnd?.result"
-              :is-error="row.toolEnd?.is_error === true"
-              :duration-ms="asNum(row.toolEnd?.duration_ms)"
-            />
-            <SignalCard
-              v-else-if="row.type === 'signal'"
-              embedded
-              :seq="row.event.seq"
-              :signal-kind="asStr(row.event.payload.kind, 'signal')"
-              :args="row.event.payload.args"
-            />
-            <p
-              v-else-if="row.type === 'assistant' || row.type === 'thinking'"
-              class="timeline__text"
-            >
-              {{ text(row.event) }}
-            </p>
-            <code
-              v-else
-              class="timeline__bmeta"
-            >
-              {{ generic(row.event) }}
-            </code>
-          </div>
-        </template>
+                  <div
+                    v-if="isRowExpanded(row)"
+                    class="timeline__card-body"
+                  >
+                    <ToolCallCard
+                      v-if="row.type === 'tool'"
+                      embedded
+                      :name="asStr(row.event.payload.name, 'tool')"
+                      :args="row.event.payload.args"
+                      :result="row.toolEnd?.result"
+                      :is-error="row.toolEnd?.is_error === true"
+                      :duration-ms="asNum(row.toolEnd?.duration_ms)"
+                    />
+                    <SignalCard
+                      v-else-if="row.type === 'signal'"
+                      embedded
+                      :seq="row.event.seq"
+                      :signal-kind="asStr(row.event.payload.kind, 'signal')"
+                      :args="row.event.payload.args"
+                    />
+                    <p
+                      v-else-if="row.type === 'assistant' || row.type === 'thinking'"
+                      class="timeline__text"
+                    >
+                      {{ text(row.event) }}
+                    </p>
+                    <pre
+                      v-else
+                      class="timeline__bmeta timeline__bmeta--pretty"
+                    ><code>{{ prettyJson(row.event) }}</code></pre>
+                  </div>
+                </template>
 
-        <!-- usage / artifact_edited render as single-line step-cards:
+                <!-- usage / artifact_edited render as single-line step-cards:
              same border + per-type pastel surface as a collapsed
              collapsible row, but no expand toggle (they have no body
              worth showing). The whole row is a click-target for
              artifact_edited (navigates to the artifact panel). -->
-        <template v-else-if="row.type === 'usage' || row.type === 'artifact_edited'">
-          <component
-            :is="row.type === 'artifact_edited' && runId ? 'button' : 'div'"
-            class="timeline__card-header timeline__card-header--inline"
-            :data-testid="row.type === 'artifact_edited' ? 'artifact-edited-row' : `row-header-${row.event.seq}`"
-            :type="row.type === 'artifact_edited' && runId ? 'button' : undefined"
-            :title="row.type === 'artifact_edited' && runId ? 'Open this artifact' : undefined"
-            @click="row.type === 'artifact_edited'
-              ? onArtifactEditedClick(asStr(row.event.payload.path, ''))
-              : undefined"
-          >
-            <span class="timeline__card-seq">#{{ row.event.seq }}</span>
-            <span
-              class="timeline__card-glyph"
-              aria-hidden="true"
-            >{{ row.type === 'artifact_edited' ? '✎' : '∑' }}</span>
-            <template v-if="row.type === 'usage'">
-              <UsageRow :event="row.event" />
-            </template>
-            <template v-else>
-              <code class="timeline__edit-path">{{ asStr(row.event.payload.path, '?') }}</code>
-              <span class="timeline__edit-sha">
-                {{ shortSha(row.event.payload.sha256_before) }}
-                →
-                {{ shortSha(row.event.payload.sha256_after) }}
-              </span>
-              <span class="timeline__edit-editor">·
-                {{ asStr(row.event.payload.editor, 'dashboard') }}
-              </span>
-            </template>
-            <span class="timeline__card-spacer" />
-            <div
-              class="timeline__card-controls"
-              @click.stop
-            >
-              <button
-                type="button"
-                class="timeline__row-btn"
-                data-testid="copy-step"
-                title="Copy step content to clipboard"
-                @click="copyRow(row)"
-              >
-                <span
-                  class="timeline__row-btn-glyph"
-                  aria-hidden="true"
-                >⧉</span>
-                <span class="timeline__row-btn-label">Copy</span>
-              </button>
-            </div>
-          </component>
-        </template>
+                <template v-else-if="row.type === 'usage' || row.type === 'artifact_edited'">
+                  <component
+                    :is="row.type === 'artifact_edited' && runId ? 'button' : 'div'"
+                    class="timeline__card-header timeline__card-header--inline"
+                    :data-testid="row.type === 'artifact_edited' ? 'artifact-edited-row' : `row-header-${row.event.seq}`"
+                    :type="row.type === 'artifact_edited' && runId ? 'button' : undefined"
+                    :title="row.type === 'artifact_edited' && runId ? 'Open this artifact' : undefined"
+                    @click="row.type === 'artifact_edited'
+                      ? onArtifactEditedClick(asStr(row.event.payload.path, ''))
+                      : undefined"
+                  >
+                    <span class="timeline__card-seq">#{{ row.event.seq }}</span>
+                    <span
+                      class="timeline__card-glyph"
+                      aria-hidden="true"
+                    >{{ row.type === 'artifact_edited' ? '✎' : '∑' }}</span>
+                    <template v-if="row.type === 'usage'">
+                      <UsageRow :event="row.event" />
+                    </template>
+                    <template v-else>
+                      <code class="timeline__edit-path">{{ asStr(row.event.payload.path, '?') }}</code>
+                      <span class="timeline__edit-sha">
+                        {{ shortSha(row.event.payload.sha256_before) }}
+                        →
+                        {{ shortSha(row.event.payload.sha256_after) }}
+                      </span>
+                      <span class="timeline__edit-editor">·
+                        {{ asStr(row.event.payload.editor, 'dashboard') }}
+                      </span>
+                    </template>
+                    <span class="timeline__card-spacer" />
+                    <div
+                      class="timeline__card-controls"
+                      @click.stop
+                    >
+                      <button
+                        type="button"
+                        class="timeline__row-btn"
+                        data-testid="copy-step"
+                        title="Copy step content to clipboard"
+                        @click="copyRow(row)"
+                      >
+                        <span
+                          class="timeline__row-btn-glyph"
+                          aria-hidden="true"
+                        >⧉</span>
+                        <span class="timeline__row-btn-label">Copy</span>
+                      </button>
+                    </div>
+                  </component>
+                </template>
 
-        <!-- boundary / pause keep the legacy inline layout —
-             they render a fenced metadata block under a tag header
-             and aren't worth restructuring into the step-card shape. -->
-        <template v-else>
-          <span class="timeline__seq-row">
-            <span class="timeline__seq">#{{ row.event.seq }}</span>
-          </span>
-          <div class="timeline__row-controls timeline__row-controls--inline">
-            <button
-              type="button"
-              class="timeline__row-btn"
-              data-testid="copy-step"
-              title="Copy step content to clipboard"
-              @click="copyRow(row)"
-            >
-              <span
-                class="timeline__row-btn-glyph"
-                aria-hidden="true"
-              >⧉</span>
-              <span class="timeline__row-btn-label">Copy</span>
-            </button>
-          </div>
+                <!-- pause keeps the legacy inline layout — amber chrome is a
+             deliberate human-attention affordance and the row needs
+             to stand out from the surrounding card grid. -->
+                <template v-else>
+                  <span class="timeline__seq-row">
+                    <span class="timeline__seq">#{{ row.event.seq }}</span>
+                  </span>
+                  <div class="timeline__row-controls timeline__row-controls--inline">
+                    <button
+                      type="button"
+                      class="timeline__row-btn"
+                      data-testid="copy-step"
+                      title="Copy step content to clipboard"
+                      @click="copyRow(row)"
+                    >
+                      <span
+                        class="timeline__row-btn-glyph"
+                        aria-hidden="true"
+                      >⧉</span>
+                      <span class="timeline__row-btn-label">Copy</span>
+                    </button>
+                  </div>
 
-          <div
-            v-if="row.type === 'boundary'"
-            class="timeline__boundary"
-          >
-            <span class="timeline__btag">{{ row.kind }}</span>
-            <code class="timeline__bmeta">{{ generic(row.event) }}</code>
-          </div>
+                  <div
+                    v-if="row.type === 'pause'"
+                    class="timeline__pause"
+                  >
+                    <span class="timeline__btag">{{ row.kind }}</span>
+                    <code class="timeline__bmeta">{{ generic(row.event) }}</code>
+                  </div>
+                </template>
+              </template>
+            </li>
+          </template>
+        </ol>
 
-          <div
-            v-else-if="row.type === 'pause'"
-            class="timeline__pause"
-          >
-            <span class="timeline__btag">{{ row.kind }}</span>
-            <code class="timeline__bmeta">{{ generic(row.event) }}</code>
-          </div>
-        </template>
-      </li>
-    </ol>
+        <div
+          v-if="virtualized"
+          :style="{ height: `${window.padBottom}px` }"
+          aria-hidden="true"
+        />
 
-    <div
-      v-if="virtualized"
-      :style="{ height: `${window.padBottom}px` }"
-      aria-hidden="true"
-    />
+        <button
+          v-if="!isPinned"
+          type="button"
+          class="timeline__jump"
+          data-testid="jump-to-latest"
+          @click="jumpToLatest"
+        >
+          ↓ Jump to latest
+        </button>
 
-    <button
-      v-if="!isPinned"
-      type="button"
-      class="timeline__jump"
-      data-testid="jump-to-latest"
-      @click="jumpToLatest"
-    >
-      ↓ Jump to latest
-    </button>
-
-    <!-- ADR-46 Plan B — in-progress assistant turns. Live deltas
+        <!-- ADR-46 Plan B — in-progress assistant turns. Live deltas
          streamed via SSE; replaced by the canonical assistant_text
          when it lands. Hidden under an iter filter (deltas only
          flow for the running iter). -->
-    <ol
-      v-if="visiblePending.length > 0"
-      class="timeline__pending-list"
-      data-testid="pending-turns"
-    >
-      <li
-        v-for="(pt, idx) in visiblePending"
-        :key="`pending:${pt.iterId}:${pt.turnSeq}:${pt.kind}:${idx}`"
-        class="timeline__row timeline__row--pending"
-        :data-testid="'pending-turn'"
-        :data-pending-kind="pt.kind"
-      >
-        <span class="timeline__seq">···</span>
-        <div class="timeline__message timeline__message--pending">
-          <span class="timeline__label">
-            {{ pt.kind === 'thinking' ? 'thinking…' : 'assistant…' }}
-          </span>
-          <p class="timeline__text">
-            {{ pt.text }}
-          </p>
-        </div>
-      </li>
-    </ol>
+        <ol
+          v-if="visiblePending.length > 0"
+          class="timeline__pending-list"
+          data-testid="pending-turns"
+        >
+          <li
+            v-for="(pt, idx) in visiblePending"
+            :key="`pending:${pt.iterId}:${pt.turnSeq}:${pt.kind}:${idx}`"
+            class="timeline__row timeline__row--pending"
+            :data-testid="'pending-turn'"
+            :data-pending-kind="pt.kind"
+          >
+            <span class="timeline__seq">···</span>
+            <div class="timeline__message timeline__message--pending">
+              <span class="timeline__label">
+                {{ pt.kind === 'thinking' ? 'thinking…' : 'assistant…' }}
+              </span>
+              <p class="timeline__text">
+                {{ pt.text }}
+              </p>
+            </div>
+          </li>
+        </ol>
+      </div>
+    </div>
+
+    <!-- Sibling minimap column (Batch 4) — shape-of-the-document
+       overview with click/drag-to-scroll. Hidden when there's
+       nothing to render so the timeline still uses the full width
+       on small / empty runs. -->
+    <TimelineMinimap
+      v-if="minimapTicks.length > 0"
+      class="timeline-pane__minimap"
+      :ticks="minimapTicks"
+      :scroll-top="scrollTop"
+      :viewport-h="viewportH"
+      :scroll-height="scrollHeight"
+      @scroll-to="scrollToPixel"
+    />
   </div>
 </template>
 
 <style scoped>
+/* Timeline + minimap layout — the minimap sits to the right of the
+   scroll container as a sibling column. The minimap occupies a
+   fixed 22px width; .timeline-pane__main flexes to fill the rest. */
+.timeline-pane {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+}
+
+.timeline-pane__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.timeline-pane__minimap {
+  flex: 0 0 auto;
+  /* Match the scroll container's max-height so the strip lines up
+     vertically with the timeline rows. */
+  max-height: 70vh;
+  align-self: stretch;
+}
+
 .timeline {
   position: relative;
   max-height: 70vh;
@@ -1040,7 +1362,8 @@ function onArtifactEditedClick(path: string): void {
   border-color: var(--color-row-signal-border);
   background: var(--color-row-signal-bg);
 }
-.timeline__row--card[data-row-type='generic'] {
+.timeline__row--card[data-row-type='generic'],
+.timeline__row--card[data-row-type='boundary'] {
   border-color: var(--color-row-other-border);
   background: var(--color-row-other-bg);
 }
@@ -1062,6 +1385,61 @@ function onArtifactEditedClick(path: string): void {
    glance, even though the type colour is amber. */
 .timeline__row--card.timeline__row--error {
   border-color: var(--color-danger);
+}
+
+/* Tool-call group anchor (Batch 3) — a single card representing N
+   adjacent tool rows. Same teal tint as a real tool card so it reads
+   visually as "tools" in the colour shape, with a slightly stronger
+   border so it doesn't get lost when the surrounding rows are tools.
+   The label `N tool calls · names…` carries the seq count + names. */
+.timeline__row--group {
+  border-style: dashed;
+}
+.timeline__row--group .timeline__card-name {
+  font-weight: 600;
+}
+
+/* In-expanded-group banner above the first row of an expanded group.
+   A small text button that re-collapses the streak. The grouped rows
+   themselves remain visually identical to ungrouped tool rows. */
+.timeline__group-collapse {
+  align-self: flex-start;
+  margin: 0 0 0.4rem 0;
+  padding: 0.25rem 0.6rem;
+  font: inherit;
+  font-size: 0.78em;
+  color: var(--color-text-dim);
+  background: transparent;
+  border: 1px dashed var(--color-border-strong);
+  border-radius: 999px;
+  cursor: pointer;
+  display: inline-flex;
+  gap: 0.35em;
+  align-items: center;
+}
+.timeline__group-collapse:hover,
+.timeline__group-collapse:focus-visible {
+  color: var(--color-text);
+  border-color: var(--color-text);
+  outline: none;
+}
+
+/* Rows inside an expanded group get a subtle left-rule so the
+   grouping is visible while the rows are individually inspectable. */
+.timeline__row--in-group {
+  position: relative;
+  margin-left: 0.5rem;
+}
+.timeline__row--in-group::before {
+  content: '';
+  position: absolute;
+  left: -0.5rem;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--color-row-tool-border);
+  opacity: 0.5;
+  border-radius: 2px;
 }
 
 .timeline__card-header {
@@ -1331,6 +1709,29 @@ function onArtifactEditedClick(path: string): void {
   font-size: 0.8em;
   color: var(--color-text-dim);
   word-break: break-all;
+}
+
+/* Pretty-printed JSON variant — used inside the expanded body of
+   boundary / generic cards. Preserve indentation, wrap long lines
+   instead of overflowing, fix-pitch font to keep brace alignment
+   readable. */
+.timeline__bmeta--pretty {
+  margin: 0;
+  padding: 0.5rem 0.6rem;
+  font-family: var(--font-mono);
+  font-size: 0.78em;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--color-text);
+  background: var(--color-surface);
+  border-radius: 6px;
+  overflow-x: auto;
+}
+.timeline__bmeta--pretty code {
+  font: inherit;
+  color: inherit;
+  background: transparent;
 }
 
 /* Path / sha / editor text utilities — used inside the `artifact_edited`

@@ -97,6 +97,30 @@ abstraction serves both the project Files pane and the run Artifacts
 pane (mirrors ADR-25's single-sourced backend — no duplicate
 tree/viewer).
 
+## Home / hub layout (Batch 1, 260529)
+
+`HubView` and `ProjectView` are both centred via `max-width` +
+`margin: 0 auto` on the section root (1100 px / 1200 px
+respectively), so the content sits in a comfortable column on
+wide screens rather than pinning to the left margin. The
+`.app-main` 1.25 rem padding handles small-screen breathing room.
+
+`HubView` renders the project grid AND a new `HomeIntroPanel.vue`
+beneath it — three short sections (What is Relay? / How it works /
+The engineering-team skill) introducing the system to a first-
+time visitor. Plain text + theme-aware CSS, no diagram, no state.
+The panel mentions the bundled `engineering-team` skill explicitly
+because that's the canonical entry point for non-trivial work and
+the dashboard's first-impression surface otherwise gives no hint
+that it exists.
+
+`ProjectView`'s "Unregister" button was renamed to **"Remove
+project"** with a tooltip that reassures the operator their files
+on disk won't be touched but custom prompts will be lost. The
+confirm dialog copy was tightened to match. The `data-testid`
+(`unregister-button` / `unregister-confirm` / `unregister-confirm-button`)
+is unchanged so existing test selectors continue to work.
+
 ## Register-project directory picker
 
 The "New project" affordance on `HubView` opens `RegisterProjectForm`
@@ -219,15 +243,23 @@ The flag is per-run; a different failed run shows its banner again.
 ## Timeline step cards
 
 Each collapsible step (tool / signal / assistant / thinking /
-generic) renders as a bordered card with a clickable header strip
-and a body that hides when collapsed. The header is always
-visible — that is the load-bearing UX choice for long development
-iters: a 50-step bash-heavy iter is scannable without expanding
-anything.
+boundary / generic) renders as a bordered card with a clickable
+header strip and a body that hides when collapsed. The header is
+always visible — that is the load-bearing UX choice for long
+development iters: a 50-step bash-heavy iter is scannable without
+expanding anything. **Boundary** rows (`iter_started`, `iter_ended`,
+`run_started`, `run_ended`) became collapsible in the 260529
+dashboard-polish sweep — they previously rendered as inline JSON
+blobs and were the visually quiet "no colour" rows the operator
+couldn't anchor on; they now use the slate "other" palette and
+clicking the header toggles between the compact summary and a
+pretty-printed JSON body. Same chrome, same click behaviour, same
+prefs bucket as the other card kinds.
 
 **Header anatomy.** From left to right: `#seq` · type glyph
-(`⚒` tool / `⚑` signal / `▣` assistant / `◌` thinking / `◇`
-generic) · the tool/signal name in mono · a status icon for tool
+(`⚒` tool / `⚑` signal / `▣` assistant / `◌` thinking / `◆`
+boundary / `◇` generic) · the row name in mono (tool/signal name,
+or the event kind for boundary / generic) · a status icon for tool
 rows (`✓` ok / `✗` errored / `…` in-flight) · duration
 (`749ms` / `23.5s` / `1m 23s`) · the **smart preview** (per-tool,
 see below) · trailing `[⧉ Copy]` `[▸ Expand]` buttons. The whole
@@ -248,24 +280,59 @@ pi emits `Bash` or `bash` depending on provider):
 - `glob` → `* <pattern>`
 - `task` / `agent` → `<description>` (or `prompt` fallback)
 - assistant / thinking → first non-empty line
+- boundary → `seq=<n> phase=<…> stop=<…>` for iter boundaries,
+  `status=<…> reason=<…>` for run boundaries; falls back to
+  stringified payload when none of those keys are populated
 - generic → stringified payload
 - unknown tool → first arg key + value
 
 Truncated to 140 chars with `…`. Empty string when there is no
 useful preview — the column collapses, the header still reads.
 
-**Inline rows.** `boundary` / `pause` rows are intrinsically
-one-liners with their own self-contained chrome (timing badges) —
-they keep the legacy inline layout (`.timeline__row--inline`) with
-a single Copy button anchored top-right. `usage` (`harness_session_ended`
-totals) and `artifact_edited` (14a/14e edits) adopt the step-card
-visual via `.timeline__card-header--inline`: same border + per-type
+**Inline rows.** `pause` rows keep the legacy inline layout
+(`.timeline__row--inline`) — amber chrome is a deliberate
+human-attention affordance and the row needs to stand out from the
+surrounding card grid. `usage` (`harness_session_ended` totals)
+and `artifact_edited` (14a/14e edits) adopt the step-card visual
+via `.timeline__card-header--inline`: same border + per-type
 pastel surface as a collapsed collapsible row, single-line
-`#seq · glyph · content · spacer · [⧉ Copy]`, no expand toggle (they
-have no body worth showing). `artifact_edited` renders as a `<button>`
-when a `runId` is provided so the row keeps its 14e click-to-navigate
-behaviour (selects the file + scrolls the sidebar's Artifacts section
-into view); without a `runId` it falls back to a non-interactive `<div>`.
+`#seq · glyph · content · spacer · [⧉ Copy]`, no expand toggle
+(they have no body worth showing). `artifact_edited` renders as a
+`<button>` when a `runId` is provided so the row keeps its 14e
+click-to-navigate behaviour (selects the file + scrolls the
+sidebar's Artifacts section into view); without a `runId` it falls
+back to a non-interactive `<div>`.
+
+**Boundary / generic body — pretty-printed JSON.** Expanded
+`boundary` and `generic` rows render their payload as
+indented JSON via the new `.timeline__bmeta--pretty` `<pre><code>`
+block (whitespace preserved, monospace, soft surface). The single-
+line `generic()` helper is still used for the row preview where
+vertical space is at a premium; the expanded view gets `prettyJson()`
+(indent 2) so a 50-line payload is readable instead of one giant
+wrap-broken string. That is what makes `iter_started` (the
+load-bearing anchor between iters) finally readable from the
+dashboard.
+
+**Tool-call grouping (Batch 3, 260529).** Adjacent tool rows
+within the same iter collapse into a single group anchor by
+default — a 50-tool burst is shown as
+`#<seq> ⚒ <N> tool calls · bash, read, edit +M more` (first three
+distinct names + `+M more` if any). Click the anchor (or its `▸
+Expand` button) to break the streak into individual tool rows; a
+compact `▾ Collapse group` chip on the first row re-collapses it.
+Membership rule: only adjacent `tool` rows. A non-tool row (any
+kind) AND an iter boundary both break the streak. Streaks must hit
+`GROUP_MIN = 2` to collapse — a lone tool always renders as-is.
+Individual rows inside an expanded group keep their existing
+per-row expand / collapse behaviour; the expand-state set lives in
+component state and resets on remount (same lifetime as the
+per-row override map). The grouping is purely a render concern —
+the events store, virtualisation, and SSE delivery don't see it.
+Display rows are the unit of windowing now (`displayRows.value`),
+not raw rows, so a 717-event run with one giant tool burst becomes
+a single tall display row and does NOT blow the height
+calculation.
 
 **Embedded card bodies.** When a tool / signal row is expanded, the
 inner `ToolCallCard` / `SignalCard` is rendered with `embedded` so it
@@ -299,6 +366,7 @@ card root:
 | tool | amber | `--color-row-tool-{bg,border}` |
 | signal | green | `--color-row-signal-{bg,border}` |
 | generic | slate | `--color-row-other-{bg,border}` |
+| boundary | slate | `--color-row-other-{bg,border}` (shared with generic) |
 | usage | slate | `--color-row-other-{bg,border}` (reused) |
 | artifact_edited | amber | `--color-warning{,-bg}` (matches the pause / human-attention palette) |
 
@@ -310,6 +378,66 @@ borders. The error state on a tool row (`✗` status) still wins —
 `.timeline__row--error` flips the border to `--color-danger` so a
 failed step reads as "fix this" even though the type colour is
 amber.
+
+## Timeline minimap (Batch 4, 260529)
+
+`TimelineMinimap.vue` is a VS Code-style overview rendered as a
+sibling column inside `TimelinePane` (`.timeline-pane__minimap`,
+22 px fixed width, matching `max-height: 70vh` of the timeline
+scroll container). It draws one coloured tick per pre-grouping
+event row — colours come from the existing
+`--color-row-*-border` palette via `data-row-type` — so a long run
+reads as a shape-of-the-document indicator: teal bands mark tool
+bursts, purple bands the thinking phases, blue the assistant
+replies, green the signals, slate the boundary / generic
+structural events, amber the artifact-edit / pause moments.
+
+**Tick positioning.** `tickStyleFor(i)` uses `top: i / (n - 1) *
+100%` — denominator `n - 1`, not `n`, so the LAST tick lands at
+100% rather than `(n - 1) / n * 100%`. Without that correction a
+five-tick minimap would leave an empty 20% band at the bottom of
+the strip. A single-tick minimap centres the lone tick at 0% to
+sidestep the divide-by-zero.
+
+**Accessibility.** The minimap carries `aria-hidden="true"` and
+no ARIA role. The coloured-band pattern is meaningless without
+sight, and keyboard users access the timeline via its own
+focusable scroll container — exposing a competing scrollbar /
+slider control in the accessibility tree without keyboard
+support would actively harm AT users (WCAG 2.1 SC 2.1.1). The
+pointer-driven scroll shortcut remains for sighted mouse users.
+
+**Viewport overlay.** A translucent rectangle marks the currently
+visible scroll window. Its `top` / `height` percentages come from
+`scrollTop / scrollHeight` and `viewportH / scrollHeight`. The
+strip-to-scroll mapping is linear and assumes approximately
+uniform row heights — true under the >1000-row virtualisation
+path (uniform `ROW_HEIGHT = 88`), an approximation otherwise.
+Minor drift doesn't matter for a shape indicator; the viewport
+overlay's `transition: top 60ms linear` smooths the apparent jump
+when scrolling settles.
+
+**Interaction.** Click anywhere on the strip to scroll the
+underlying timeline so the clicked position is centred in the
+viewport. Drag to scrub. Pointer capture handles the drag — both
+`setPointerCapture` and `releasePointerCapture` are called so the
+drag tracks even when the cursor leaves the strip. The component
+emits `scroll-to(px)` and the parent (`TimelinePane`) sets
+`scrollEl.scrollTop` via `scrollToPixel(px)`, clamped to
+`[0, scrollHeight - clientHeight]`. The auto-follow pin is
+unaffected — scrolling up via the minimap unsticks it the same
+way a manual scroll does, since both pass through the existing
+`onScroll` handler.
+
+**`scrollHeight` refresh.** The minimap reads `scrollHeight` from
+the parent's `scrollHeight` ref, which is updated both inside
+`onScroll` (every scroll event) and in the `watch(rows.length)`
+post-tick (so the viewport overlay doesn't lag a frame behind
+appended rows on a live stream).
+
+**Hidden state.** No ticks → no minimap. The empty-run case
+(`rows.length === 0`) suppresses the strip so the timeline fills
+the full pane width.
 
 ## Chip row — per-type expand-by-default
 

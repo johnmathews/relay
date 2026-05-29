@@ -28,6 +28,7 @@ export type TimelineRowType =
   | 'signal'
   | 'assistant'
   | 'thinking'
+  | 'boundary'
   | 'generic'
 
 const LS_KEY = 'relay.timeline.expanded'
@@ -44,6 +45,7 @@ const DEFAULTS: Record<TimelineRowType, boolean> = {
   signal: false,
   assistant: false,
   thinking: false,
+  boundary: false,
   generic: false,
 }
 

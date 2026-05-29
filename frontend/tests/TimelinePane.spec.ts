@@ -409,6 +409,11 @@ describe('TimelinePane', () => {
       },
     ]
     const w = mount(TimelinePane, { props: { events } })
+    // Batch 3 — three adjacent tool rows now collapse into a single
+    // group anchor by default. Expand it to assert per-row previews.
+    await w
+      .get('[data-testid="tool-group-anchor"] .timeline__card-header')
+      .trigger('click')
     const previews = w
       .findAll('.timeline__card-preview')
       .map((el) => el.text())
@@ -473,6 +478,7 @@ describe('TimelinePane', () => {
         payload: { kind: 'phase_start', args: { phase: 'plan' } },
       },
       { seq: 5, kind: 'some_unknown_kind', payload: { x: 1 } },
+      { seq: 6, kind: 'iter_started', payload: { seq: 1, phase: 'plan' } },
     ]
     const w = mount(TimelinePane, { props: { events } })
     const types = w
@@ -484,7 +490,36 @@ describe('TimelinePane', () => {
       'tool',
       'signal',
       'generic',
+      'boundary',
     ])
+  })
+
+  it('boundary rows (iter_started etc.) are collapsible cards with click-to-toggle pretty JSON', async () => {
+    const events: StreamEvent[] = [
+      {
+        seq: 1,
+        kind: 'iter_started',
+        payload: { seq: 3, phase: 'wrap-up', prompt: 'x' },
+      },
+    ]
+    const w = mount(TimelinePane, { props: { events } })
+    const row = w.find('[data-row-type="boundary"]')
+    expect(row.exists()).toBe(true)
+    expect(row.classes()).toContain('timeline__row--card')
+    expect(row.classes()).toContain('timeline__row--collapsed')
+    // Smart-preview surfaces the seq + phase even when collapsed.
+    const header = row.find('.timeline__card-header')
+    expect(header.text()).toContain('iter started')
+    expect(header.text()).toContain('seq=3')
+    expect(header.text()).toContain('phase=wrap-up')
+    // Body is hidden when collapsed.
+    expect(row.find('.timeline__card-body').exists()).toBe(false)
+    // Click toggles to expanded; body shows pretty-printed JSON.
+    await header.trigger('click')
+    expect(row.classes()).not.toContain('timeline__row--collapsed')
+    const body = row.find('.timeline__bmeta--pretty')
+    expect(body.exists()).toBe(true)
+    expect(body.text()).toContain('"phase": "wrap-up"')
   })
 
   it('clicking the card header toggles the row body', async () => {
@@ -847,6 +882,161 @@ describe('TimelinePane', () => {
       expect(w.get('[data-testid="timeline-empty"]').text()).toBe(
         "Run hasn't emitted any events yet.",
       )
+    })
+  })
+
+  // ──────────────────────────────────────────────────────────────────
+  // Batch 3 (2026-05-29) — tool-call grouping.
+  // ──────────────────────────────────────────────────────────────────
+  describe('tool-call grouping', () => {
+    function tool(seq: number, name: string, command = 'x'): StreamEvent {
+      return {
+        seq,
+        kind: 'tool_use_start',
+        payload: {
+          tool_id: `t${seq}`,
+          name,
+          args: { command },
+        },
+      }
+    }
+
+    it('collapses 2+ adjacent tool rows into a single group anchor by default', () => {
+      const events: StreamEvent[] = [
+        tool(1, 'Bash', 'ls'),
+        tool(2, 'Read'),
+        tool(3, 'Edit'),
+        tool(4, 'Write'),
+      ]
+      const w = mount(TimelinePane, { props: { events } })
+      const anchors = w.findAll('[data-testid="tool-group-anchor"]')
+      expect(anchors.length).toBe(1)
+      expect(anchors[0]!.attributes('data-group-count')).toBe('4')
+      expect(anchors[0]!.text()).toContain('4 tool calls')
+      expect(anchors[0]!.text()).toContain('Bash, Read, Edit')
+      // None of the underlying per-tool rows are rendered when collapsed.
+      expect(w.findAll('.timeline__row[data-row-type="tool"]:not(.timeline__row--group)').length).toBe(0)
+    })
+
+    it('lone tool rows (count < 2) render as-is, no group anchor', () => {
+      const events: StreamEvent[] = [
+        tool(1, 'Bash', 'ls'),
+        {
+          seq: 2,
+          kind: 'assistant_text',
+          payload: { text: 'hi', kind: 'text' },
+        },
+        tool(3, 'Read'),
+      ]
+      const w = mount(TimelinePane, { props: { events } })
+      expect(w.find('[data-testid="tool-group-anchor"]').exists()).toBe(false)
+      expect(
+        w.findAll('.timeline__row[data-row-type="tool"]:not(.timeline__row--group)').length,
+      ).toBe(2)
+    })
+
+    it('non-tool row breaks the streak — two groups form on either side', () => {
+      const events: StreamEvent[] = [
+        tool(1, 'Bash', 'a'),
+        tool(2, 'Bash', 'b'),
+        {
+          seq: 3,
+          kind: 'assistant_text',
+          payload: { text: 'midway', kind: 'text' },
+        },
+        tool(4, 'Read'),
+        tool(5, 'Write'),
+      ]
+      const w = mount(TimelinePane, { props: { events } })
+      const anchors = w.findAll('[data-testid="tool-group-anchor"]')
+      expect(anchors.length).toBe(2)
+      expect(anchors[0]!.attributes('data-group-count')).toBe('2')
+      expect(anchors[1]!.attributes('data-group-count')).toBe('2')
+    })
+
+    it('clicking the anchor expands the group and shows a Collapse-group chip', async () => {
+      const events: StreamEvent[] = [
+        tool(1, 'Bash', 'ls'),
+        tool(2, 'Read'),
+        tool(3, 'Edit'),
+      ]
+      const w = mount(TimelinePane, { props: { events } })
+      await w
+        .get('[data-testid="tool-group-anchor"] .timeline__card-header')
+        .trigger('click')
+      // Group anchor gone; three tool rows now individually rendered.
+      expect(w.find('[data-testid="tool-group-anchor"]').exists()).toBe(false)
+      const expanded = w.findAll('.timeline__row--in-group')
+      expect(expanded.length).toBe(3)
+      expect(expanded[0]!.classes()).toContain('timeline__row--group-first')
+      // Re-collapse chip exists on the first row.
+      const chip = w.find('[data-testid="collapse-group"]')
+      expect(chip.exists()).toBe(true)
+      await chip.trigger('click')
+      expect(w.find('[data-testid="tool-group-anchor"]').exists()).toBe(true)
+    })
+
+    it('formats more than 3 distinct names as "a, b, c +N more"', () => {
+      const events: StreamEvent[] = [
+        tool(1, 'Bash'),
+        tool(2, 'Read'),
+        tool(3, 'Edit'),
+        tool(4, 'Write'),
+        tool(5, 'Grep'),
+      ]
+      const w = mount(TimelinePane, { props: { events } })
+      const anchor = w.get('[data-testid="tool-group-anchor"]')
+      expect(anchor.text()).toContain('Bash, Read, Edit +2 more')
+    })
+  })
+
+  // ──────────────────────────────────────────────────────────────────
+  // Batch 4 (2026-05-29) — timeline minimap.
+  // ──────────────────────────────────────────────────────────────────
+  describe('minimap', () => {
+    it('renders a tick per row with data-row-type for colour mapping', () => {
+      const events: StreamEvent[] = [
+        {
+          seq: 1,
+          kind: 'assistant_text',
+          payload: { text: 'hi', kind: 'text' },
+        },
+        {
+          seq: 2,
+          kind: 'assistant_text',
+          payload: { text: 'pondering', kind: 'thinking' },
+        },
+        {
+          seq: 3,
+          kind: 'tool_use_start',
+          payload: { tool_id: 't', name: 'Bash', args: { command: 'ls' } },
+        },
+        { seq: 4, kind: 'iter_started', payload: { seq: 1 } },
+      ]
+      const w = mount(TimelinePane, { props: { events } })
+      const minimap = w.find('[data-testid="timeline-minimap"]')
+      expect(minimap.exists()).toBe(true)
+      const tickTypes = minimap
+        .findAll('.minimap__tick')
+        .map((t) => t.attributes('data-row-type'))
+      expect(tickTypes).toEqual(['assistant', 'thinking', 'tool', 'boundary'])
+    })
+
+    it('renders an aria viewport overlay', () => {
+      const events: StreamEvent[] = [
+        {
+          seq: 1,
+          kind: 'assistant_text',
+          payload: { text: 'a', kind: 'text' },
+        },
+      ]
+      const w = mount(TimelinePane, { props: { events } })
+      expect(w.find('[data-testid="minimap-viewport"]').exists()).toBe(true)
+    })
+
+    it('is hidden when there are no events to summarise', () => {
+      const w = mount(TimelinePane, { props: { events: [] } })
+      expect(w.find('[data-testid="timeline-minimap"]').exists()).toBe(false)
     })
   })
 })
