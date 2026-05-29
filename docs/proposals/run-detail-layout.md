@@ -1,6 +1,6 @@
 # Proposal — Run-detail view layout
 
-**Status:** Phases 1–5 shipped (2026-05-28 → 2026-05-29). **Last
+**Status:** Phases 1–7 shipped (2026-05-28 → 2026-05-29). **Last
 updated:** 2026-05-29.
 Phase 1 (`docs/plans/2026-05-28-run-detail-layout-shell.md`).
 Phase 2 (this proposal's §"Filter chips — `EventKindFilter`" as
@@ -12,9 +12,22 @@ Phase 4 (`journal/260529-run-detail-phase-4.md`): Pause banner
 extraction + sticky.
 Phase 5 (`journal/260529-run-detail-phase-5.md`): Tool-call detail
 drawer + `useFocusTrap` composable.
-Phases 6–7 remain proposed. Frontend-only; no backend, REST, SSE,
-OTel, sentinel, or schema change. Targets `RunDetailView.vue` and the
+Phase 7 (`journal/260529-run-detail-phase-7.md`): accessibility pass
+(rail listbox semantics, status-badge aria-labels) + empty-state copy
+audit. Build order swapped vs. §"Build sequence" — shipped before
+Phase 6 because the structural a11y bundle was higher value.
+Phase 6 (`journal/260529-run-detail-phase-6.md`): responsive rail-
+dropdown collapse below 900px via new `useViewportBreakpoint`
+composable.
+All phases complete. Frontend-only; no backend, REST, SSE, OTel,
+sentinel, or schema change. Targets `RunDetailView.vue` and the
 panes under `frontend/src/components/runs/`.
+
+Deferred follow-up (documented in `journal/260529-run-detail-phase-
+7.md` §"Deferred — kind-colour contrast"): a contrast pass on the
+`--color-row-*` tokens — every kind border currently fails WCAG
+1.4.11 non-text contrast on both themes. Multi-token visual
+rebalance, independent of the structural a11y work.
 
 ## Problem
 
