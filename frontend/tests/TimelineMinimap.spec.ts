@@ -11,87 +11,87 @@ const TICKS = [
 ]
 
 describe('TimelineMinimap', () => {
-  it('positions ticks linearly along the strip — first at 0%, last at 100%', () => {
+  it('tiles ticks edge-to-edge — each at i/n with height 100/n %', () => {
     const w = mount(TimelineMinimap, {
       props: {
         ticks: TICKS,
-        scrollTop: 0,
-        viewportH: 200,
-        scrollHeight: 1000,
+        viewportStart: 0,
+        viewportEnd: 0,
       },
     })
     const ticks = w.findAll('.minimap__tick')
     expect(ticks).toHaveLength(5)
-    // i / (N-1) for N=5: 0%, 25%, 50%, 75%, 100% — last tick
-    // anchors at the bottom of the strip so there is no dead band.
+    // N=5 slots → top: 0%, 20%, 40%, 60%, 80% — each spans 20%.
     expect(ticks[0]!.attributes('style')).toContain('top: 0%')
-    expect(ticks[1]!.attributes('style')).toContain('top: 25%')
-    expect(ticks[2]!.attributes('style')).toContain('top: 50%')
-    expect(ticks[4]!.attributes('style')).toContain('top: 100%')
+    expect(ticks[0]!.attributes('style')).toContain('height: 20%')
+    expect(ticks[1]!.attributes('style')).toContain('top: 20%')
+    expect(ticks[2]!.attributes('style')).toContain('top: 40%')
+    expect(ticks[4]!.attributes('style')).toContain('top: 80%')
+    expect(ticks[4]!.attributes('style')).toContain('height: 20%')
   })
 
-  it('single-tick minimap places the lone tick at 0% (avoids divide-by-zero)', () => {
+  it('single-tick minimap fills the whole strip', () => {
     const w = mount(TimelineMinimap, {
       props: {
         ticks: [{ type: 'assistant', index: 0 }],
-        scrollTop: 0,
-        viewportH: 200,
-        scrollHeight: 1000,
+        viewportStart: 0,
+        viewportEnd: 0,
       },
     })
     const ticks = w.findAll('.minimap__tick')
     expect(ticks).toHaveLength(1)
     expect(ticks[0]!.attributes('style')).toContain('top: 0%')
+    expect(ticks[0]!.attributes('style')).toContain('height: 100%')
   })
 
-  it('viewport overlay scales with scrollTop / scrollHeight', () => {
+  it('viewport overlay frames the visible slot range exactly', () => {
+    // 5 slots, visible rows [1, 3] → top 20%, height 60% (3 slots).
     const w = mount(TimelineMinimap, {
       props: {
         ticks: TICKS,
-        scrollTop: 250,
-        viewportH: 200,
-        scrollHeight: 1000,
+        viewportStart: 1,
+        viewportEnd: 3,
       },
     })
     const overlay = w.get('[data-testid="minimap-viewport"]')
-    expect(overlay.attributes('style')).toContain('top: 25%')
+    expect(overlay.attributes('style')).toContain('top: 20%')
+    expect(overlay.attributes('style')).toContain('height: 60%')
+  })
+
+  it('single-row viewport spans exactly one slot', () => {
+    // visible row [2, 2] → top 40%, height 20%.
+    const w = mount(TimelineMinimap, {
+      props: {
+        ticks: TICKS,
+        viewportStart: 2,
+        viewportEnd: 2,
+      },
+    })
+    const overlay = w.get('[data-testid="minimap-viewport"]')
+    expect(overlay.attributes('style')).toContain('top: 40%')
     expect(overlay.attributes('style')).toContain('height: 20%')
   })
 
-  it('overlay covers the full strip when content fits the viewport', () => {
+  it('clamps overlay to the strip when viewport indices are out of range', () => {
     const w = mount(TimelineMinimap, {
       props: {
         ticks: TICKS,
-        scrollTop: 0,
-        viewportH: 600,
-        scrollHeight: 0,
+        viewportStart: 9999,
+        viewportEnd: 9999,
       },
     })
     const overlay = w.get('[data-testid="minimap-viewport"]')
-    expect(overlay.attributes('style')).toContain('top: 0%')
-    expect(overlay.attributes('style')).toContain('height: 100%')
+    // clamped to the last slot — top 80%, height 20%.
+    expect(overlay.attributes('style')).toContain('top: 80%')
+    expect(overlay.attributes('style')).toContain('height: 20%')
   })
 
-  it('clamps overlay top to [0, 100]% even with out-of-range scroll values', () => {
+  it('emits scroll-to-index with the slot the operator clicked', async () => {
     const w = mount(TimelineMinimap, {
       props: {
         ticks: TICKS,
-        scrollTop: 9999,
-        viewportH: 200,
-        scrollHeight: 1000,
-      },
-    })
-    const overlay = w.get('[data-testid="minimap-viewport"]')
-    expect(overlay.attributes('style')).toContain('top: 100%')
-  })
-
-  it('emits scroll-to with a clamped target on pointerdown', async () => {
-    const w = mount(TimelineMinimap, {
-      props: {
-        ticks: TICKS,
-        scrollTop: 0,
-        viewportH: 200,
-        scrollHeight: 1000,
+        viewportStart: 0,
+        viewportEnd: 0,
       },
       attachTo: document.body,
     })
@@ -111,11 +111,10 @@ describe('TimelineMinimap', () => {
     })
     Object.assign(ev, { pointerId: 1 })
     el.dispatchEvent(ev)
-    const emitted = w.emitted('scroll-to')
+    const emitted = w.emitted('scroll-to-index')
     expect(emitted).toBeTruthy()
-    // Centre of strip (y=200 of 400) → 50% of scrollHeight (500)
-    // minus half the viewport (100) → target 400.
-    expect(emitted![0]).toEqual([400])
+    // Centre of strip (y=200 of 400) → ratio 0.5 × N=5 = 2.5 → floor 2.
+    expect(emitted![0]).toEqual([2])
     w.unmount()
   })
 })

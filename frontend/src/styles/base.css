@@ -48,36 +48,23 @@
   --color-success: #4ec9a3;
   --color-running: #f08a3e;
 
-  /* Per-row-type palette — dark theme. Low-alpha tint for the row
-     background, solid hue for the border (≥ 3:1 vs surface AND vs
-     row-bg per WCAG 1.4.11). Tool is teal, NOT amber — amber
+  /* Per-row-type palette — dark theme. Saturated low-alpha tint for
+     the row background, solid hue for the border (≥ 3:1 vs surface
+     AND vs row-bg per WCAG 1.4.11). Tool is teal, NOT amber — amber
      (#e0b341) is reserved for human-attention affordances (pause
-     banner). */
-  --color-row-assistant-bg: rgba(96, 165, 250, 0.10);
+     banner). The minimap reuses these *bg* tokens directly so a tick
+     and its row are pixel-identical (both compose over
+     --color-surface). */
+  --color-row-assistant-bg: rgba(96, 165, 250, 0.22);
   --color-row-assistant-border: #60a5fa;
-  --color-row-thinking-bg: rgba(167, 139, 250, 0.10);
+  --color-row-thinking-bg: rgba(167, 139, 250, 0.22);
   --color-row-thinking-border: #a78bfa;
-  --color-row-tool-bg: rgba(45, 212, 191, 0.10);
+  --color-row-tool-bg: rgba(45, 212, 191, 0.22);
   --color-row-tool-border: #2dd4bf;
-  --color-row-signal-bg: rgba(74, 222, 128, 0.10);
+  --color-row-signal-bg: rgba(74, 222, 128, 0.22);
   --color-row-signal-border: #4ade80;
-  --color-row-other-bg: rgba(148, 163, 184, 0.08);
+  --color-row-other-bg: rgba(148, 163, 184, 0.18);
   --color-row-other-border: #94a3b8;
-
-  /* Minimap tick palette. On dark surface the row border colours
-     are already bright, friendly pastels, so the minimap reuses
-     them. Warning gets the amber tone (matches pause / artifact
-     affordances in the timeline). Kept as separate tokens from the
-     border colours so the minimap can drift independently in light
-     theme without dragging the card borders along (the border
-     colours have a WCAG 3:1 contract vs surface that the minimap
-     ticks deliberately don't share). */
-  --color-row-assistant-minimap: #60a5fa;
-  --color-row-thinking-minimap: #a78bfa;
-  --color-row-tool-minimap: #2dd4bf;
-  --color-row-signal-minimap: #4ade80;
-  --color-row-other-minimap: #94a3b8;
-  --color-row-warning-minimap: #fbbf24;
 }
 
 :root[data-theme='light'] {
@@ -108,32 +95,21 @@
   --color-success: #1f7a4d;
   --color-running: #b15a00;
 
-  /* Per-row-type palette — light theme. Pastel surfaces with darker
-     (Tailwind 600/700-band) borders to clear ≥ 3:1 vs white. Tool
-     is teal — amber is reserved for the pause banner. */
-  --color-row-assistant-bg: #eff6ff;
+  /* Per-row-type palette — light theme. 100/200-band pastel surfaces
+     with darker (Tailwind 600/700-band) borders to clear ≥ 3:1 vs
+     white. Tool is teal — amber is reserved for the pause banner.
+     The minimap reuses these *bg* tokens directly so a tick and its
+     row are pixel-identical. */
+  --color-row-assistant-bg: #bfdbfe;
   --color-row-assistant-border: #2563eb;
-  --color-row-thinking-bg: #f5f3ff;
+  --color-row-thinking-bg: #ddd6fe;
   --color-row-thinking-border: #7c3aed;
   --color-row-tool-bg: #ccfbf1;
   --color-row-tool-border: #0f766e;
-  --color-row-signal-bg: #dcfce7;
+  --color-row-signal-bg: #bbf7d0;
   --color-row-signal-border: #15803d;
-  --color-row-other-bg: #f1f5f9;
+  --color-row-other-bg: #e2e8f0;
   --color-row-other-border: #475569;
-
-  /* Minimap tick palette — light theme. The border colours (700-band)
-     are too dark; dense runs pack into solid heavy blocks. The bg
-     colours (50/100-band) are too pale to read as distinct ticks.
-     300-band sits between: same family as the card bg but slightly
-     more saturated, so a 60-tick tool burst still reads as a friendly
-     pastel band instead of a slab of dark teal. */
-  --color-row-assistant-minimap: #93c5fd;
-  --color-row-thinking-minimap: #c4b5fd;
-  --color-row-tool-minimap: #5eead4;
-  --color-row-signal-minimap: #86efac;
-  --color-row-other-minimap: #cbd5e1;
-  --color-row-warning-minimap: #fcd34d;
 }
 
 /* Auto: follow OS preference. Only applies when no explicit data-theme
@@ -169,23 +145,16 @@
     --color-success: #1f7a4d;
     --color-running: #b15a00;
 
-    --color-row-assistant-bg: #eff6ff;
+    --color-row-assistant-bg: #bfdbfe;
     --color-row-assistant-border: #2563eb;
-    --color-row-thinking-bg: #f5f3ff;
+    --color-row-thinking-bg: #ddd6fe;
     --color-row-thinking-border: #7c3aed;
     --color-row-tool-bg: #ccfbf1;
     --color-row-tool-border: #0f766e;
-    --color-row-signal-bg: #dcfce7;
+    --color-row-signal-bg: #bbf7d0;
     --color-row-signal-border: #15803d;
-    --color-row-other-bg: #f1f5f9;
+    --color-row-other-bg: #e2e8f0;
     --color-row-other-border: #475569;
-
-    --color-row-assistant-minimap: #93c5fd;
-    --color-row-thinking-minimap: #c4b5fd;
-    --color-row-tool-minimap: #5eead4;
-    --color-row-signal-minimap: #86efac;
-    --color-row-other-minimap: #cbd5e1;
-    --color-row-warning-minimap: #fcd34d;
   }
 }
 

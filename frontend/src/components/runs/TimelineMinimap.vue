@@ -24,76 +24,78 @@ const props = defineProps<{
   /** Total number of rows in the timeline (pre-grouping). */
   ticks: ReadonlyArray<MinimapTick>
   /**
-   * The scroll container's geometry: clientHeight (viewport) and
-   * scrollHeight (total content) drive the viewport overlay's height
-   * and position. scrollTop is the current top of the viewport.
+   * Display-row index range currently visible in the timeline. The
+   * minimap positions both ticks AND the viewport overlay in
+   * `i / (n-1)` index space — so a row's tick and the viewport edge
+   * that frames it land at the same %. The parent (TimelinePane)
+   * translates the scroll container's pixel scroll → display-row
+   * range using the fixed `ROW_HEIGHT` math.
    */
-  scrollTop: number
-  viewportH: number
-  scrollHeight: number
+  viewportStart: number
+  viewportEnd: number
 }>()
 
 const emit = defineEmits<{
-  (e: 'scroll-to', px: number): void
+  /** Display-row index (fractional) the operator clicked / dragged to. */
+  (e: 'scroll-to-index', index: number): void
 }>()
 
 const strip = ref<HTMLElement | null>(null)
 const dragging = ref(false)
 
 /**
- * Map a row index → percentage along the strip. Linear; assumes
- * approximately uniform row heights (true under virtualisation,
- * approximate otherwise — minor drift doesn't matter for a shape
- * indicator). The denominator is `n - 1` (not `n`) so the LAST
- * tick lands at 100% rather than `(n - 1) / n * 100%` — without
- * this correction a 5-tick minimap leaves an empty 20% band at
- * the bottom of the strip. With only one tick `(n - 1) === 0`, so
- * we centre it at 0% (start-of-strip).
+ * Slot-based layout: each tick occupies `100 / n %` of the strip,
+ * laid out top-to-bottom with no gaps or overlap. Tick `i` covers
+ * the band `[i/n, (i+1)/n]`. This makes the strip read as
+ * continuous coloured bands instead of isolated notches when the
+ * display row count is small relative to the strip's pixel height.
+ * Same `1 / n` slot size is used by the viewport overlay below.
  */
-function tickStyleFor(i: number): { top: string } {
+function tickStyleFor(i: number): { top: string; height: string } {
   const n = props.ticks.length
-  if (n <= 1) return { top: '0%' }
-  return { top: `${(i / (n - 1)) * 100}%` }
+  if (n <= 0) return { top: '0%', height: '100%' }
+  return { top: `${(i / n) * 100}%`, height: `${100 / n}%` }
 }
 
 /**
- * The translucent viewport overlay. Position + height come from the
- * scroller's geometry mapped onto the strip's height (assumed equal
- * since the strip is positioned to fill the same container). When
- * scrollHeight is 0 or smaller than the viewport (no scroll possible)
- * the overlay covers the whole strip — accurate.
+ * The viewport overlay. Frames the slots of rows in
+ * `[viewportStart, viewportEnd]` inclusive — so a viewport of `N`
+ * rows covers `N / total` of the strip. With 0 ticks the overlay
+ * collapses; the `v-if` on the parent already hides the strip in
+ * that case but we stay defensive.
  */
 const viewportStyle = computed(() => {
-  const total = props.scrollHeight
-  if (total <= 0) return { top: '0%', height: '100%' }
-  const top = Math.max(0, Math.min(100, (props.scrollTop / total) * 100))
-  const height = Math.max(
-    4,
-    Math.min(100, (props.viewportH / total) * 100),
-  )
+  const n = props.ticks.length
+  if (n <= 0) return { top: '0%', height: '100%' }
+  const startSlot = Math.max(0, Math.min(n - 1, props.viewportStart))
+  const endSlot = Math.max(startSlot, Math.min(n - 1, props.viewportEnd))
+  const top = (startSlot / n) * 100
+  const height = Math.max(100 / n, ((endSlot - startSlot + 1) / n) * 100)
   return { top: `${top}%`, height: `${height}%` }
 })
 
-function pxFromEvent(ev: PointerEvent): number {
+function indexFromEvent(ev: PointerEvent): number {
   const el = strip.value
-  if (el == null) return 0
+  const n = props.ticks.length
+  if (el == null || n <= 0) return 0
   const rect = el.getBoundingClientRect()
   const y = ev.clientY - rect.top
   const ratio = rect.height > 0 ? y / rect.height : 0
-  // Centre the clicked position in the viewport, clamping at 0 / max.
-  const target = ratio * props.scrollHeight - props.viewportH / 2
-  return Math.max(0, target)
+  // Convert click ratio → slot index. Floor so a click in the
+  // middle of slot k targets row k, not k+0.5 (which `Math.round`
+  // would push to k+1 for any click past the slot's midpoint).
+  return Math.max(0, Math.min(n - 1, Math.floor(ratio * n)))
 }
 
 function onPointerDown(ev: PointerEvent): void {
   dragging.value = true
   ;(ev.currentTarget as HTMLElement).setPointerCapture(ev.pointerId)
-  emit('scroll-to', pxFromEvent(ev))
+  emit('scroll-to-index', indexFromEvent(ev))
 }
 
 function onPointerMove(ev: PointerEvent): void {
   if (!dragging.value) return
-  emit('scroll-to', pxFromEvent(ev))
+  emit('scroll-to-index', indexFromEvent(ev))
 }
 
 function onPointerUp(ev: PointerEvent): void {
@@ -158,51 +160,49 @@ function onPointerUp(ev: PointerEvent): void {
   position: absolute;
   left: 1px;
   right: 1px;
-  height: 4px;
-  border-radius: 1px;
+  /* `top` + `height` set inline by tickStyleFor — each tick fills
+     its slot (`100 / n %` of the strip) so consecutive ticks tile
+     edge-to-edge without gaps. No border-radius — squared edges
+     read as continuous coloured bands. */
   background: var(--color-text-dim);
-  /* Taller ticks (4px) overlap on dense runs to form continuous
-     coloured bands; sparse runs still read as distinct stripes.
-     Translate so the band is centred on the row's position. */
-  transform: translateY(-2px);
   pointer-events: none;
 }
 
-/* Per-type tick colour — uses the dedicated minimap palette, not the
-   card borders. On dark surface the minimap tokens equal the border
-   colours (already bright pastels). In light theme they drop to the
-   300-band so a dense run reads as friendly pastel bands instead of
-   a slab of dark border colour. Tokens in styles/base.css. */
+/* Per-type tick colour — reuses the row-bg tokens directly so each
+   tick is pixel-identical to its matching timeline row (both compose
+   over --color-surface). Tokens in styles/base.css. */
 .minimap__tick[data-row-type='assistant'] {
-  background: var(--color-row-assistant-minimap);
+  background: var(--color-row-assistant-bg);
 }
 .minimap__tick[data-row-type='thinking'] {
-  background: var(--color-row-thinking-minimap);
+  background: var(--color-row-thinking-bg);
 }
 .minimap__tick[data-row-type='tool'] {
-  background: var(--color-row-tool-minimap);
+  background: var(--color-row-tool-bg);
 }
 .minimap__tick[data-row-type='signal'] {
-  background: var(--color-row-signal-minimap);
+  background: var(--color-row-signal-bg);
 }
 .minimap__tick[data-row-type='boundary'],
 .minimap__tick[data-row-type='generic'],
 .minimap__tick[data-row-type='usage'] {
-  background: var(--color-row-other-minimap);
+  background: var(--color-row-other-bg);
 }
 .minimap__tick[data-row-type='artifact_edited'],
 .minimap__tick[data-row-type='pause'] {
-  background: var(--color-row-warning-minimap);
+  background: var(--color-warning-bg);
 }
 
+/* Viewport indicator — a transparent rectangle (no fill) bordered on
+   all four sides so the strip's coloured bands remain visible
+   *inside* the current viewport while the frame reads clearly as a
+   contained region. */
 .minimap__viewport {
   position: absolute;
   left: 0;
   right: 0;
-  background: var(--color-accent-soft-strong);
-  border-top: 2px solid var(--color-accent);
-  border-bottom: 2px solid var(--color-accent);
-  box-shadow: inset 0 0 0 1px var(--color-accent-soft);
+  background: transparent;
+  border: 2px solid var(--color-accent);
   pointer-events: none;
   transition: top 60ms linear, height 60ms linear;
 }
