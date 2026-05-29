@@ -1,10 +1,18 @@
 # Proposal — Run-detail view layout
 
-**Status:** Phases 1–2 shipped 2026-05-28
-(Phase 1: `docs/plans/2026-05-28-run-detail-layout-shell.md`;
-Phase 2: this proposal's §"Filter chips — `EventKindFilter`" as the
-spec, live-smoked + 38 new tests added in `frontend/tests/`).
-Phases 3–7 remain proposed. Frontend-only; no backend, REST, SSE,
+**Status:** Phases 1–5 shipped (2026-05-28 → 2026-05-29). **Last
+updated:** 2026-05-29.
+Phase 1 (`docs/plans/2026-05-28-run-detail-layout-shell.md`).
+Phase 2 (this proposal's §"Filter chips — `EventKindFilter`" as
+the spec).
+Phase 3a–c (`journal/260529-run-detail-phase-3.md`): smart default
+routes paused → first review_path; Follow-live pin in run header;
+keyboard navigation (j/k/g chords/f/Esc/c).
+Phase 4 (`journal/260529-run-detail-phase-4.md`): Pause banner
+extraction + sticky.
+Phase 5 (`journal/260529-run-detail-phase-5.md`): Tool-call detail
+drawer + `useFocusTrap` composable.
+Phases 6–7 remain proposed. Frontend-only; no backend, REST, SSE,
 OTel, sentinel, or schema change. Targets `RunDetailView.vue` and the
 panes under `frontend/src/components/runs/`.
 
