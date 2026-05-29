@@ -168,28 +168,31 @@ function onPointerUp(ev: PointerEvent): void {
   pointer-events: none;
 }
 
-/* Per-type tick colour — matches the row card borders. Tokens live
-   in styles/base.css with parallel light + dark values. */
+/* Per-type tick colour — uses the dedicated minimap palette, not the
+   card borders. On dark surface the minimap tokens equal the border
+   colours (already bright pastels). In light theme they drop to the
+   300-band so a dense run reads as friendly pastel bands instead of
+   a slab of dark border colour. Tokens in styles/base.css. */
 .minimap__tick[data-row-type='assistant'] {
-  background: var(--color-row-assistant-border);
+  background: var(--color-row-assistant-minimap);
 }
 .minimap__tick[data-row-type='thinking'] {
-  background: var(--color-row-thinking-border);
+  background: var(--color-row-thinking-minimap);
 }
 .minimap__tick[data-row-type='tool'] {
-  background: var(--color-row-tool-border);
+  background: var(--color-row-tool-minimap);
 }
 .minimap__tick[data-row-type='signal'] {
-  background: var(--color-row-signal-border);
+  background: var(--color-row-signal-minimap);
 }
 .minimap__tick[data-row-type='boundary'],
 .minimap__tick[data-row-type='generic'],
 .minimap__tick[data-row-type='usage'] {
-  background: var(--color-row-other-border);
+  background: var(--color-row-other-minimap);
 }
 .minimap__tick[data-row-type='artifact_edited'],
 .minimap__tick[data-row-type='pause'] {
-  background: var(--color-warning);
+  background: var(--color-row-warning-minimap);
 }
 
 .minimap__viewport {
