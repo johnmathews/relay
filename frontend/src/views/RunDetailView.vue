@@ -490,6 +490,7 @@ onBeforeUnmount(() => {
             :run-id="detail.id"
             :project="project"
             :selection="currentView"
+            :status="detail.status"
             :iters="detail.iters ?? []"
             :children="children"
             @update:view="onSelectView"

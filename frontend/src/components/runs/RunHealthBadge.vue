@@ -93,6 +93,43 @@ const label = computed((): string => {
       return ''
   }
 })
+
+/**
+ * Verbose, screen-reader-oriented label. The visible compact form
+ * ("live · 2s ago") relies on the `●` pulse + colour to convey state;
+ * screen readers can't read either, so we spell out state + duration
+ * explicitly (proposal §"Accessibility"). The dot is `aria-hidden`,
+ * so this label is the SR's only signal of liveness.
+ */
+const verboseSinceLabel = computed(() => {
+  const hb = props.lastHeartbeat
+  if (hb == null) return ''
+  const anchor = hb.lastEventTs ? Date.parse(hb.lastEventTs) : hb.receivedAt
+  const secs = Math.max(0, Math.floor((nowMs.value - anchor) / 1_000))
+  if (secs < 60) {
+    return `${secs} second${secs === 1 ? '' : 's'} ago`
+  }
+  const mins = Math.floor(secs / 60)
+  const rem = secs % 60
+  const minPart = `${mins} minute${mins === 1 ? '' : 's'}`
+  if (rem === 0) return `${minPart} ago`
+  return `${minPart} ${rem} second${rem === 1 ? '' : 's'} ago`
+})
+
+const ariaLabel = computed((): string => {
+  switch (state.value) {
+    case 'connecting':
+      return 'Live stream connecting'
+    case 'live':
+      return `Live, last activity ${verboseSinceLabel.value}`
+    case 'slow':
+      return `Live stream slow, last activity ${verboseSinceLabel.value}`
+    case 'stalled':
+      return `Live stream stalled, last activity ${verboseSinceLabel.value}`
+    default:
+      return ''
+  }
+})
 </script>
 
 <template>
@@ -101,6 +138,7 @@ const label = computed((): string => {
     class="health-badge"
     :class="`health-badge--${state}`"
     :data-state="state"
+    :aria-label="ariaLabel"
     data-testid="run-health-badge"
   >
     <span

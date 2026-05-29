@@ -825,5 +825,29 @@ describe('TimelinePane', () => {
     expect(w.find('[data-kind="run_started"]').exists()).toBe(true)
     expect(w.find('[data-kind="run_ended"]').exists()).toBe(true)
   })
+
+  // Phase 7 — proposal §"Empty states". The OverviewPanel and
+  // IterTimelinePanel callsites pass contextualised copy; the legacy
+  // default is preserved for any caller that omits the prop.
+  describe('empty state', () => {
+    it('falls back to "No events yet." when emptyMessage is unset', () => {
+      const w = mount(TimelinePane, { props: { events: [] } })
+      expect(w.get('[data-testid="timeline-empty"]').text()).toBe(
+        'No events yet.',
+      )
+    })
+
+    it('renders the caller-supplied emptyMessage when the timeline is empty', () => {
+      const w = mount(TimelinePane, {
+        props: {
+          events: [],
+          emptyMessage: "Run hasn't emitted any events yet.",
+        },
+      })
+      expect(w.get('[data-testid="timeline-empty"]').text()).toBe(
+        "Run hasn't emitted any events yet.",
+      )
+    })
+  })
 })
 

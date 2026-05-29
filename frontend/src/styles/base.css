@@ -51,7 +51,17 @@
      Tuned for legibility on the dark base: low-alpha tint over the
      surface for the background, higher-alpha for the border. The
      header strip on a card inherits the bg via mix-blend in the row
-     CSS so the body stays calm. */
+     CSS so the body stays calm.
+
+     Phase 7 contrast audit (2026-05-29): every kind border below
+     fails WCAG 1.4.11 non-text contrast (3:1) against --color-surface.
+     Composited ratios: assistant 2.40, thinking 2.30, tool 2.72,
+     signal 3.02, other 1.95. Light-theme solid colours below are
+     also under (signal 1.74, tool 1.92). Deferred from Phase 7:
+     fixing requires a visual rebalance across 5 kinds × 2 themes
+     and is independent of the structural ARIA / empty-state work
+     shipped in this commit. Tracked in journal/260529-run-detail-
+     phase-7.md §"Deferred — kind-colour contrast". */
   --color-row-assistant-bg: rgba(96, 165, 250, 0.10);
   --color-row-assistant-border: rgba(96, 165, 250, 0.45);
   --color-row-thinking-bg: rgba(167, 139, 250, 0.10);

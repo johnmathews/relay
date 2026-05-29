@@ -21,6 +21,8 @@ interface ProjectRef {
   name: string
 }
 
+const TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled'])
+
 const props = defineProps<{
   runId: string
   /**
@@ -31,6 +33,15 @@ const props = defineProps<{
    */
   project: ProjectRef | null
   selection: RunView
+  /**
+   * Run status. Drives empty-state copy in the Iters and Artifacts
+   * sections (proposal §"Empty states"): a live run gets
+   * "Waiting for first iter…" / "No artifacts yet"; a terminal run
+   * with zero of either gets "—" / hidden. Defaulting to running is
+   * safe — under-render an em-dash is less surprising than
+   * over-render a "waiting" copy on a finished run.
+   */
+  status?: string
   iters: ReadonlyArray<IterRow>
   children: ReadonlyArray<ChildRow>
 }>()
@@ -72,6 +83,48 @@ const artifactsMissing = computed(
 const artifactsLoaded = computed(
   () => !artifactsMissing.value && artifactRoot.data.value != null,
 )
+const artifactsEntries = computed(
+  () => artifactRoot.data.value?.entries ?? [],
+)
+const artifactsEmpty = computed(
+  () => artifactsLoaded.value && artifactsEntries.value.length === 0,
+)
+
+const isTerminal = computed(
+  () => props.status != null && TERMINAL_STATUSES.has(props.status),
+)
+
+/**
+ * "Waiting for first iter…" placeholder semantics (proposal §"Empty
+ * states"): show when the run has produced no iters yet AND the run
+ * isn't done. A terminal run with zero iters (which would itself be
+ * surprising — orphan-recovery should have left a `run_ended`)
+ * collapses the section entirely rather than showing a misleading
+ * "waiting" copy.
+ */
+const showItersWaiting = computed(
+  () => props.iters.length === 0 && !isTerminal.value,
+)
+
+/**
+ * Artifacts-section copy:
+ *   - dir loaded with files          → render FileTree
+ *   - dir loaded but empty           → "No artifacts yet" / "—"
+ *   - dir 404                        → same empty copy (just-started
+ *                                       run hasn't created the dir yet)
+ *   - non-404 error (network, 500)   → section hidden (no inline
+ *                                       error surface in the rail)
+ *
+ * `null` value means the artifacts section is hidden entirely.
+ */
+const artifactsEmptyCopy = computed<string | null>(() => {
+  if (artifactsLoaded.value && !artifactsEmpty.value) return null
+  // 404 with non-terminal status, OR loaded-but-empty with non-terminal.
+  if (artifactsMissing.value || artifactsEmpty.value) {
+    return isTerminal.value ? '—' : 'No artifacts yet'
+  }
+  return null
+})
 
 function onArtifactSelect(path: string): void {
   emit('update:view', { kind: 'artifact', path })
@@ -95,47 +148,68 @@ function onArtifactSelect(path: string): void {
       <span class="run-sidebar__project-name">{{ project.name }}</span>
     </RouterLink>
 
-    <button
-      type="button"
-      class="run-sidebar__row run-sidebar__row--overview"
-      :class="{ 'run-sidebar__row--selected': isOverviewSelected }"
-      :aria-current="isOverviewSelected ? 'page' : undefined"
-      data-testid="sidebar-overview"
-      @click="selectOverview"
+    <div
+      role="listbox"
+      aria-orientation="vertical"
+      aria-label="Run views"
+      class="run-sidebar__listbox"
+      data-testid="sidebar-listbox"
     >
-      Overview
-    </button>
-
-    <section
-      v-if="iters.length > 0"
-      role="group"
-      aria-labelledby="sidebar-iters-heading"
-      class="run-sidebar__section"
-    >
-      <h3
-        id="sidebar-iters-heading"
-        class="run-sidebar__heading"
-      >
-        Iters
-        <span class="run-sidebar__count">{{ iters.length }}</span>
-      </h3>
       <button
-        v-for="iter in iters"
-        :key="iter.seq"
         type="button"
-        class="run-sidebar__row"
-        :class="{ 'run-sidebar__row--selected': isIterSelected(iter.seq) }"
-        :aria-current="isIterSelected(iter.seq) ? 'page' : undefined"
-        :data-testid="`sidebar-iter-${iter.seq}`"
-        @click="selectIter(iter.seq)"
+        role="option"
+        :aria-selected="isOverviewSelected"
+        class="run-sidebar__row run-sidebar__row--overview"
+        :class="{ 'run-sidebar__row--selected': isOverviewSelected }"
+        data-testid="sidebar-overview"
+        @click="selectOverview"
       >
-        <span class="run-sidebar__row-seq">#{{ iter.seq }}</span>
-        <span class="run-sidebar__row-label">{{ iter.phase ?? '—' }}</span>
+        Overview
       </button>
-    </section>
+
+      <section
+        v-if="iters.length > 0 || showItersWaiting"
+        role="group"
+        aria-labelledby="sidebar-iters-heading"
+        class="run-sidebar__section"
+        data-testid="sidebar-iters-section"
+      >
+        <h3
+          id="sidebar-iters-heading"
+          class="run-sidebar__heading"
+        >
+          Iters
+          <span
+            v-if="iters.length > 0"
+            class="run-sidebar__count"
+          >{{ iters.length }}</span>
+        </h3>
+        <button
+          v-for="iter in iters"
+          :key="iter.seq"
+          type="button"
+          role="option"
+          :aria-selected="isIterSelected(iter.seq)"
+          class="run-sidebar__row"
+          :class="{ 'run-sidebar__row--selected': isIterSelected(iter.seq) }"
+          :data-testid="`sidebar-iter-${iter.seq}`"
+          @click="selectIter(iter.seq)"
+        >
+          <span class="run-sidebar__row-seq">#{{ iter.seq }}</span>
+          <span class="run-sidebar__row-label">{{ iter.phase ?? '—' }}</span>
+        </button>
+        <p
+          v-if="showItersWaiting"
+          class="run-sidebar__empty"
+          data-testid="sidebar-iters-waiting"
+        >
+          Waiting for first iter…
+        </p>
+      </section>
+    </div>
 
     <section
-      v-if="artifactsLoaded"
+      v-if="artifactsLoaded || artifactsEmptyCopy != null"
       role="group"
       aria-labelledby="sidebar-artifacts-heading"
       class="run-sidebar__section"
@@ -148,10 +222,18 @@ function onArtifactSelect(path: string): void {
         Artifacts
       </h3>
       <FileTree
+        v-if="artifactsLoaded && !artifactsEmpty"
         :source="artifactSource"
         aria-label="Run artifacts"
         @select="onArtifactSelect"
       />
+      <p
+        v-else-if="artifactsEmptyCopy != null"
+        class="run-sidebar__empty"
+        data-testid="sidebar-artifacts-empty"
+      >
+        {{ artifactsEmptyCopy }}
+      </p>
     </section>
 
     <section
@@ -293,5 +375,17 @@ function onArtifactSelect(path: string): void {
 
 .run-sidebar__section :deep(.file-tree) {
   font-size: 0.85em;
+}
+
+.run-sidebar__listbox {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.run-sidebar__empty {
+  margin: 0.25rem 0.5rem;
+  font-size: 0.85em;
+  color: var(--color-text-dim);
 }
 </style>

@@ -92,4 +92,53 @@ describe('RunHealthBadge', () => {
     })
     expect(w.find('[data-testid="run-health-badge"]').exists()).toBe(true)
   })
+
+  // Phase 7 a11y — proposal §"Accessibility". The compact visible label
+  // ("live · 2s ago") leans on the colour + pulsing dot for state and
+  // uses a non-word duration ("2s"); neither reaches SRs. The aria-label
+  // spells out state + duration so the SR reading is self-sufficient.
+  describe('aria-label (verbose SR signal)', () => {
+    it('says "Live stream connecting" while no heartbeat has arrived', () => {
+      const w = mount(RunHealthBadge, {
+        props: { status: 'running', lastHeartbeat: null },
+      })
+      expect(
+        w.get('[data-testid="run-health-badge"]').attributes('aria-label'),
+      ).toBe('Live stream connecting')
+    })
+
+    it('says "Live, last activity 0 seconds ago" on a fresh heartbeat', () => {
+      const w = mount(RunHealthBadge, {
+        props: { status: 'running', lastHeartbeat: snap() },
+      })
+      expect(
+        w.get('[data-testid="run-health-badge"]').attributes('aria-label'),
+      ).toBe('Live, last activity 0 seconds ago')
+    })
+
+    it('pluralises and switches state at the slow threshold', async () => {
+      const w = mount(RunHealthBadge, {
+        props: { status: 'running', lastHeartbeat: snap() },
+      })
+      // The component's ticking interval re-runs on every interval tick;
+      // advancing timers by 1s also progresses wall-clock by 1s, so set
+      // pre-advance baseline 1s before the target.
+      vi.setSystemTime(FIXED_NOW + 19_000)
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(
+        w.get('[data-testid="run-health-badge"]').attributes('aria-label'),
+      ).toBe('Live stream slow, last activity 20 seconds ago')
+    })
+
+    it('uses minute granularity once over a minute', async () => {
+      const w = mount(RunHealthBadge, {
+        props: { status: 'running', lastHeartbeat: snap() },
+      })
+      vi.setSystemTime(FIXED_NOW + 124_000)
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(
+        w.get('[data-testid="run-health-badge"]').attributes('aria-label'),
+      ).toBe('Live stream stalled, last activity 2 minutes 5 seconds ago')
+    })
+  })
 })

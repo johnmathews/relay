@@ -31,12 +31,14 @@ function mountSidebar(props: {
   children?: Array<{ id: string; status: string }>
   runId?: string
   project?: { id: number; name: string } | null
+  status?: string
 }): ReturnType<typeof mount> {
   return mount(RunSidebar, {
     props: {
       runId: props.runId ?? 'run-1',
       project: props.project ?? null,
       selection: props.selection,
+      status: props.status,
       iters: props.iters ?? [],
       children: props.children ?? [],
     },
@@ -51,7 +53,8 @@ describe('RunSidebar', () => {
     const w = mountSidebar({ selection: { kind: 'overview' } })
     const row = w.get('[data-testid="sidebar-overview"]')
     expect(row.text()).toContain('Overview')
-    expect(row.attributes('aria-current')).toBe('page')
+    expect(row.attributes('aria-selected')).toBe('true')
+    expect(row.attributes('role')).toBe('option')
   })
 
   it('shows the project name as a title row when project is provided', () => {
@@ -85,7 +88,7 @@ describe('RunSidebar', () => {
     expect(rows[1]!.text()).toContain('#2')
   })
 
-  it('marks the selected iter with aria-current=page', () => {
+  it('marks the selected iter with aria-selected=true and the others with false', () => {
     const w = mountSidebar({
       selection: { kind: 'iter', seq: 2 },
       iters: [
@@ -94,9 +97,10 @@ describe('RunSidebar', () => {
       ],
     })
     const sel = w.get('[data-testid="sidebar-iter-2"]')
-    expect(sel.attributes('aria-current')).toBe('page')
+    expect(sel.attributes('aria-selected')).toBe('true')
+    expect(sel.attributes('role')).toBe('option')
     const other = w.get('[data-testid="sidebar-iter-1"]')
-    expect(other.attributes('aria-current')).toBeUndefined()
+    expect(other.attributes('aria-selected')).toBe('false')
   })
 
   it('emits update:view when an iter row is clicked', async () => {
@@ -138,12 +142,91 @@ describe('RunSidebar', () => {
     expect(rows[0]!.attributes('href')).toContain('/runs/child-a')
   })
 
-  it('clears aria-current on Overview when an iter is selected', () => {
+  it('clears aria-selected on Overview when an iter is selected', () => {
     const w = mountSidebar({
       selection: { kind: 'iter', seq: 1 },
       iters: [{ seq: 1, phase: 'planning' }],
     })
-    expect(w.get('[data-testid="sidebar-overview"]').attributes('aria-current')).toBeUndefined()
+    expect(
+      w.get('[data-testid="sidebar-overview"]').attributes('aria-selected'),
+    ).toBe('false')
+  })
+})
+
+// Phase 7 — proposal §"Accessibility". The Overview + Iters region is
+// one listbox of run-views (selection model). FileTree and Children
+// stay outside with their own semantics (FileTree owns role=tree;
+// children rows are RouterLinks under the rail's outer <nav>).
+describe('RunSidebar — listbox ARIA (Phase 7)', () => {
+  it('wraps Overview + Iters in role=listbox with aria-orientation=vertical', () => {
+    const w = mountSidebar({
+      selection: { kind: 'overview' },
+      iters: [{ seq: 1, phase: 'planning' }],
+    })
+    const lb = w.get('[data-testid="sidebar-listbox"]')
+    expect(lb.attributes('role')).toBe('listbox')
+    expect(lb.attributes('aria-orientation')).toBe('vertical')
+    expect(lb.attributes('aria-label')).toBe('Run views')
+  })
+
+  it('keeps the Iters group within the listbox (role=group + aria-labelledby)', () => {
+    const w = mountSidebar({
+      selection: { kind: 'overview' },
+      iters: [{ seq: 1, phase: 'planning' }],
+    })
+    const section = w.get('[data-testid="sidebar-iters-section"]')
+    expect(section.attributes('role')).toBe('group')
+    expect(section.attributes('aria-labelledby')).toBe('sidebar-iters-heading')
+  })
+})
+
+// Phase 7 — proposal §"Empty states" table.
+describe('RunSidebar — Iters empty state (Phase 7)', () => {
+  it('shows "Waiting for first iter…" when a running run has no iters yet', () => {
+    const w = mountSidebar({
+      selection: { kind: 'overview' },
+      iters: [],
+      status: 'running',
+    })
+    const empty = w.get('[data-testid="sidebar-iters-waiting"]')
+    expect(empty.text()).toContain('Waiting for first iter')
+  })
+
+  it('renders the Iters section as visible when waiting (not collapsed)', () => {
+    const w = mountSidebar({
+      selection: { kind: 'overview' },
+      iters: [],
+      status: 'running',
+    })
+    expect(w.find('[data-testid="sidebar-iters-section"]').exists()).toBe(true)
+  })
+
+  it('hides the Iters section entirely when a terminal run has no iters', () => {
+    // A terminal run with zero iters is itself surprising (orphan
+    // recovery should have left a run_ended); showing a "waiting"
+    // copy on a finished run would be misleading.
+    const w = mountSidebar({
+      selection: { kind: 'overview' },
+      iters: [],
+      status: 'done',
+    })
+    expect(w.find('[data-testid="sidebar-iters-section"]').exists()).toBe(
+      false,
+    )
+    expect(w.find('[data-testid="sidebar-iters-waiting"]').exists()).toBe(
+      false,
+    )
+  })
+
+  it('omits the waiting placeholder once an iter arrives', () => {
+    const w = mountSidebar({
+      selection: { kind: 'overview' },
+      iters: [{ seq: 1, phase: 'planning' }],
+      status: 'running',
+    })
+    expect(w.find('[data-testid="sidebar-iters-waiting"]').exists()).toBe(
+      false,
+    )
   })
 })
 
@@ -165,12 +248,14 @@ function mountWithColada(props: {
   children?: Array<{ id: string; status: string }>
   runId?: string
   project?: { id: number; name: string } | null
+  status?: string
 }): ReturnType<typeof mount> {
   return mount(RunSidebar, {
     props: {
       runId: props.runId ?? 'run-1',
       project: props.project ?? null,
       selection: props.selection,
+      status: props.status,
       iters: props.iters ?? [],
       children: props.children ?? [],
     },
@@ -183,12 +268,49 @@ function mountWithColada(props: {
 describe('RunSidebar — Artifacts section', () => {
   beforeEach(() => { GET.mockReset() })
 
-  it('hides the Artifacts section while listing 404s ("no artifacts yet")', async () => {
+  it('shows "No artifacts yet" for a running run whose artifacts dir 404s', async () => {
+    // Phase 7 — proposal §"Empty states". Previously the section was
+    // hidden entirely on 404; the explicit copy is more informative
+    // than silence and signals that artifacts will appear when written.
     GET.mockImplementation((path: string) => {
       if (path.includes('/artifacts')) return Promise.resolve(err(404))
       return Promise.resolve(ok([]))
     })
-    const w = mountWithColada({ selection: { kind: 'overview' } })
+    const w = mountWithColada({
+      selection: { kind: 'overview' },
+      status: 'running',
+    })
+    await flushPromises()
+    const section = w.get('[data-testid="sidebar-artifacts-section"]')
+    expect(section.find('[data-testid="sidebar-artifacts-empty"]').text()).toBe(
+      'No artifacts yet',
+    )
+  })
+
+  it('renders an em-dash for a terminal run with no artifacts dir', async () => {
+    GET.mockImplementation((path: string) => {
+      if (path.includes('/artifacts')) return Promise.resolve(err(404))
+      return Promise.resolve(ok([]))
+    })
+    const w = mountWithColada({
+      selection: { kind: 'overview' },
+      status: 'done',
+    })
+    await flushPromises()
+    expect(
+      w.get('[data-testid="sidebar-artifacts-empty"]').text(),
+    ).toBe('—')
+  })
+
+  it('keeps the section hidden on a non-404 error (no inline error surface)', async () => {
+    GET.mockImplementation((path: string) => {
+      if (path.includes('/artifacts')) return Promise.resolve(err(500))
+      return Promise.resolve(ok([]))
+    })
+    const w = mountWithColada({
+      selection: { kind: 'overview' },
+      status: 'running',
+    })
     await flushPromises()
     expect(
       w.find('[data-testid="sidebar-artifacts-section"]').exists(),
@@ -199,13 +321,15 @@ describe('RunSidebar — Artifacts section', () => {
     GET.mockImplementation((path: string) => {
       if (path.includes('/artifacts')) {
         return Promise.resolve(
-          ok([
-            { name: 'evaluation-report.md', kind: 'file', size: 100 },
-            { name: 'improvement-plan.md', kind: 'file', size: 200 },
-          ]),
+          ok({
+            entries: [
+              { name: 'evaluation-report.md', kind: 'file', size: 100 },
+              { name: 'improvement-plan.md', kind: 'file', size: 200 },
+            ],
+          }),
         )
       }
-      return Promise.resolve(ok([]))
+      return Promise.resolve(ok({ entries: [] }))
     })
     const w = mountWithColada({ selection: { kind: 'overview' } })
     await flushPromises()
@@ -218,10 +342,10 @@ describe('RunSidebar — Artifacts section', () => {
     GET.mockImplementation((path: string) => {
       if (path.includes('/artifacts')) {
         return Promise.resolve(
-          ok([{ name: 'plan.md', kind: 'file', size: 100 }]),
+          ok({ entries: [{ name: 'plan.md', kind: 'file', size: 100 }] }),
         )
       }
-      return Promise.resolve(ok([]))
+      return Promise.resolve(ok({ entries: [] }))
     })
     const w = mountWithColada({ selection: { kind: 'overview' } })
     await flushPromises()

@@ -39,4 +39,12 @@ describe('StatusBadge', () => {
     expect(w.classes()).toContain('status-badge--unknown')
     expect(w.attributes('data-status')).toBe('queued')
   })
+
+  it('carries an aria-label so SRs hear "Run status: …", not just the value', () => {
+    // Phase 7 a11y — proposal §"Accessibility". The visible badge is a
+    // bare word ("running") with a colour treatment that SRs can't see.
+    // The aria-label gives the role context.
+    const w = mount(StatusBadge, { props: { status: 'running' } })
+    expect(w.attributes('aria-label')).toBe('Run status: running')
+  })
 })

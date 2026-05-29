@@ -34,6 +34,7 @@ const variant = computed(() =>
     class="status-badge"
     :class="`status-badge--${variant}`"
     :data-status="status"
+    :aria-label="`Run status: ${status}`"
   >
     {{ status }}
   </span>

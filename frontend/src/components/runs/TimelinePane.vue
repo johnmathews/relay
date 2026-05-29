@@ -74,6 +74,13 @@ const props = defineProps<{
    * `[]` keeps older call-sites unchanged.
    */
   pendingTurns?: ReadonlyArray<PendingTurn>
+  /**
+   * Empty-state copy when `rows.length === 0`. Defaults to the
+   * historical "No events yet." string. Callers in the
+   * Overview/Iter panels override with contextualised copy from the
+   * proposal §"Empty states" table.
+   */
+  emptyMessage?: string
 }>()
 
 const router = useRouter()
@@ -676,8 +683,9 @@ function onArtifactEditedClick(path: string): void {
     <p
       v-if="rows.length === 0"
       class="timeline__empty"
+      data-testid="timeline-empty"
     >
-      No events yet.
+      {{ emptyMessage ?? 'No events yet.' }}
     </p>
 
     <div

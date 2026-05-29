@@ -71,6 +71,7 @@ const counts = computed<Record<KindCategory, number>>(() => {
       :selected-iter-seq="iterSeq"
       :pending-turns="pendingTurns"
       :run-id="runId"
+      empty-message="Iter started — no events yet."
     />
   </div>
 </template>
