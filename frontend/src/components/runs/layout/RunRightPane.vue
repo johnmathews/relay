@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, provide, ref, watch } from 'vue'
 import StatusBadge from '@/components/shared/StatusBadge.vue'
 import RunHealthBadge from '@/components/runs/RunHealthBadge.vue'
 import ParentRunChip from '@/components/shared/ParentRunChip.vue'
@@ -8,6 +8,9 @@ import PauseBanner from './PauseBanner.vue'
 import OverviewPanel from './OverviewPanel.vue'
 import IterTimelinePanel from './IterTimelinePanel.vue'
 import ArtifactPanel from './ArtifactPanel.vue'
+import ToolCallDetailDrawer, {
+  type ToolCallDrawerPayload,
+} from '@/components/runs/ToolCallDetailDrawer.vue'
 import type { RunView } from '@/lib/runView'
 import type { HeartbeatSnapshot, StreamEvent, PendingTurn } from '@/stores/events'
 import type { Iter } from '@/lib/queries'
@@ -177,6 +180,35 @@ function dismissFailure(): void {
 const showFailure = computed(
   () => failureInfo.value != null && !failureDismissed.value,
 )
+
+// Phase 5 — tool-call detail drawer. State is local + transient (per
+// the proposal's URL contract: not reflected in the URL). A
+// provide/inject pair exposes `openToolDetail` to any descendant
+// `ToolCallCard` without prop-drilling through OverviewPanel /
+// IterTimelinePanel / TimelinePane.
+const drawerOpen = ref(false)
+const drawerPayload = ref<ToolCallDrawerPayload | null>(null)
+
+function openToolDetail(payload: ToolCallDrawerPayload): void {
+  drawerPayload.value = payload
+  drawerOpen.value = true
+}
+
+function closeDrawer(): void {
+  drawerOpen.value = false
+}
+
+// Reset payload when the run changes — a stale tool from the previous
+// run would be confusing if the operator re-opens the drawer.
+watch(
+  () => props.detail.id,
+  () => {
+    drawerOpen.value = false
+    drawerPayload.value = null
+  },
+)
+
+provide('openToolDetail', openToolDetail)
 </script>
 
 <template>
@@ -324,6 +356,12 @@ const showFailure = computed(
         :path="selection.path"
       />
     </div>
+
+    <ToolCallDetailDrawer
+      :open="drawerOpen"
+      :payload="drawerPayload"
+      @close="closeDrawer"
+    />
   </section>
 </template>
 

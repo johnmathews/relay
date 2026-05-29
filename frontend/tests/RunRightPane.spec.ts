@@ -206,6 +206,21 @@ describe('RunRightPane — paused', () => {
   })
 })
 
+describe('RunRightPane — tool-call drawer wiring', () => {
+  it('does NOT mount the drawer in the DOM when closed (no zombie focus trap)', async () => {
+    while (document.body.firstChild) {
+      document.body.removeChild(document.body.firstChild)
+    }
+    mountPane()
+    await flushPromises()
+    // The drawer is teleported to <body>; if it were rendered, the
+    // `[data-testid="tool-drawer"]` element would land there.
+    expect(
+      document.body.querySelector('[data-testid="tool-drawer"]'),
+    ).toBeNull()
+  })
+})
+
 describe('RunRightPane — failure banner', () => {
   it('renders the failure banner with agent_end_no_signal hint', () => {
     const failed = {

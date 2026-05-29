@@ -10,7 +10,20 @@
 // is W6 (`lib/render.ts` is a stub by mandate); a plain <pre> is the
 // correct minimal contract here.
 
-import { computed, ref } from 'vue'
+import { computed, inject, ref } from 'vue'
+import type { ToolCallDrawerPayload } from './ToolCallDetailDrawer.vue'
+
+/**
+ * Provided by `RunRightPane.vue`. When present, the "View full" button
+ * is rendered and opens the right-side detail drawer with this card's
+ * payload. When absent (older call-sites / unit tests that mount the
+ * card directly), the affordance is hidden — the inline "Show full"
+ * 5-line toggle stays the only expand mechanism.
+ */
+const openToolDetail = inject<((p: ToolCallDrawerPayload) => void) | null>(
+  'openToolDetail',
+  null,
+)
 
 const props = defineProps<{
   /** Tool name (from the `tool_use_start` payload). */
@@ -70,6 +83,17 @@ function clamp(s: string): string {
   if (lines.length <= COLLAPSE_LINES) return s
   return lines.slice(0, COLLAPSE_LINES).join('\n')
 }
+
+function onViewFull(): void {
+  if (openToolDetail == null) return
+  openToolDetail({
+    name: props.name,
+    args: props.args,
+    result: props.result,
+    isError: props.isError === true,
+    durationMs: props.durationMs ?? null,
+  })
+}
 </script>
 
 <template>
@@ -106,15 +130,29 @@ function clamp(s: string): string {
       <pre class="tool-card__block">{{ clamp(resultText) }}</pre>
     </div>
 
-    <button
-      v-if="overflows"
-      type="button"
-      class="tool-card__toggle"
-      data-testid="tool-card-toggle"
-      @click="expanded = !expanded"
+    <div
+      v-if="overflows || openToolDetail != null"
+      class="tool-card__actions"
     >
-      {{ expanded ? 'Show less' : 'Show full' }}
-    </button>
+      <button
+        v-if="overflows"
+        type="button"
+        class="tool-card__toggle"
+        data-testid="tool-card-toggle"
+        @click="expanded = !expanded"
+      >
+        {{ expanded ? 'Show less' : 'Show full' }}
+      </button>
+      <button
+        v-if="openToolDetail != null"
+        type="button"
+        class="tool-card__view-full"
+        data-testid="tool-card-view-full"
+        @click="onViewFull"
+      >
+        View full
+      </button>
+    </div>
   </div>
 </template>
 
@@ -210,8 +248,15 @@ function clamp(s: string): string {
   margin-top: 0.55rem;
 }
 
-.tool-card__toggle {
+.tool-card__actions {
   margin-top: 0.45rem;
+  display: flex;
+  gap: 0.9rem;
+  align-items: center;
+}
+
+.tool-card__toggle,
+.tool-card__view-full {
   background: none;
   border: none;
   color: var(--color-accent);
@@ -219,5 +264,14 @@ function clamp(s: string): string {
   font-size: 0.82em;
   cursor: pointer;
   padding: 0;
+}
+
+.tool-card__view-full {
+  color: var(--color-text-dim);
+}
+
+.tool-card__view-full:hover,
+.tool-card__view-full:focus-visible {
+  color: var(--color-accent);
 }
 </style>
