@@ -4,7 +4,7 @@ import StatusBadge from '@/components/shared/StatusBadge.vue'
 import RunHealthBadge from '@/components/runs/RunHealthBadge.vue'
 import ParentRunChip from '@/components/shared/ParentRunChip.vue'
 import ActionButton from '@/components/shared/ActionButton.vue'
-import PauseAnswerForm from '@/components/runs/PauseAnswerForm.vue'
+import PauseBanner from './PauseBanner.vue'
 import OverviewPanel from './OverviewPanel.vue'
 import IterTimelinePanel from './IterTimelinePanel.vue'
 import ArtifactPanel from './ArtifactPanel.vue'
@@ -294,11 +294,11 @@ const showFailure = computed(
       </aside>
     </header>
 
-    <PauseAnswerForm
+    <PauseBanner
       v-if="isPaused"
       :run-id="detail.id"
       :question="pauseQuestion"
-      :review-paths="(pauseReviewPaths as string[])"
+      :review-paths="pauseReviewPaths"
       @resumed="onResumed"
     />
 

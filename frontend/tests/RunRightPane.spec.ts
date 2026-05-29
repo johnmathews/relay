@@ -137,7 +137,7 @@ describe('RunRightPane — body routing', () => {
 })
 
 describe('RunRightPane — paused', () => {
-  it('renders PauseAnswerForm above the body when status=paused', () => {
+  it('renders PauseBanner wrapping PauseAnswerForm when status=paused', () => {
     const paused = {
       ...baseDetail,
       status: 'paused',
@@ -155,11 +155,53 @@ describe('RunRightPane — paused', () => {
       pauseQuestion: 'approve?',
       pauseReviewPaths: [],
     })
+    const banner = w.find('[data-testid="pause-banner"]')
+    expect(banner.exists()).toBe(true)
+    // Form is rendered inside the banner wrapper — the 14c/14e/14f
+    // contract is preserved through the wrap, not rewritten.
     expect(w.findComponent({ name: 'PauseAnswerForm' }).exists()).toBe(true)
+    expect(banner.findComponent({ name: 'PauseAnswerForm' }).exists()).toBe(
+      true,
+    )
   })
 
-  it('does NOT render PauseAnswerForm when status != paused', () => {
+  it('places the PauseBanner between the run header and the body', () => {
+    const paused = {
+      ...baseDetail,
+      status: 'paused',
+      iters: [
+        {
+          seq: 1,
+          phase: 'planning',
+          signal_kind: 'pause',
+          signal_args: { question: 'approve?' },
+        },
+      ],
+    }
+    const w = mountPane({
+      detail: paused,
+      pauseQuestion: 'approve?',
+      pauseReviewPaths: ['plan.md'],
+    })
+    const root = w.get('[data-testid="run-right-pane"]')
+    const children = Array.from(root.element.children)
+    const headerIdx = children.findIndex((el) =>
+      el.classList.contains('right-pane__header'),
+    )
+    const bannerIdx = children.findIndex(
+      (el) => el.getAttribute('data-testid') === 'pause-banner',
+    )
+    const bodyIdx = children.findIndex((el) =>
+      el.classList.contains('right-pane__body'),
+    )
+    expect(headerIdx).toBeGreaterThanOrEqual(0)
+    expect(bannerIdx).toBeGreaterThan(headerIdx)
+    expect(bodyIdx).toBeGreaterThan(bannerIdx)
+  })
+
+  it('does NOT render PauseBanner when status != paused', () => {
     const w = mountPane()
+    expect(w.find('[data-testid="pause-banner"]').exists()).toBe(false)
     expect(w.findComponent({ name: 'PauseAnswerForm' }).exists()).toBe(false)
   })
 })
