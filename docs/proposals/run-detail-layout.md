@@ -2,7 +2,7 @@
 
 **Status:** Phases 1–7 shipped (2026-05-28 → 2026-05-29). **Last
 updated:** 2026-05-29.
-Phase 1 (`docs/plans/2026-05-28-run-detail-layout-shell.md`).
+Phase 1 (`docs/archive/2026-05-28-run-detail-layout-shell.md`).
 Phase 2 (this proposal's §"Filter chips — `EventKindFilter`" as
 the spec).
 Phase 3a–c (`journal/260529-run-detail-phase-3.md`): smart default

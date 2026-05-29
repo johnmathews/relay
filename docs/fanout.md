@@ -370,4 +370,4 @@ the parent blocks until the synthesizer settles. See
   ADR-35 (semaphore concurrency cap), ADR-36 (join watcher
   placement + dispatch two-pass), ADR-37 (parent-first cancel
   cascade), ADR-38 (OTel cross-run span parenting).
-- **Original proposal:** `docs/proposals/parallel-iters-fanout-join.md`.
+- **Original proposal:** `docs/archive/parallel-iters-fanout-join.md`.

@@ -1,6 +1,6 @@
 # Proposal — parallel iters via fanout/join (orchestrator-layer subagents)
 
-**Status:** proposal (not yet ADR'd, not yet implemented)
+**Status:** superseded by [../fanout.md](../fanout.md) (2026-05-23). Shipped as Phases 9a–9g (ADRs 34–39).
 **Date:** 2026-05-21
 **Touches:** `docs/spec.md` §3, §4.2, §6; `src/relay_v2/orchestrator/` (loop,
 preamble, lifecycle/workspace), `src/relay_v2/db/` (schema), `src/relay_v2/

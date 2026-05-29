@@ -1,6 +1,6 @@
 # Proposal — pause-for-review (inline document editing on pause)
 
-**Status:** proposal (not yet ADR'd, not yet implemented)
+**Status:** superseded by [../spec.md](../spec.md) §6.2 + ADRs 40–41 (2026-05-23). Shipped as Phases 14a–14f.
 **Date:** 2026-05-22
 **Phase slot:** Phase 14 in `docs/plan.md` §Post-MVP phases (sketch).
 **Touches:** `docs/spec.md` §3.2 (event taxonomy), §6.2 (pause/resume),

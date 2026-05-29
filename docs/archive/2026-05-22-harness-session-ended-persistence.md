@@ -1,5 +1,7 @@
 # Persist `harness_session_ended` (ADR-39) Implementation Plan
 
+**Status:** closed 2026-05-23 (shipped as Phase 9g; see CLAUDE.md §"Phase 9g" and ADR-39).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Close the latent ADR-10 invariant gap parked since Phase 7 — the

@@ -584,7 +584,7 @@ Not part of the MVP plan, but architecturally enabled:
 
 Out-of-band from the original sketch: the **post-MVP** orchestrator
 gained parallel-iter fanout/join via the proposal at
-`docs/proposals/parallel-iters-fanout-join.md`. The slot was previously
+`docs/archive/parallel-iters-fanout-join.md`. The slot was previously
 projected as "subagent dispatch" (Phase 13 below, now superseded); the
 fanout-join arc absorbed it and was tracked as sub-phases of 9 to keep
 the work visibly sequential against Phases 0–8.
@@ -632,7 +632,7 @@ are pure bug fixes restoring existing contracts.
 ### Phase 14a–14f — pause-for-review (post-MVP) — **complete**
 
 The pause-for-review arc landed on top of the existing `pause` /
-`resume` mechanism. Source proposal: `docs/proposals/pause-for-review.md`.
+`resume` mechanism. Source proposal: `docs/archive/pause-for-review.md`.
 
 - **14a** (ADR-40) — `PUT /api/runs/:id/artifacts/{path}` write
   endpoint + `artifact_edited` event kind + `PauseReviewError` codes

@@ -1,6 +1,6 @@
 # Proposal — harness-specific skill variants
 
-**Status:** proposal (not yet ADR'd, not yet implemented)
+**Status:** superseded by [../skills.md](../skills.md) + ADR-33 + ADR-44 (2026-05-25). Shipped as the bundled-skill-variants model.
 **Date:** 2026-05-21
 **Touches:** `skills/`, `src/relay_v2/cli/install_skill.py`, `docs/skills.md`, `tests/cli/`, `tests/skills/`
 **Does not touch:** orchestrator, harness, REST/MCP, event store, sentinel grammar

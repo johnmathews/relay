@@ -37,8 +37,8 @@ Operational refs:
 de-risking `scratch/`.
 
 **Phase 9a** adds defensive plumbing for the post-MVP fanout-join
-feature (`docs/proposals/parallel-iters-fanout-join.md`,
-`docs/plans/2026-05-21-fanout-join-9a.md`): a new `awaiting_children`
+feature (`docs/archive/parallel-iters-fanout-join.md`,
+`docs/archive/2026-05-21-fanout-join-9a.md`): a new `awaiting_children`
 run status (NOT terminal — can transition back to `running` once
 children settle in 9c), a reserved `child_runs_resolved` event kind,
 and a depth-first cascade-cancel helper threaded through
@@ -57,7 +57,7 @@ path creates an `awaiting_children` row yet — 9b/9c land the dispatch
 + join.
 
 **Phase 9b** lands the fanout dispatch
-(`docs/plans/2026-05-21-fanout-join-9b.md`): a new closing sentinel
+(`docs/archive/2026-05-21-fanout-join-9b.md`): a new closing sentinel
 verb `[[engteam:fanout]]` paired with a `[[engteam:fanout-start]] …
 [[engteam:fanout-end]]` JSON marker block (spec §5.4), parsed by
 `extract_fanout_payload` into a Pydantic `FanoutPayload`
@@ -82,7 +82,7 @@ as `failed`. The parent stays in `awaiting_children` with no
 fanout iter (OCQ-1 status-quo).
 
 **Phase 9c** closes the fanout-join loop
-(`docs/plans/2026-05-21-fanout-join-9c.md`, ADR-36): a new
+(`docs/archive/2026-05-21-fanout-join-9c.md`, ADR-36): a new
 `RelayCore._maybe_resume_parent` watcher fired from each child's
 `_run` finally block — when all siblings of an `awaiting_children`
 parent reach a terminal status, the watcher emits one
@@ -110,7 +110,7 @@ B's row exists. `_enqueue_lock` serialises the watcher so two children
 settling near-simultaneously cannot both resume the parent.
 
 **Phase 9d** wires the runtime cancel-cascade
-(`docs/plans/2026-05-21-fanout-join-9d.md`, ADR-37): `cancel_run` on
+(`docs/archive/2026-05-21-fanout-join-9d.md`, ADR-37): `cancel_run` on
 an `awaiting_children` parent now acquires `_enqueue_lock`, flips the
 parent to `cancelled` **first** (parent-first is load-bearing — the
 9c join watcher also acquires the same lock and re-reads the parent
@@ -136,7 +136,7 @@ schema/event-kind/sentinel change; `POST /api/runs/{id}/cancel` + MCP
 `relay__cancel_run` inherit the behaviour with no signature change.
 
 **Phase 9e** lands the dashboard "Children" pane
-(`docs/plans/2026-05-21-fanout-join-9e.md`). (1) **Children pane** in
+(`docs/archive/2026-05-21-fanout-join-9e.md`). (1) **Children pane** in
 `RunDetailView` — rendered only for parent runs (`parent_run_id ==
 null` + at least one child); each row shows `status · short-id · role
 · branch · summary` fetched from the new `GET
@@ -160,7 +160,7 @@ MCP `relay__list_runs` passes `include_children=True` so MCP callers
 see the full tree.
 
 **Phase 9f** closes the fanout-join arc with OTel cross-run span
-parenting (`docs/plans/2026-05-22-fanout-join-9f.md`, ADR-38): child
+parenting (`docs/archive/2026-05-22-fanout-join-9f.md`, ADR-38): child
 runs' `relay.run` spans, and a parent's synth-phase `relay.run` span,
 now hang under the iter where the parent fanned out — so the full
 fanout-join cycle renders as **one connected tree** in Langfuse
@@ -279,8 +279,8 @@ readable without changing the events table.
   still happens only on the turn-end `AssistantText`, never on a
   delta (ADR-18 anti-mention preserved).
 
-**Phase 14a** (2026-05-22, `docs/proposals/pause-for-review.md`,
-`docs/plans/2026-05-22-pause-for-review-14a.md`) opens the
+**Phase 14a** (2026-05-22, `docs/archive/pause-for-review.md`,
+`docs/archive/2026-05-22-pause-for-review-14a.md`) opens the
 **pause-for-review** arc by landing the backend half: a new
 `PauseReviewError` exception + `RelayCore.write_artifact(run_id,
 rel_path, content, *, editor)` method (paired with a module-private
@@ -316,7 +316,7 @@ event-payload content), OQ-1 strict coupling, and the
 `PauseReviewError`-code-driven HTTP mapping.
 
 **Phase 14b** (2026-05-22,
-`docs/plans/2026-05-22-pause-for-review-14b.md`) teaches the sentinel
+`docs/archive/2026-05-22-pause-for-review-14b.md`) teaches the sentinel
 parser the optional `review_path` attribute on
 `[[engteam:pause-for-input ...]]`, lighting up 14a's write endpoint
 as a working write path. New `extract_pause_review_path(text)` in
@@ -338,7 +338,7 @@ remains the runtime enforcement.
 "Reviewable pauses (`review_path`)" sub-section.
 
 **Phase 14c** (2026-05-23,
-`docs/plans/2026-05-22-pause-for-review-14c.md`) lights up the
+`docs/archive/2026-05-22-pause-for-review-14c.md`) lights up the
 operator-facing half: when the paused iter's `signal_args.review_path`
 is present (14b), `PauseAnswerForm.vue` switches into a richer mode
 — a top review pane above the existing question/answer block fetches
@@ -372,7 +372,7 @@ the listener keeps the 404 test path green while letting any
 non-ApiError rejection still fail the gate).
 
 **Phase 14d** (2026-05-23,
-`docs/plans/2026-05-22-pause-for-review-14d.md`,
+`docs/archive/2026-05-22-pause-for-review-14d.md`,
 `skills/engineering-team/pi/phases/phase-2-planning.md`) activates
 pause-for-review for the **primary caller**, closing the 14a → 14d
 arc. One template change: Phase-2 Step-4 closing sentinel now emits
@@ -393,7 +393,7 @@ touched. Live `PI_INTEGRATION=1` engteam end-to-end is
 journal-attested per ADR-30.
 
 **Phase 14e** (2026-05-23,
-`docs/plans/2026-05-23-pause-for-review-14e.md`) lands the
+`docs/archive/2026-05-23-pause-for-review-14e.md`) lands the
 audit-polish bundle with no contract change. `PauseAnswerForm.vue`'s
 right pane gains a `[ Preview | Diff ]` toggle (Diff disabled while
 clean; renders dirty-vs-loaded-baseline via the existing lazy
@@ -419,7 +419,7 @@ kwarg. And the deferred 9e fanout-docs follow-up closes:
 blockquote cross-link to `../references/fanout.md`.
 
 **Phase 14f** (2026-05-23,
-`docs/plans/2026-05-23-pause-for-review-14f.md`, ADR-41) extends
+`docs/archive/2026-05-23-pause-for-review-14f.md`, ADR-41) extends
 pause-for-review from a single `review_path` to a list via the
 repeated-attribute grammar (`review_path="a.md"
 review_path="b.md"` on the same `pause-for-input` line). The
