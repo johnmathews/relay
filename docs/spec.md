@@ -1161,12 +1161,17 @@ Carried from `motivation.md` risks; resolved as design progresses.
   are authoritative. The harness accumulates `text_delta` per turn and
   flushes one `AssistantText` at `turn_end`; sentinel detection runs at
   that turn boundary — no need to wait for `message_end`.
-- **OQ-3.** *Partially answered (2026-05-19, ADR-18).* pi **does**
-  surface usage: each assistant message in `agent_end.messages` (and in
-  `message_end`) carries `usage` with `input`/`output`/`cacheRead`/
-  `cacheWrite`/`totalTokens` and a `cost` sub-object (`cost.total` in
-  USD). Open part: per-iter aggregation strategy for the OTel/Langfuse
-  export (Phase 7) — not consumed in Phase 1.
+- **OQ-3.** *Resolved (2026-05-19 surfacing, ADR-18; 2026-05-19
+  aggregation, ADR-29 / Phase 7).* pi surfaces usage on each assistant
+  message in `agent_end.messages` (and in `message_end`) — `input` /
+  `output` / `cacheRead` / `cacheWrite` / `totalTokens` and a `cost`
+  sub-object (`cost.total` USD). The OTel/Langfuse per-iter
+  aggregation strategy lands in Phase 7 (see §10's Phase-7
+  implementation note): `gen_ai.usage.input_tokens` /
+  `output_tokens` are set on the `relay.iter` span by summing
+  `SessionEnded.messages[].usage` across assistant messages; cache
+  and cost go under `relay.usage.*`; missing fields are omitted, not
+  zero-filled.
 - **OQ-4.** *Resolved (2026-05-19, W7; path corrected 2026-05-23
   post-9g bug-fix sweep).* `provision_workspace`
   (`orchestrator/lifecycle.py`, ADR-13) creates a best-effort per-run
@@ -1189,6 +1194,10 @@ Carried from `motivation.md` risks; resolved as design progresses.
   upstream; bumping it is a deliberate maintenance task (re-run the
   de-risking fixtures, then change `.tool-versions` + the default).
 - **OQ-6.** Pi auth.json refresh — does relay need to monitor
-  expiration, or does pi handle silently?
+  expiration, or does pi handle silently? *Status: open.* ADR-09
+  remains provisional; no relay-side auth-monitoring code has been
+  needed across Phases 0–8 + the post-MVP arcs (9a–9g, 14a–14f),
+  which is consistent with "pi handles silently" but is not a
+  formal closure.
 
 ---
