@@ -383,7 +383,7 @@ amber.
 
 `TimelineMinimap.vue` is a VS Code-style overview rendered as a
 sibling column inside `TimelinePane` (`.timeline-pane__minimap`,
-22 px fixed width, matching `max-height: 70vh` of the timeline
+24 px fixed width, matching `max-height: 70vh` of the timeline
 scroll container). It draws one coloured tick per pre-grouping
 event row — colours come from the existing
 `--color-row-*-border` palette via `data-row-type` — so a long run

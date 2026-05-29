@@ -1263,7 +1263,7 @@ function onArtifactEditedClick(path: string): void {
 <style scoped>
 /* Timeline + minimap layout — the minimap sits to the right of the
    scroll container as a sibling column. The minimap occupies a
-   fixed 22px width; .timeline-pane__main flexes to fill the rest. */
+   fixed 24px width; .timeline-pane__main flexes to fill the rest. */
 .timeline-pane {
   display: flex;
   gap: 0.5rem;

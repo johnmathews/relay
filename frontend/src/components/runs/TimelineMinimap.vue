@@ -138,9 +138,9 @@ function onPointerUp(ev: PointerEvent): void {
 <style scoped>
 .minimap {
   position: relative;
-  width: 22px;
+  width: 24px;
   background: var(--color-surface);
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-strong);
   border-radius: 6px;
   overflow: hidden;
   cursor: pointer;
@@ -150,20 +150,21 @@ function onPointerUp(ev: PointerEvent): void {
 
 .minimap:hover,
 .minimap:focus-visible {
-  border-color: var(--color-border-strong);
+  border-color: var(--color-accent);
   outline: none;
 }
 
 .minimap__tick {
   position: absolute;
-  left: 2px;
-  right: 2px;
-  height: 2px;
+  left: 1px;
+  right: 1px;
+  height: 4px;
   border-radius: 1px;
   background: var(--color-text-dim);
-  /* Slightly translate so the tick's top is centred on the row's
-     position rather than starting there. */
-  transform: translateY(-1px);
+  /* Taller ticks (4px) overlap on dense runs to form continuous
+     coloured bands; sparse runs still read as distinct stripes.
+     Translate so the band is centred on the row's position. */
+  transform: translateY(-2px);
   pointer-events: none;
 }
 
@@ -195,9 +196,10 @@ function onPointerUp(ev: PointerEvent): void {
   position: absolute;
   left: 0;
   right: 0;
-  background: var(--color-accent-soft);
-  border-top: 1px solid var(--color-accent);
-  border-bottom: 1px solid var(--color-accent);
+  background: var(--color-accent-soft-strong);
+  border-top: 2px solid var(--color-accent);
+  border-bottom: 2px solid var(--color-accent);
+  box-shadow: inset 0 0 0 1px var(--color-accent-soft);
   pointer-events: none;
   transition: top 60ms linear, height 60ms linear;
 }

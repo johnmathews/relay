@@ -32,6 +32,7 @@
   /* Accent (links / primary buttons) */
   --color-accent: #5b9dff;
   --color-accent-soft: rgba(91, 157, 255, 0.12);
+  --color-accent-soft-strong: rgba(91, 157, 255, 0.28);
   --color-accent-fg: #07101f;
 
   /* Status / semantic */
@@ -77,6 +78,7 @@
 
   --color-accent: #0969da;
   --color-accent-soft: rgba(9, 105, 218, 0.10);
+  --color-accent-soft-strong: rgba(9, 105, 218, 0.24);
   --color-accent-fg: #ffffff;
 
   --color-danger: #b42318;
@@ -124,6 +126,7 @@
 
     --color-accent: #0969da;
     --color-accent-soft: rgba(9, 105, 218, 0.10);
+    --color-accent-soft-strong: rgba(9, 105, 218, 0.24);
     --color-accent-fg: #ffffff;
 
     --color-danger: #b42318;
