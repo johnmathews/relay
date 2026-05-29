@@ -61,6 +61,26 @@ const stopReason = computed(() => {
   return typeof r === 'string' ? r : 'unknown'
 })
 
+const exitReason = computed(() => {
+  const r = props.event.payload.exit_reason
+  return typeof r === 'string' ? r : null
+})
+
+// Soft-relabel the misleading `cancelled` badge that lands on every
+// signal-closed iter. The loop's `finally` calls `session.cancel()`
+// after a terminal sentinel breaks the read loop (loop.py:202), so pi
+// is terminated BEFORE its own `agent_end` and `pi.py:wait()`
+// synthesises `stop_reason="cancelled"`. This is the normal,
+// successful path — `done`, `handoff`, `pause`, `unit-abandoned`,
+// `fanout` all reach it. Old replays (no `exit_reason` in payload)
+// fall back to the raw `stop_reason`. ADR-48.
+const displayLabel = computed(() => {
+  if (stopReason.value === 'cancelled' && exitReason.value === 'signal') {
+    return 'closed-on-signal'
+  }
+  return stopReason.value
+})
+
 const costLabel = computed(() => {
   if (!totals.value.hasCost) return ''
   return `$${totals.value.cost.toFixed(4)}`
@@ -71,8 +91,9 @@ const costLabel = computed(() => {
   <div
     class="usage-row"
     :data-stop-reason="stopReason"
+    :data-exit-reason="exitReason ?? ''"
   >
-    <span class="badge">{{ stopReason }}</span>
+    <span class="badge">{{ displayLabel }}</span>
     <span class="tokens">
       Σ in {{ totals.input }} · out {{ totals.output }} ·
       cache r {{ totals.cacheRead }} / w {{ totals.cacheWrite }}<template v-if="totals.hasCost"> · {{ costLabel }}</template>

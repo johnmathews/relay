@@ -78,7 +78,60 @@ describe('UsageRow', () => {
         },
       },
     })
+    // Old replay (no exit_reason): falls back to the raw stop_reason.
     expect(wrapper.text()).toContain('cancelled')
     expect(wrapper.text()).toContain('0')
+  })
+
+  it('soft-relabels cancelled + signal exit to closed-on-signal (ADR-48)', () => {
+    // The normal sentinel-closed iter: pi reports stop_reason=cancelled
+    // because relay's finally terminated it after the closing sentinel
+    // matched, BEFORE pi could emit its own agent_end. exit_reason=signal
+    // tells UsageRow this was a benign signal close, not a real cancel.
+    const wrapper = mount(UsageRow, {
+      props: {
+        event: {
+          seq: 9,
+          kind: 'harness_session_ended',
+          payload: {
+            stop_reason: 'cancelled',
+            exit_reason: 'signal',
+            summary: null,
+            messages: [
+              { role: 'assistant', usage: { input: 1, output: 2 } },
+            ],
+          },
+        },
+      },
+    })
+    expect(wrapper.text()).toContain('closed-on-signal')
+    expect(wrapper.text()).not.toContain('cancelled')
+    // Raw fields stay reachable via data attributes for future styling.
+    const row = wrapper.find('.usage-row')
+    expect(row.attributes('data-stop-reason')).toBe('cancelled')
+    expect(row.attributes('data-exit-reason')).toBe('signal')
+  })
+
+  it('keeps the loud label for a genuine user-cancel (exit_reason=cancelled)', () => {
+    // Mid-iter cancel via POST /api/runs/:id/cancel: the loop's
+    // cancel_event short-circuits and _finish_iter writes
+    // exit_reason="cancelled" — pi's stop_reason is also cancelled but
+    // the cause is the operator, not a closing sentinel. Show CANCELLED.
+    const wrapper = mount(UsageRow, {
+      props: {
+        event: {
+          seq: 17,
+          kind: 'harness_session_ended',
+          payload: {
+            stop_reason: 'cancelled',
+            exit_reason: 'cancelled',
+            summary: null,
+            messages: [],
+          },
+        },
+      },
+    })
+    expect(wrapper.text()).toContain('cancelled')
+    expect(wrapper.text()).not.toContain('closed-on-signal')
   })
 })

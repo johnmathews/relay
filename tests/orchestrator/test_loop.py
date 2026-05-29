@@ -243,6 +243,7 @@ def test_loop_emits_harness_session_ended_on_done_close(tmp_path: Path) -> None:
             "stop_reason": "clean",
             "messages": messages_fixture,
             "summary": None,
+            "exit_reason": "signal",
         }
         assert hse_row.iter_id == rows[ie_idx].iter_id, (
             "harness_session_ended and iter_ended share the iter_id"

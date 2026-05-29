@@ -3092,3 +3092,33 @@ The frontend `assistant_delta` listener (`stores/events.ts:onSseEvent`) special-
 - Spec §9.1 updated to match: hub has one top-level action ("Register project"), card is a single link, wizard prompt step defaults to inline.
 
 **Related ADRs:** ADR-15 (dashboard is the primary control plane — this consolidates the hub's primary action surface); ADR-26 (frontend toolchain mandates — change uses the same vue-router/Pinia stack with no new deps).
+
+## ADR-48 — `harness_session_ended.exit_reason`: widen the payload to disambiguate pi's terminal `stop_reason="cancelled"` on signal-closed iters
+
+**Status:** active.
+
+**Date:** 2026-05-29.
+
+**Context.** Every signal-closed iter — `done`, `handoff`, `pause-for-input`, `unit-abandoned`, `fanout` — renders in the dashboard's UsageRow with the badge `CANCELLED` and zero token sums, indistinguishable from a user-initiated cancel. The mechanism: when `_drive_iter` matches a terminal sentinel it `break`s the read loop (loop.py:192-194), then the `finally` block calls `session.cancel()` (loop.py:202) which terminates pi BEFORE its own `agent_end` arrives. `pi.py:wait()` sees `_final is None` and synthesises `SessionEnded(stop_reason="cancelled")` because `_cancelled` was set by the cancel(). That `cancelled` flows up unchanged to the `harness_session_ended` payload's `stop_reason`, and pi's per-message usage (which only lands in `agent_end`) is empty, so tokens read zero. The badge is technically truthful — pi WAS terminated by relay — but it makes a healthy iter look like an aborted one and pollutes the timeline's signal value.
+
+The fix requires distinguishing pi's view (`stop_reason`) from relay's reason for closing the iter (`exit_reason`, already on the `iters` row and the paired `iter_ended` payload — `signal` / `cancelled` / `timeout` / `agent_end_no_signal` / `crash`).
+
+**Decision — duplicate `exit_reason` onto the `harness_session_ended` payload.** Extend the ADR-39 payload shape from `{stop_reason, messages, summary}` to `{stop_reason, messages, summary, exit_reason}`. `exit_reason` mirrors the value the loop is already writing to the paired `iter_ended` event a few lines later in the same `_finish_iter` call — no new computation, no new failure mode. UsageRow then renders the soft label `closed-on-signal` for `stop_reason="cancelled" + exit_reason="signal"` and keeps the raw `stop_reason` text otherwise. Old replays (pre-ADR-48 rows) omit the field; renderers must treat absence as "old replay → fall back to `stop_reason`," preserving the pre-ADR behaviour for archived runs.
+
+**Alternatives considered.**
+
+- **Frontend-only: look up the paired `iter_ended` event from the events store.** Rejected: `frontend/src/stores/events.ts` deliberately drops `iter_id` from its `StreamEvent` shape (`{seq, kind, payload}` only — events.ts:93-100), so client-side pairing would require either restoring `iter_id` to every event or scanning the raw SSE/REST envelope. Both are larger surgeries than mirroring one string into the payload.
+- **Rename pi's `stop_reason` instead.** Rejected: `stop_reason` is pi's verbatim view (synthesised in `pi.py:wait()`), and ADR-39 deliberately persists it un-doctored as part of the ADR-18 opaque-pi-shape contract. Renaming or mapping it loses information available to OTel and audits.
+- **Add a separate `iter_close_reason` event after `iter_ended`.** Rejected: more event volume + an extra ordering invariant for replay/SSE; the same disambiguating string already lives on `iter_ended`. A duplicate field on the payload that already pairs by `iter_id` is cheaper.
+- **Hide the badge entirely on a benign close.** Rejected: token sums and stop-reason context still have audit value (especially on `agent_end_no_signal` / `crash` paths where the row is the primary signal); hiding it on the benign branch alone would create new "which kind of close was it?" guesswork.
+
+**Consequences.**
+
+- `src/relay_v2/orchestrator/loop.py:_finish_iter` adds `"exit_reason": exit_reason` to the appended payload (one line). The function signature is unchanged.
+- `src/relay_v2/observability/otel.py` is untouched: ADR-29 reads `stop_reason` + `messages` from the same payload for span attributes; the new key is ignored.
+- `frontend/src/components/runs/UsageRow.vue` derives `displayLabel` from `stop_reason` + `exit_reason`; the rendered badge text becomes `closed-on-signal` on the benign branch. Old replays (no `exit_reason`) keep the raw `stop_reason`. New `data-exit-reason` attribute on `.usage-row` for any future CSS targeting; `data-stop-reason` retained.
+- `docs/spec.md` §3.x payload table: `{stop_reason, messages, summary, exit_reason}` with the value-set listed.
+- Tests: `tests/orchestrator/test_loop.py::test_loop_emits_harness_session_ended_on_done_close` asserts `exit_reason="signal"` on the done close path. `frontend/tests/UsageRow.spec.ts` gains two cases (signal close → soft label; user cancel → loud label) and a comment on the empty-messages case clarifying the old-replay fallback.
+
+**Related ADRs:** ADR-39 (original `harness_session_ended` contract — additively extended, not superseded; ADR-39 stays the load-bearing decision for the row's existence and ordering invariant); ADR-29 (OTel `relay.iter` span attributes from the same payload — unchanged); ADR-18 (pi-shape `messages` opacity — unchanged); ADR-10 (event store is the source of truth — the new key keeps that invariant by surfacing a fact already in the iter row to the timeline replay path).
+

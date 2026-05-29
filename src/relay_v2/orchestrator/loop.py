@@ -231,6 +231,18 @@ async def _finish_iter(
     ``SessionEnded.messages`` (ADR-18 opaque) and ``stop_reason``, closing
     the ADR-10 invariant gap parked since Phase 7 (ADR-29 captured the
     data for OTel; the event store now gets it too).
+
+    ``exit_reason`` (ADR-48) is mirrored from the loop's iter-close
+    decision (``signal`` / ``cancelled`` / ``timeout`` /
+    ``agent_end_no_signal`` / ``crash``) so a UsageRow renderer can
+    distinguish pi's ``stop_reason="cancelled"`` on a normal
+    signal-closed iter (relay's ``finally`` terminated pi BEFORE its
+    own ``agent_end``) from a genuinely user-cancelled run. The
+    frontend store drops ``iter_id`` from its ``StreamEvent`` shape,
+    so the paired ``iter_ended`` event is not reachable client-side —
+    duplicating the field on this row is the cheapest path. Same row
+    also pairs with the iter row's ``exit_reason`` column (no new
+    column needed).
     """
     await store.append(
         run_id,
@@ -239,6 +251,7 @@ async def _finish_iter(
             "stop_reason": stop_reason,
             "messages": messages,
             "summary": summary,
+            "exit_reason": exit_reason,
         },
         iter_id=iter_id,
     )
