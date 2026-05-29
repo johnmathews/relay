@@ -533,9 +533,10 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 899px) {
-  /* Stacking under 900px is Phase 6 work — for Phase 1, simply allow
-     the rail to fall below the right pane in narrow viewports. The
-     visual result is acceptable for the localhost dev use case. */
+  /* Phase 6 — stack the layout so the rail collapses to a top
+     selector strip (RunSidebar's --narrow class kicks in at the same
+     breakpoint via useViewportBreakpoint) and the right pane fills
+     the rest of the viewport. */
   .run-detail__layout {
     grid-template-columns: 1fr;
   }

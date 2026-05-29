@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import { createRouter, createMemoryHistory } from 'vue-router'
@@ -6,6 +6,35 @@ import { PiniaColada } from '@pinia/colada'
 import { flushPromises } from '@vue/test-utils'
 import RunSidebar from '../src/components/runs/layout/RunSidebar.vue'
 import type { RunView } from '../src/lib/runView'
+
+/**
+ * Phase 6 — stub `window.matchMedia` for the narrow-viewport tests.
+ * jsdom's default matchMedia always returns `matches: false`, so the
+ * sidebar's `useViewportBreakpoint` composable always sees "wide". The
+ * helper lets a test pretend the viewport is below 899px AND fire a
+ * `change` event mid-test so the resize transition can be exercised.
+ */
+function makeMqlStub(initialMatches: boolean): {
+  matches: boolean
+  listeners: Array<(e: { matches: boolean }) => void>
+  addEventListener: (t: 'change', cb: (e: { matches: boolean }) => void) => void
+  removeEventListener: (t: 'change', cb: (e: { matches: boolean }) => void) => void
+  fire: (matches: boolean) => void
+} {
+  return {
+    matches: initialMatches,
+    listeners: [],
+    addEventListener(_t, cb) { this.listeners.push(cb) },
+    removeEventListener(_t, cb) {
+      const i = this.listeners.indexOf(cb)
+      if (i >= 0) this.listeners.splice(i, 1)
+    },
+    fire(matches) {
+      this.matches = matches
+      for (const cb of [...this.listeners]) cb({ matches })
+    },
+  }
+}
 
 // Mock the api client so runArtifactSource's listing query is observable.
 const GET = vi.fn()
@@ -354,5 +383,137 @@ describe('RunSidebar — Artifacts section', () => {
     expect(w.emitted('update:view')).toEqual([
       [{ kind: 'artifact', path: 'plan.md' }],
     ])
+  })
+})
+
+// Phase 6 — proposal §"Layout" (responsive paragraph). Below 900px,
+// the rail collapses to a top selector button (selected view's label
+// + caret). Tapping reveals the body; selecting auto-collapses.
+describe('RunSidebar — narrow-viewport collapse (Phase 6)', () => {
+  const originalMM = window.matchMedia
+  let mql: ReturnType<typeof makeMqlStub>
+
+  beforeEach(() => {
+    mql = makeMqlStub(true)
+    window.matchMedia = vi.fn(() => mql) as unknown as typeof window.matchMedia
+  })
+  afterEach(() => {
+    window.matchMedia = originalMM
+  })
+
+  it('renders the selector button and hides the body when narrow', () => {
+    const w = mountSidebar({ selection: { kind: 'overview' } })
+    expect(w.find('[data-testid="sidebar-narrow-selector"]').exists()).toBe(
+      true,
+    )
+    const body = w.get('[data-testid="sidebar-body"]')
+    // The `hidden` HTML attribute presence is the contract.
+    expect(body.attributes('hidden')).toBeDefined()
+  })
+
+  it('shows the selected view label on the selector', () => {
+    const w = mountSidebar({
+      selection: { kind: 'iter', seq: 3 },
+      iters: [{ seq: 3, phase: 'planning' }],
+    })
+    expect(
+      w.get('[data-testid="sidebar-narrow-selector"]').text(),
+    ).toContain('Iter #3')
+  })
+
+  it('formats an artifact selection as "Artifact · <path>"', () => {
+    const w = mountSidebar({
+      selection: { kind: 'artifact', path: 'improvement-plan.md' },
+    })
+    expect(
+      w.get('[data-testid="sidebar-narrow-selector"]').text(),
+    ).toContain('Artifact · improvement-plan.md')
+  })
+
+  it('reveals the body when the selector is tapped', async () => {
+    const w = mountSidebar({ selection: { kind: 'overview' } })
+    const selector = w.get('[data-testid="sidebar-narrow-selector"]')
+    expect(selector.attributes('aria-expanded')).toBe('false')
+    await selector.trigger('click')
+    expect(selector.attributes('aria-expanded')).toBe('true')
+    expect(
+      w.get('[data-testid="sidebar-body"]').attributes('hidden'),
+    ).toBeUndefined()
+  })
+
+  it('auto-collapses after selecting an iter (right pane reclaims viewport)', async () => {
+    const w = mountSidebar({
+      selection: { kind: 'overview' },
+      iters: [{ seq: 1, phase: 'planning' }],
+    })
+    await w.get('[data-testid="sidebar-narrow-selector"]').trigger('click')
+    await w.get('[data-testid="sidebar-iter-1"]').trigger('click')
+    expect(w.emitted('update:view')).toEqual([[{ kind: 'iter', seq: 1 }]])
+    expect(
+      w.get('[data-testid="sidebar-narrow-selector"]').attributes(
+        'aria-expanded',
+      ),
+    ).toBe('false')
+  })
+
+  it('exposes the standard aria-controls / aria-expanded pair on the selector', () => {
+    const w = mountSidebar({ selection: { kind: 'overview' } })
+    const selector = w.get('[data-testid="sidebar-narrow-selector"]')
+    expect(selector.attributes('aria-controls')).toBe('run-sidebar-body')
+    expect(selector.attributes('aria-expanded')).toBe('false')
+    expect(w.get('[data-testid="sidebar-body"]').attributes('id')).toBe(
+      'run-sidebar-body',
+    )
+  })
+
+  it('resizing back to wide drops the expanded flag (re-narrowing starts collapsed)', async () => {
+    const w = mountSidebar({ selection: { kind: 'overview' } })
+    await w.get('[data-testid="sidebar-narrow-selector"]').trigger('click')
+    expect(
+      w.get('[data-testid="sidebar-narrow-selector"]').attributes(
+        'aria-expanded',
+      ),
+    ).toBe('true')
+    // Cross back into desktop.
+    mql.fire(false)
+    await w.vm.$nextTick()
+    // Selector vanishes in desktop mode.
+    expect(w.find('[data-testid="sidebar-narrow-selector"]').exists()).toBe(
+      false,
+    )
+    // Re-narrow → selector visible AND collapsed.
+    mql.fire(true)
+    await w.vm.$nextTick()
+    expect(
+      w.get('[data-testid="sidebar-narrow-selector"]').attributes(
+        'aria-expanded',
+      ),
+    ).toBe('false')
+  })
+})
+
+describe('RunSidebar — wide viewport (Phase 6 default)', () => {
+  const originalMM = window.matchMedia
+
+  beforeEach(() => {
+    const mql = makeMqlStub(false)
+    window.matchMedia = vi.fn(() => mql) as unknown as typeof window.matchMedia
+  })
+  afterEach(() => {
+    window.matchMedia = originalMM
+  })
+
+  it('does not render the narrow selector', () => {
+    const w = mountSidebar({ selection: { kind: 'overview' } })
+    expect(w.find('[data-testid="sidebar-narrow-selector"]').exists()).toBe(
+      false,
+    )
+  })
+
+  it('keeps the rail body visible (no hidden attr)', () => {
+    const w = mountSidebar({ selection: { kind: 'overview' } })
+    expect(
+      w.get('[data-testid="sidebar-body"]').attributes('hidden'),
+    ).toBeUndefined()
   })
 })

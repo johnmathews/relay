@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import StatusBadge from '@/components/shared/StatusBadge.vue'
 import FileTree from '@/components/files/FileTree.vue'
 import { runArtifactSource, ApiError } from '@/lib/queries'
+import { useViewportBreakpoint } from '@/composables/useViewportBreakpoint'
 import type { RunView } from '@/lib/runView'
 
 interface IterRow {
@@ -58,10 +59,12 @@ function isIterSelected(seq: number): boolean {
 
 function selectOverview(): void {
   emit('update:view', { kind: 'overview' })
+  collapseAfterSelect()
 }
 
 function selectIter(seq: number): void {
   emit('update:view', { kind: 'iter', seq })
+  collapseAfterSelect()
 }
 
 const artifactSource = computed(() => runArtifactSource(props.runId))
@@ -128,12 +131,56 @@ const artifactsEmptyCopy = computed<string | null>(() => {
 
 function onArtifactSelect(path: string): void {
   emit('update:view', { kind: 'artifact', path })
+  collapseAfterSelect()
 }
+
+// Phase 6 — narrow-viewport collapse. Below 900px the rail renders as
+// a top selector button (label of the current view + caret); tapping
+// expands the rail body inline. Auto-collapses on selection so the
+// right pane reclaims the viewport. Above 900px both state vars are
+// inert and the original two-column layout is unaffected.
+const isNarrow = useViewportBreakpoint('(max-width: 899px)')
+const isExpanded = ref(false)
+
+function toggleExpanded(): void {
+  isExpanded.value = !isExpanded.value
+}
+
+function collapseAfterSelect(): void {
+  if (isNarrow.value) isExpanded.value = false
+}
+
+// If the viewport crosses back into desktop, drop the expanded flag
+// so re-narrowing later starts in the collapsed state (consistent
+// with first-mount behaviour).
+watch(isNarrow, (narrow) => {
+  if (!narrow) isExpanded.value = false
+})
+
+/** Currently-selected view rendered as the narrow-mode button label. */
+const selectedLabel = computed<string>(() => {
+  switch (props.selection.kind) {
+    case 'overview':
+      return 'Overview'
+    case 'iter':
+      return `Iter #${props.selection.seq}`
+    case 'artifact':
+      return `Artifact · ${props.selection.path}`
+    default:
+      return 'View'
+  }
+})
+
+const isBodyHidden = computed(() => isNarrow.value && !isExpanded.value)
 </script>
 
 <template>
   <nav
     class="run-sidebar"
+    :class="{
+      'run-sidebar--narrow': isNarrow,
+      'run-sidebar--collapsed': isBodyHidden,
+    }"
     aria-label="Run navigation"
     data-testid="run-sidebar"
   >
@@ -148,119 +195,143 @@ function onArtifactSelect(path: string): void {
       <span class="run-sidebar__project-name">{{ project.name }}</span>
     </RouterLink>
 
-    <div
-      role="listbox"
-      aria-orientation="vertical"
-      aria-label="Run views"
-      class="run-sidebar__listbox"
-      data-testid="sidebar-listbox"
+    <button
+      v-if="isNarrow"
+      type="button"
+      class="run-sidebar__selector"
+      :class="{ 'run-sidebar__selector--open': isExpanded }"
+      :aria-expanded="isExpanded"
+      aria-controls="run-sidebar-body"
+      data-testid="sidebar-narrow-selector"
+      @click="toggleExpanded"
     >
-      <button
-        type="button"
-        role="option"
-        :aria-selected="isOverviewSelected"
-        class="run-sidebar__row run-sidebar__row--overview"
-        :class="{ 'run-sidebar__row--selected': isOverviewSelected }"
-        data-testid="sidebar-overview"
-        @click="selectOverview"
-      >
-        Overview
-      </button>
+      <span class="run-sidebar__selector-label">{{ selectedLabel }}</span>
+      <span
+        class="run-sidebar__selector-caret"
+        aria-hidden="true"
+      >▾</span>
+    </button>
 
-      <section
-        v-if="iters.length > 0 || showItersWaiting"
-        role="group"
-        aria-labelledby="sidebar-iters-heading"
-        class="run-sidebar__section"
-        data-testid="sidebar-iters-section"
+    <div
+      id="run-sidebar-body"
+      class="run-sidebar__body"
+      :hidden="isBodyHidden"
+      data-testid="sidebar-body"
+    >
+      <div
+        role="listbox"
+        aria-orientation="vertical"
+        aria-label="Run views"
+        class="run-sidebar__listbox"
+        data-testid="sidebar-listbox"
       >
-        <h3
-          id="sidebar-iters-heading"
-          class="run-sidebar__heading"
-        >
-          Iters
-          <span
-            v-if="iters.length > 0"
-            class="run-sidebar__count"
-          >{{ iters.length }}</span>
-        </h3>
         <button
-          v-for="iter in iters"
-          :key="iter.seq"
           type="button"
           role="option"
-          :aria-selected="isIterSelected(iter.seq)"
-          class="run-sidebar__row"
-          :class="{ 'run-sidebar__row--selected': isIterSelected(iter.seq) }"
-          :data-testid="`sidebar-iter-${iter.seq}`"
-          @click="selectIter(iter.seq)"
+          :aria-selected="isOverviewSelected"
+          class="run-sidebar__row run-sidebar__row--overview"
+          :class="{ 'run-sidebar__row--selected': isOverviewSelected }"
+          data-testid="sidebar-overview"
+          @click="selectOverview"
         >
-          <span class="run-sidebar__row-seq">#{{ iter.seq }}</span>
-          <span class="run-sidebar__row-label">{{ iter.phase ?? '—' }}</span>
+          Overview
         </button>
-        <p
-          v-if="showItersWaiting"
-          class="run-sidebar__empty"
-          data-testid="sidebar-iters-waiting"
+
+        <section
+          v-if="iters.length > 0 || showItersWaiting"
+          role="group"
+          aria-labelledby="sidebar-iters-heading"
+          class="run-sidebar__section"
+          data-testid="sidebar-iters-section"
         >
-          Waiting for first iter…
+          <h3
+            id="sidebar-iters-heading"
+            class="run-sidebar__heading"
+          >
+            Iters
+            <span
+              v-if="iters.length > 0"
+              class="run-sidebar__count"
+            >{{ iters.length }}</span>
+          </h3>
+          <button
+            v-for="iter in iters"
+            :key="iter.seq"
+            type="button"
+            role="option"
+            :aria-selected="isIterSelected(iter.seq)"
+            class="run-sidebar__row"
+            :class="{ 'run-sidebar__row--selected': isIterSelected(iter.seq) }"
+            :data-testid="`sidebar-iter-${iter.seq}`"
+            @click="selectIter(iter.seq)"
+          >
+            <span class="run-sidebar__row-seq">#{{ iter.seq }}</span>
+            <span class="run-sidebar__row-label">{{ iter.phase ?? '—' }}</span>
+          </button>
+          <p
+            v-if="showItersWaiting"
+            class="run-sidebar__empty"
+            data-testid="sidebar-iters-waiting"
+          >
+            Waiting for first iter…
+          </p>
+        </section>
+      </div>
+
+      <section
+        v-if="artifactsLoaded || artifactsEmptyCopy != null"
+        role="group"
+        aria-labelledby="sidebar-artifacts-heading"
+        class="run-sidebar__section"
+        data-testid="sidebar-artifacts-section"
+      >
+        <h3
+          id="sidebar-artifacts-heading"
+          class="run-sidebar__heading"
+        >
+          Artifacts
+        </h3>
+        <FileTree
+          v-if="artifactsLoaded && !artifactsEmpty"
+          :source="artifactSource"
+          aria-label="Run artifacts"
+          @select="onArtifactSelect"
+        />
+        <p
+          v-else-if="artifactsEmptyCopy != null"
+          class="run-sidebar__empty"
+          data-testid="sidebar-artifacts-empty"
+        >
+          {{ artifactsEmptyCopy }}
         </p>
       </section>
+
+      <section
+        v-if="children.length > 0"
+        role="group"
+        aria-labelledby="sidebar-children-heading"
+        class="run-sidebar__section"
+        data-testid="sidebar-children-section"
+      >
+        <h3
+          id="sidebar-children-heading"
+          class="run-sidebar__heading"
+        >
+          Children
+          <span class="run-sidebar__count">{{ children.length }}</span>
+        </h3>
+        <router-link
+          v-for="child in children"
+          :key="child.id"
+          :to="`/runs/${child.id}`"
+          class="run-sidebar__row run-sidebar__row--link"
+          :data-testid="`sidebar-child-${child.id}`"
+        >
+          <StatusBadge :status="child.status" />
+          <span class="run-sidebar__row-label">{{ child.id.slice(0, 8) }}</span>
+        </router-link>
+      </section>
     </div>
-
-    <section
-      v-if="artifactsLoaded || artifactsEmptyCopy != null"
-      role="group"
-      aria-labelledby="sidebar-artifacts-heading"
-      class="run-sidebar__section"
-      data-testid="sidebar-artifacts-section"
-    >
-      <h3
-        id="sidebar-artifacts-heading"
-        class="run-sidebar__heading"
-      >
-        Artifacts
-      </h3>
-      <FileTree
-        v-if="artifactsLoaded && !artifactsEmpty"
-        :source="artifactSource"
-        aria-label="Run artifacts"
-        @select="onArtifactSelect"
-      />
-      <p
-        v-else-if="artifactsEmptyCopy != null"
-        class="run-sidebar__empty"
-        data-testid="sidebar-artifacts-empty"
-      >
-        {{ artifactsEmptyCopy }}
-      </p>
-    </section>
-
-    <section
-      v-if="children.length > 0"
-      role="group"
-      aria-labelledby="sidebar-children-heading"
-      class="run-sidebar__section"
-      data-testid="sidebar-children-section"
-    >
-      <h3
-        id="sidebar-children-heading"
-        class="run-sidebar__heading"
-      >
-        Children
-        <span class="run-sidebar__count">{{ children.length }}</span>
-      </h3>
-      <router-link
-        v-for="child in children"
-        :key="child.id"
-        :to="`/runs/${child.id}`"
-        class="run-sidebar__row run-sidebar__row--link"
-        :data-testid="`sidebar-child-${child.id}`"
-      >
-        <StatusBadge :status="child.status" />
-        <span class="run-sidebar__row-label">{{ child.id.slice(0, 8) }}</span>
-      </router-link>
-    </section>
   </nav>
 </template>
 
@@ -387,5 +458,75 @@ function onArtifactSelect(path: string): void {
   margin: 0.25rem 0.5rem;
   font-size: 0.85em;
   color: var(--color-text-dim);
+}
+
+/* Phase 6 — narrow-viewport (<900px) presentation: collapsed rail
+   above the right pane, with a top selector button (selected label
+   + caret) revealing the rail body on tap. Above 900px the rules
+   below have no effect — the .run-sidebar--narrow class is absent. */
+
+.run-sidebar--narrow {
+  /* Lose the right border (the rail stacks above the pane, not
+     beside it) and tighten the vertical metrics for a compact
+     header strip. */
+  border-right: none;
+  border-bottom: 1px solid var(--color-border);
+  padding: 0.5rem 0.5rem 0.5rem;
+  gap: 0.4rem;
+  min-height: 0;
+}
+
+.run-sidebar__selector {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+
+.run-sidebar__selector:hover,
+.run-sidebar__selector:focus-visible {
+  border-color: var(--color-accent);
+  outline: none;
+}
+
+.run-sidebar__selector-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-sidebar__selector-caret {
+  display: inline-block;
+  color: var(--color-text-dim);
+  transition: transform 120ms ease-out;
+}
+
+.run-sidebar__selector--open .run-sidebar__selector-caret {
+  transform: rotate(180deg);
+}
+
+.run-sidebar__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+/* `:hidden` is the actual mechanism; this rule just guarantees we
+   don't render the body's flex chrome when narrow + collapsed (in
+   case `[hidden]` is overridden somewhere upstream). */
+.run-sidebar--collapsed .run-sidebar__body {
+  display: none;
 }
 </style>
