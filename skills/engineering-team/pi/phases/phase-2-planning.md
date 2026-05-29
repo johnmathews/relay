@@ -75,7 +75,7 @@ plan typically gets rewritten as a "v2" once implementation starts, with the rew
 more time than the original code-reading would have. One pass of code reading at planning time
 prevents that cycle. If you are proposing changes to a file, you must have read that file.
 
-Work each planning lens yourself, in sequence (relay-v2 MVP is
+Work each planning lens yourself, in sequence (relay MVP is
 single-session — see `../references/team-structure.md`):
 
 **Code-improvements lens:**

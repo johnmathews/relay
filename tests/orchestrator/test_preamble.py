@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from relay_v2.orchestrator.preamble import build_preamble, compose_prompt
+from relay.orchestrator.preamble import build_preamble, compose_prompt
 
 
 def test_build_preamble_with_phase() -> None:

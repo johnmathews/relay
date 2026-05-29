@@ -1,6 +1,6 @@
-# relay-v2 frontend
+# relay frontend
 
-Vue 3 + TypeScript + Vite dashboard for relay-v2 — the Phase 4
+Vue 3 + TypeScript + Vite dashboard for relay — the Phase 4
 control plane (complete): Hub, Project view (runs/prompts/files
 panes), 4-step New-Run wizard, Run detail with the live SSE timeline
 + iters/artifacts/worktree panes, prompts CRUD, project register /
@@ -117,7 +117,7 @@ lists against:
 
 ```sh
 # Catalog every kind the backend can emit.
-grep -rn 'await self\._store\.append(\|"kind":' src/relay_v2/
+grep -rn 'await self\._store\.append(\|"kind":' src/relay/
 ```
 
 The CI gate does not enforce this (the dropped-event symptom only
@@ -186,7 +186,7 @@ Pi's `SessionEnded.messages[].usage` carries `input` / `output` /
 NOT Anthropic-API names (`input_tokens` / `output_tokens` /
 `cache_read_input_tokens`). The `UsageRow.vue` aggregator + its
 fixture must mirror the pi keys. The same names are read by
-`src/relay_v2/observability/otel.py::_aggregate_usage` — that is the
+`src/relay/observability/otel.py::_aggregate_usage` — that is the
 single source of truth for how usage is summed.
 
 ## Recently-touched components (post-MVP)

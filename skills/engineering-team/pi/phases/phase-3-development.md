@@ -12,7 +12,7 @@ Before any other action in this phase, emit at column 0:
 ## You are already in a relay-provisioned worktree — do NOT create one
 
 This is the load-bearing v2 difference (ADR-13, ADR-14). In v1 the
-Phase-3 skill ran `git worktree add` itself. **In relay-v2 the
+Phase-3 skill ran `git worktree add` itself. **In relay the
 orchestrator provisioned the per-run worktree before your session
 started** and set your working directory inside it. Your job is to
 *verify* that, not to create a worktree.
@@ -286,7 +286,7 @@ journal as part of the quality gate. Writing it here would create a
 duplicate. Instead, ensure the work done during Phase 3 is captured in the
 conversation context so the Phase 4 journal step can include it.
 
-(relay-v2 has no `/done` slash-skill — pi is the harness, not Claude
+(relay has no `/done` slash-skill — pi is the harness, not Claude
 Code. Phase 4 performs the gate's steps inline; see
 `phase-4-wrap-up.md`.)
 

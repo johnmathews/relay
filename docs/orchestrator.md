@@ -1,7 +1,7 @@
 # Orchestrator layer
 
-> Phase 2 deliverable. Implementation reference for `src/relay_v2/core.py`,
-> `src/relay_v2/events.py`, and `src/relay_v2/orchestrator/`. Canonical
+> Phase 2 deliverable. Implementation reference for `src/relay/core.py`,
+> `src/relay/events.py`, and `src/relay/orchestrator/`. Canonical
 > design is `spec.md` §6 (loop) + §3 (data model); ADR-07, ADR-10,
 > ADR-19, ADR-20, ADR-21 carry the rationale. When this doc disagrees
 > with `spec.md`, `spec.md` wins.
@@ -15,7 +15,7 @@ no-signal / `max_iters`. It consumes only the normalized
 harness/signaling surface — it contains no pi knowledge (ADR-04).
 
 ```
-src/relay_v2/
+src/relay/
 ├── core.py                 RelayCore — single shared service + runtime
 ├── events.py               EventStore — append-only event-log writer
 └── orchestrator/

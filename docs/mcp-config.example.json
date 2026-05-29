@@ -1,7 +1,7 @@
 {
-  "_comment": "Register relay-v2 as an MCP server for Claude Code / Claude Desktop. Copy the 'relay-v2' entry into your project's .mcp.json (Claude Code) or claude_desktop_config.json mcpServers block. The relay-v2 backend must be running (relay serve; default 127.0.0.1:7800). The URL host:port must stay on 127.0.0.1/localhost — the MCP server enforces a localhost DNS-rebinding allow-list (ADR-12 single-user, ADR-27).",
+  "_comment": "Register relay as an MCP server for Claude Code / Claude Desktop. Copy the 'relay' entry into your project's .mcp.json (Claude Code) or claude_desktop_config.json mcpServers block. The relay backend must be running (relay serve; default 127.0.0.1:7800). The URL host:port must stay on 127.0.0.1/localhost — the MCP server enforces a localhost DNS-rebinding allow-list (ADR-12 single-user, ADR-27).",
   "mcpServers": {
-    "relay-v2": {
+    "relay": {
       "type": "http",
       "url": "http://127.0.0.1:7800/mcp"
     }

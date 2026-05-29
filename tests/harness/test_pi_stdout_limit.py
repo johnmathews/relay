@@ -21,9 +21,9 @@ from pathlib import Path
 
 import pytest
 
-from relay_v2.config import Settings
-from relay_v2.harness.pi import PiHarness
-from relay_v2.harness.protocol import SessionEnded
+from relay.config import Settings
+from relay.harness.pi import PiHarness
+from relay.harness.protocol import SessionEnded
 
 _LINE_BYTES = 200 * 1024  # 200 KiB — comfortably over the 64 KiB default
 

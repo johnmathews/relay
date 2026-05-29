@@ -20,10 +20,10 @@ import pytest
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
-from relay_v2.config import Settings
-from relay_v2.core import RelayCore
-from relay_v2.db.models import Event, Iter, Prompt, Run
-from relay_v2.orchestrator.lifecycle import (
+from relay.config import Settings
+from relay.core import RelayCore
+from relay.db.models import Event, Iter, Prompt, Run
+from relay.orchestrator.lifecycle import (
     create_run,
     open_iter,
     set_run_status,

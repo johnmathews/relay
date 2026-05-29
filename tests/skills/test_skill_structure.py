@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from relay_v2.harness.skills import bundled_skill_dir
+from relay.harness.skills import bundled_skill_dir
 
 SKILL = bundled_skill_dir()
 

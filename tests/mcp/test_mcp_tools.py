@@ -24,9 +24,9 @@ import pytest
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
-from relay_v2.config import Settings
-from relay_v2.core import RelayCore
-from relay_v2.mcp import create_mcp_server
+from relay.config import Settings
+from relay.core import RelayCore
+from relay.mcp import create_mcp_server
 from tests.orchestrator.scripted_harness import (
     HangScript,
     ScriptedHarness,
@@ -144,7 +144,7 @@ def test_list_runs_includes_child_runs(tmp_path: Path) -> None:
     proj.mkdir()
 
     async def scenario(core: RelayCore, mcp: FastMCP) -> None:
-        from relay_v2.orchestrator.lifecycle import create_run
+        from relay.orchestrator.lifecycle import create_run
 
         project_id = await core.register_project(proj, "demo")
         parent_id = await core.start_run(project_id, "parent task")
@@ -384,7 +384,7 @@ def test_read_artifact_happy_and_sandbox(tmp_path: Path) -> None:
                 {"run_id": run_id, "path": "missing.md"},
             )
 
-        from relay_v2.api.files import MAX_FILE_BYTES
+        from relay.api.files import MAX_FILE_BYTES
 
         # Oversize: size check fires before binary read, so a text-shaped
         # file just over the cap returns the size error (not OOM-alloc).

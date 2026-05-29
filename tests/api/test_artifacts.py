@@ -23,7 +23,7 @@ from typing import Any
 import httpx
 from fastapi import FastAPI
 
-from relay_v2.api.artifacts import router
+from relay.api.artifacts import router
 
 
 class _StubCore:

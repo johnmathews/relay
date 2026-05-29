@@ -48,15 +48,15 @@ Outstanding risks parked (don't block start):
 
 ## Phase 0 — scaffold (2 days)
 
-**Goal.** A pip-installable relay-v2 package with a runnable FastAPI app
+**Goal.** A pip-installable relay package with a runnable FastAPI app
 serving a placeholder route. SQLite schema created on first run.
 
 **Deliverables:**
 
 ```
-relay-v2/
+relay/
 ├── pyproject.toml          # uv + entry-point: `relay`
-├── src/relay_v2/
+├── src/relay/
 │   ├── __init__.py
 │   ├── __main__.py         # `relay` CLI dispatch
 │   ├── app.py              # FastAPI factory
@@ -95,7 +95,7 @@ that can spawn `pi -p` and emit normalized `HarnessEvent` objects.
 **Deliverables:**
 
 ```
-src/relay_v2/harness/
+src/relay/harness/
 ├── __init__.py
 ├── protocol.py             # Harness, HarnessSession, HarnessEvent dataclasses (spec §4.1)
 ├── pi.py                   # PiHarness, PiSession (spec §4.2)
@@ -148,7 +148,7 @@ extracted next-prompt; `done`/`pause` terminate cleanly.
 **Deliverables:**
 
 ```
-src/relay_v2/
+src/relay/
 ├── orchestrator/
 │   ├── __init__.py
 │   ├── loop.py             # run_loop() per spec §6
@@ -201,7 +201,7 @@ depends on. The dashboard can talk to a real backend.
 **Deliverables:**
 
 ```
-src/relay_v2/
+src/relay/
 ├── api/
 │   ├── __init__.py
 │   ├── runs.py             # POST /api/runs, GET /api/runs, /preview, etc.
@@ -268,7 +268,7 @@ view (timeline + iters + artifacts + worktree panes).
 **Deliverables:**
 
 ```
-relay-v2/frontend/
+relay/frontend/
 ├── package.json            # vue 3, pinia, pinia-colada, vite,
 │                           # vue-router, markdown-it, shiki, mermaid,
 │                           # diff2html, plus dev: vitest, vue-test-utils,
@@ -377,7 +377,7 @@ manage relay runs via the standard MCP transport.
 **Deliverables:**
 
 ```
-src/relay_v2/mcp/
+src/relay/mcp/
 ├── __init__.py
 ├── server.py               # FastMCP setup with tools per spec §8
 └── tests/
@@ -391,10 +391,10 @@ src/relay_v2/mcp/
 - Output schemas use the same Pydantic models as the REST API for
   consistency.
 - A `mcp-config.example.json` snippet in `docs/` documents how to
-  register relay-v2 as an MCP server in Claude Desktop / Code.
+  register relay as an MCP server in Claude Desktop / Code.
 
 **Verification:**
-- Add the local relay-v2 to a Claude Code project's `.mcp.json`; invoke
+- Add the local relay to a Claude Code project's `.mcp.json`; invoke
   `relay__list_runs` from a Claude conversation and observe the result.
 - Unit tests against the MCP server in-process.
 
@@ -423,7 +423,7 @@ a real evaluation + plan + develop cycle against a fixture project.
 **Deliverables:**
 
 ```
-relay-v2/skills/engineering-team/
+relay/skills/engineering-team/
 ├── SKILL.md                # router; reads RELAY_PHASE + RELAY_RUN_DIR
 ├── phases/
 │   ├── phase-1-evaluation.md
@@ -442,9 +442,9 @@ relay-v2/skills/engineering-team/
 Also (current — ADR-44):
 
 ```
-src/relay_v2/harness/skills.py      # bundled_skill_dir() resolver
-src/relay_v2/harness/pi.py          # _build_argv appends --skill <path>
-src/relay_v2/config.py              # Settings.pi_skill_paths + RELAY_PI_SKILLS env
+src/relay/harness/skills.py      # bundled_skill_dir() resolver
+src/relay/harness/pi.py          # _build_argv appends --skill <path>
+src/relay/config.py              # Settings.pi_skill_paths + RELAY_PI_SKILLS env
 ```
 
 **Key implementation notes:**
@@ -467,7 +467,7 @@ src/relay_v2/config.py              # Settings.pi_skill_paths + RELAY_PI_SKILLS 
   `~/.pi/agent/skills/`).
 
 **Verification:**
-- Run relay-v2 against the v1 demo fixture (the deliberately broken
+- Run relay against the v1 demo fixture (the deliberately broken
   factorial(5) == 24 code). Confirm the agent evaluates, plans, and
   fixes the bug across multiple iters.
 - The dashboard renders the full multi-phase run cleanly.
@@ -488,7 +488,7 @@ attribution (where pi surfaces those fields).
 **Deliverables:**
 
 ```
-src/relay_v2/observability/
+src/relay/observability/
 ├── __init__.py
 ├── otel.py                 # tracer setup, span helpers
 └── tests/
@@ -524,7 +524,7 @@ covers install + run.
 
 > **Delivered.** README rewritten (Phases 0–8; install/run/dashboard/
 > MCP/observability/Docker); additive conditional `StaticFiles` SPA
-> mount (`src/relay_v2/api/static.py`, spec §11.2) + 2 tests; multi-
+> mount (`src/relay/api/static.py`, spec §11.2) + 2 tests; multi-
 > stage `Dockerfile` + `.dockerignore` + `docker-compose.example.yml`;
 > `.github/workflows/ci.yml` (full Python + frontend gate, GHCR
 > publish on push to `main`, `workflow_dispatch`); ADR-30 + spec §11.2

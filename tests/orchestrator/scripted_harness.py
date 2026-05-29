@@ -18,7 +18,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from relay_v2.harness import (
+from relay.harness import (
     AssistantText,
     HarnessEvent,
     SessionEnded,

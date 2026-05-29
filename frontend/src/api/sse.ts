@@ -78,8 +78,8 @@ const DEFAULT_RECONNECT_DELAY_MS = 1000
 // never reached the timeline (they appeared only after a browser
 // refresh, which hit the REST replay path).
 //
-// Verified against `src/relay_v2/events.py`,
-// `src/relay_v2/orchestrator/loop.py`, and `src/relay_v2/core.py` —
+// Verified against `src/relay/events.py`,
+// `src/relay/orchestrator/loop.py`, and `src/relay/core.py` —
 // `grep -E "store(\\._store)?\\.append\\(.*,\\s*\"[a-z_]+\"" src/`
 // catalogs every kind the backend can emit.
 export const KNOWN_EVENT_TYPES = [

@@ -103,7 +103,7 @@ deliberate maintenance step (re-run the de-risking fixtures first).
 
 The backend mounts an MCP server at `/mcp` (seven `relay__*` tools that
 are thin adapters over the same `RelayCore` — ADR-27, spec §8). Register
-it with Claude Code / Claude Desktop by copying the `relay-v2` entry
+it with Claude Code / Claude Desktop by copying the `relay` entry
 from [`docs/mcp-config.example.json`](docs/mcp-config.example.json) into
 your `.mcp.json` (Claude Code) or `claude_desktop_config.json`
 (Claude Desktop). The backend must be running and the URL must stay on
@@ -141,8 +141,8 @@ FastAPI backend (spec §11.2). Published to
 `ghcr.io/johnmathews/relay` by CI on push to `main`.
 
 ```bash
-docker build -t relay-v2 .
-docker run -p 7800:7800 relay-v2          # dashboard at :7800
+docker build -t relay .
+docker run -p 7800:7800 relay          # dashboard at :7800
 # or, with the example compose (optionally wiring Langfuse):
 docker compose -f docker-compose.example.yml up
 ```

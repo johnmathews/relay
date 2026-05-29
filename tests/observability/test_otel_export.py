@@ -24,17 +24,17 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
 
-from relay_v2.config import Settings
-from relay_v2.core import RelayCore
-from relay_v2.harness import AssistantText, ToolUseEnd, ToolUseStart
-from relay_v2.harness.protocol import SessionEnded
-from relay_v2.observability import (
+from relay.config import Settings
+from relay.core import RelayCore
+from relay.harness import AssistantText, ToolUseEnd, ToolUseStart
+from relay.harness.protocol import SessionEnded
+from relay.observability import (
     NOOP,
     NoopInstrumentation,
     OtelInstrumentation,
     build_instrumentation,
 )
-from relay_v2.observability import otel as otel_mod
+from relay.observability import otel as otel_mod
 from tests.orchestrator.scripted_harness import EventScript, ScriptedHarness, TextScript
 
 DONE = "All done.\n\n[[engteam:done]]"

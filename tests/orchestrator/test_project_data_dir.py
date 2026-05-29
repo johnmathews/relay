@@ -4,7 +4,7 @@ Worktrees and run-artifacts dirs must live under the **registered
 project's** `.relay/` directory, not under whatever cwd `relay serve`
 happened to be launched from. The 9f live acceptance run surfaced
 this: a project registered at /tmp/scratch had its run's worktree
-provisioned at /relay-v2/.relay/worktrees/<run_id>, because the
+provisioned at /relay/.relay/worktrees/<run_id>, because the
 orchestrator was passing `settings.data_dir` (the global SQLite root)
 to `provision_workspace` instead of the project's own root.
 
@@ -19,8 +19,8 @@ import subprocess
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-from relay_v2.config import Settings
-from relay_v2.core import RelayCore
+from relay.config import Settings
+from relay.core import RelayCore
 from tests.orchestrator.scripted_harness import (
     ScriptedHarness,
     TextScript,
@@ -72,7 +72,7 @@ def test_worktree_under_project_root_not_global_data_dir(
     entirely) instead of under A/.relay/."""
     # Project root and the global data dir are *distinct* locations —
     # mirrors the live repro (project at /…/relay-fanout-test, data_dir
-    # at /…/relay-v2/.relay/).
+    # at /…/relay/.relay/).
     project_root = tmp_path / "scratch-project"
     _git_init(project_root)
     global_data_dir = tmp_path / "global-relay-data"

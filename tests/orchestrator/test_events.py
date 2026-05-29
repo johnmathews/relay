@@ -17,11 +17,11 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from relay_v2.config import Settings
-from relay_v2.db import init_db, make_async_engine, make_async_sessionmaker
-from relay_v2.db.models import Event
-from relay_v2.events import TOOL_RESULT_CAP, EventStore, _truncate_result
-from relay_v2.harness.protocol import (
+from relay.config import Settings
+from relay.db import init_db, make_async_engine, make_async_sessionmaker
+from relay.db.models import Event
+from relay.events import TOOL_RESULT_CAP, EventStore, _truncate_result
+from relay.harness.protocol import (
     AssistantTextDelta,
     SessionEnded,
     SessionStarted,
@@ -29,7 +29,7 @@ from relay_v2.harness.protocol import (
     ToolUseStart,
     ToolUseUpdate,
 )
-from relay_v2.sse import Broadcaster
+from relay.sse import Broadcaster
 
 
 @asynccontextmanager

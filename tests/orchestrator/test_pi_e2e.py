@@ -20,9 +20,9 @@ from pathlib import Path
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from relay_v2.app import create_app
-from relay_v2.config import Settings
-from relay_v2.core import RelayCore
+from relay.app import create_app
+from relay.config import Settings
+from relay.core import RelayCore
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("PI_INTEGRATION") != "1",

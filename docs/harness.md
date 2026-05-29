@@ -1,6 +1,6 @@
 # Harness layer
 
-> Phase 1 deliverable. Implementation reference for `src/relay_v2/harness/`.
+> Phase 1 deliverable. Implementation reference for `src/relay/harness/`.
 > Canonical design is `spec.md` §4 (protocol/events) and §5 (signaling);
 > ADR-04, ADR-05, ADR-16, ADR-18 carry the rationale. This doc is the
 > operational "how it fits together" companion — when it disagrees with
@@ -14,7 +14,7 @@ pi for another harness later means writing one new module, not touching
 the orchestrator.
 
 ```
-src/relay_v2/harness/
+src/relay/harness/
 ├── protocol.py            Harness / HarnessSession protocols,
 │                          HarnessEvent hierarchy, SignalConfig, SignalEmitted
 ├── pi.py                  PiHarness, PiSession, map_pi_events,

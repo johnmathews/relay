@@ -22,14 +22,14 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
 
-from relay_v2.config import Settings
-from relay_v2.core import RelayCore
-from relay_v2.db import init_db, make_async_engine, make_async_sessionmaker
-from relay_v2.db.models import Event, Iter, Run
-from relay_v2.events import EventStore
-from relay_v2.observability import OtelInstrumentation
-from relay_v2.orchestrator.lifecycle import RunContext, create_run, register_project
-from relay_v2.orchestrator.loop import LoopResult, SessionHandle, run_loop
+from relay.config import Settings
+from relay.core import RelayCore
+from relay.db import init_db, make_async_engine, make_async_sessionmaker
+from relay.db.models import Event, Iter, Run
+from relay.events import EventStore
+from relay.observability import OtelInstrumentation
+from relay.orchestrator.lifecycle import RunContext, create_run, register_project
+from relay.orchestrator.loop import LoopResult, SessionHandle, run_loop
 from tests.orchestrator.scripted_harness import (
     HangScript,
     Script,
@@ -188,10 +188,10 @@ def test_loop_emits_harness_session_ended_on_done_close(tmp_path: Path) -> None:
     done close path — recorded explicitly here so a future grammar change
     that introduces a real summary arg also has to update this assertion.
     """
-    from relay_v2.harness import (
+    from relay.harness import (
         AssistantText as _AT,
     )
-    from relay_v2.harness.protocol import SessionEnded as _SE
+    from relay.harness.protocol import SessionEnded as _SE
     from tests.orchestrator.scripted_harness import EventScript
 
     messages_fixture = [

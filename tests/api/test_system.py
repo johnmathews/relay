@@ -17,7 +17,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from relay_v2.api.system import router
+from relay.api.system import router
 
 
 def _client() -> httpx.AsyncClient:

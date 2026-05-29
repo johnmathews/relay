@@ -5,7 +5,7 @@ relay delivers it to pi. Design authority: `spec.md §12`, ADR-14,
 ADR-28 (original Phase-6 install model), **ADR-44 (current delivery
 model — supersedes the install-skill command).**
 
-The skill is the relay-v2 port of v1's mature engineering-team skill;
+The skill is the relay port of v1's mature engineering-team skill;
 it drives the evaluate → plan → develop → wrap-up cycle that relay
 chains across fresh pi sessions.
 
@@ -38,9 +38,9 @@ skills/engineering-team/          canonical source (repo root, spec §12)
 Each harness gets its own subdirectory; today only `pi/` exists. A
 future second variant would land as a sibling (e.g. `claude-code/`) —
 see ADR-33 for the rationale. The tree lives at the **repo root**,
-outside the `src/relay_v2` wheel package. A hatch `force-include`
+outside the `src/relay` wheel package. A hatch `force-include`
 (`pyproject.toml`) maps the whole `skills/` tree into built wheels as
-`relay_v2/skills/` so new variant subdirectories are automatically
+`relay/skills/` so new variant subdirectories are automatically
 bundled; editable/source installs (the only mode used today) resolve
 the repo-root tree directly.
 
@@ -50,18 +50,18 @@ Pi has a first-class skill system (`pi --skill <path>` is repeatable
 and accepts a file or directory containing `SKILL.md` + sibling
 files). Relay's harness uses this directly:
 
-- **`src/relay_v2/harness/skills.py:bundled_skill_dir()`** is the single
+- **`src/relay/harness/skills.py:bundled_skill_dir()`** is the single
   resolver — tries the wheel-bundled location first
-  (`<site-packages>/relay_v2/skills/engineering-team/pi`), then falls
+  (`<site-packages>/relay/skills/engineering-team/pi`), then falls
   back to the repo-root source layout
   (`<repo>/skills/engineering-team/pi`). Either is acceptable; raises
   `FileNotFoundError` if neither is present (broken install).
-- **`Settings.pi_skill_paths`** (`src/relay_v2/config.py`) is a derived
+- **`Settings.pi_skill_paths`** (`src/relay/config.py`) is a derived
   property whose default is `[bundled_skill_dir()]`. Override via the
   colon-separated env var `RELAY_PI_SKILLS`. Setting it to the **empty
   string** explicitly opts out — pi then only sees auto-discovered
   skills (see below).
-- **`PiHarness._build_argv`** (`src/relay_v2/harness/pi.py`) appends
+- **`PiHarness._build_argv`** (`src/relay/harness/pi.py`) appends
   one `--skill <abs-path>` pair per configured path on every spawn.
   The skill content goes into pi's system prompt via the SDK's
   `formatSkillsForPrompt`; the `phases/` and `references/` siblings
@@ -100,7 +100,7 @@ guaranteed to load regardless because relay always injects it.
 
 ## Single-session MVP
 
-relay-v2's MVP runs **one long session per phase, no subagent
+relay's MVP runs **one long session per phase, no subagent
 dispatch within the skill itself**. v1's "Engineer N / Product Owner"
 subagents are *analysis lenses the single session works in sequence*.
 The orchestrator-level fanout-join arc (9a–9f) is live, but the

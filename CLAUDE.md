@@ -61,7 +61,7 @@ path creates an `awaiting_children` row yet — 9b/9c land the dispatch
 verb `[[engteam:fanout]]` paired with a `[[engteam:fanout-start]] …
 [[engteam:fanout-end]]` JSON marker block (spec §5.4), parsed by
 `extract_fanout_payload` into a Pydantic `FanoutPayload`
-(`src/relay_v2/harness/signaling/fanout.py`), surfaced as a terminal
+(`src/relay/harness/signaling/fanout.py`), surfaced as a terminal
 `fanout` signal by `detect_in_text`, threaded through the loop as a
 new `LoopResult("awaiting_children", fanout_payload=…)` return.
 `RelayCore._apply_result` routes that status to `_dispatch_children`,
@@ -166,7 +166,7 @@ now hang under the iter where the parent fanned out — so the full
 fanout-join cycle renders as **one connected tree** in Langfuse
 instead of three disconnected `relay.run` roots. Mechanism: a new
 opaque `IterSpanContext = Any` carrier (defined + re-exported from
-`relay_v2.observability`) plus a new `Instrumentation.run_span(*,
+`relay.observability`) plus a new `Instrumentation.run_span(*,
 parent_iter_ctx=None)` kwarg — when set, the run span is started
 under that iter's OTel context via `trace.set_span_in_context(...)`.
 The plumbing chain: `loop` captures the live `iter_span.context`
@@ -320,7 +320,7 @@ event-payload content), OQ-1 strict coupling, and the
 parser the optional `review_path` attribute on
 `[[engteam:pause-for-input ...]]`, lighting up 14a's write endpoint
 as a working write path. New `extract_pause_review_path(text)` in
-`src/relay_v2/harness/signaling/sentinels.py` mirrors
+`src/relay/harness/signaling/sentinels.py` mirrors
 `extract_pause_id` / `extract_pause_question` (line-anchored
 `_PAUSE_RE.match` → `review_path="..."` regex with `\"`-unescape
 support) and delegates validation to a module-private
@@ -449,15 +449,16 @@ and falls back to the legacy scalar. Engteam Phase-2 template **not**
 modified — still emits exactly one `review_path`; plural is opt-in
 for future skills. ADR-41 records the storage shape change.
 
-## What relay v2 is
+## What relay is
 
 A Python service that orchestrates *chained agent sessions* against a
 swappable headless harness (pi for MVP). It breaks a large plan into
 work units, runs each in a **fresh** harness session, and carries state
 forward via a deliberately compressed handoff. A structured SQLite event
 store is the source of truth; a Vue dashboard tails it live and replays
-history from it. v2 is a clean-break rewrite of v1 (`~/projects/relay`,
-bash + Flask); there is no backward compatibility.
+history from it. This codebase is a clean-break rewrite of an earlier
+bash + Flask prototype (archived at `~/projects/archive/relay-v1/`);
+there is no backward compatibility.
 
 ## Document authority — read these before designing or coding
 
@@ -545,12 +546,12 @@ implementation:
   `openapi-spec-validator` (dev-dep) asserts `/openapi.json` is valid
   OpenAPI v3.
 - Schema management is hand-rolled `create_all` for the MVP (ADR-17);
-  `src/relay_v2/db/migrations/` is a placeholder for future numbered
+  `src/relay/db/migrations/` is a placeholder for future numbered
   upgrade scripts. Alembic is deferred.
-- Two DB engines, both behind `relay_v2.db` (ADR-21): a **sync** engine
+- Two DB engines, both behind `relay.db` (ADR-21): a **sync** engine
   for `create_all` schema bootstrap only; an **async** `aiosqlite`
   engine (deps `aiosqlite`, `sqlalchemy[asyncio]` → `greenlet`) for all
-  orchestrator I/O. Nothing above `relay_v2.db` constructs an engine.
+  orchestrator I/O. Nothing above `relay.db` constructs an engine.
 - Backend: FastAPI + Pydantic v2 + Uvicorn; SQLite via SQLAlchemy.
 - MCP server (Phase 5, ADR-27): the **bundled** official SDK
   (`mcp.server.fastmcp`, dep pinned `mcp>=1.27.1,<2` — the `<2` cap is
@@ -629,5 +630,5 @@ implementation:
   publishes to `ghcr.io/johnmathews/relay` on push to `main` via
   `${{ github.token }}` (`workflow_dispatch` present). The prod
   frontend is served by FastAPI via the additive conditional
-  `relay_v2.api.static.mount_frontend` (no-op without a build) — spec
+  `relay.api.static.mount_frontend` (no-op without a build) — spec
   §11.2.

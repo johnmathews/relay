@@ -4,10 +4,10 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from relay_v2.harness.protocol import SignalConfig
-from relay_v2.harness.signaling import MarkerError
-from relay_v2.harness.signaling.fanout import FanoutParseError, FanoutPayload
-from relay_v2.harness.signaling.sentinels import (
+from relay.harness.protocol import SignalConfig
+from relay.harness.signaling import MarkerError
+from relay.harness.signaling.fanout import FanoutParseError, FanoutPayload
+from relay.harness.signaling.sentinels import (
     count_closing_sentinels,
     detect_in_text,
     extract_fanout_payload,

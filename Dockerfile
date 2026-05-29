@@ -1,9 +1,9 @@
-# relay-v2 production image (Phase 8, spec §11.2).
+# relay production image (Phase 8, spec §11.2).
 #
 # Two stages: (1) build the Vue SPA to frontend/dist/; (2) a uv-managed
 # Python 3.13 runtime that serves both the REST/MCP API and the built
 # SPA from one process. The repo layout is preserved inside the image
-# (/app/frontend/dist) because relay_v2.api.static.frontend_dist_dir()
+# (/app/frontend/dist) because relay.api.static.frontend_dist_dir()
 # resolves the build relative to the source tree (parents[3]/frontend/
 # dist) — no force-include needed for the source/`uv run` deployment.
 

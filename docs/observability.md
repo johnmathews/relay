@@ -1,6 +1,6 @@
 # Observability — OTel mirror + Langfuse (Phase 7)
 
-Operational reference for relay-v2's OpenTelemetry mirror. Design
+Operational reference for relay's OpenTelemetry mirror. Design
 contract: `docs/spec.md §10`; rationale and rejected alternatives:
 **ADR-29** (and ADR-10, which makes the event store the *single source
 of truth* — OTel only mirrors it). This doc is the how-to.

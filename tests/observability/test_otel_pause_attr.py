@@ -24,9 +24,9 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
 
-from relay_v2.config import Settings
-from relay_v2.core import RelayCore
-from relay_v2.observability import NOOP, OtelInstrumentation
+from relay.config import Settings
+from relay.core import RelayCore
+from relay.observability import NOOP, OtelInstrumentation
 from tests.orchestrator.scripted_harness import ScriptedHarness, TextScript
 
 PAUSE_BLOCK = (
@@ -75,7 +75,7 @@ async def _run_pause_resume_with_edits(
     # span-attribute test we seed the count directly via `store_event`
     # using the paused iter's id (the same iter_id the loop's count query
     # filters on). This keeps the test orthogonal to the 14a HTTP path.
-    from relay_v2.orchestrator.lifecycle import latest_paused_iter
+    from relay.orchestrator.lifecycle import latest_paused_iter
 
     iter_row = await latest_paused_iter(core._sm, run_id)  # type: ignore[attr-defined]
     assert iter_row is not None

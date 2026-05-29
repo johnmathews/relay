@@ -20,11 +20,11 @@ from sqlalchemy import create_engine
 from sqlalchemy import select as sa_select
 from sqlalchemy.orm import Session as SyncSession
 
-from relay_v2.config import Settings
-from relay_v2.core import RelayCore
-from relay_v2.db import init_db
-from relay_v2.db.models import Run
-from relay_v2.observability import IterSpan, IterSpanContext, RunSpan
+from relay.config import Settings
+from relay.core import RelayCore
+from relay.db import init_db
+from relay.db.models import Run
+from relay.observability import IterSpan, IterSpanContext, RunSpan
 from tests.orchestrator.scripted_harness import ScriptedHarness, TextScript
 
 DONE_BLOCK = "All work complete.\n\n[[engteam:done]]"
@@ -137,7 +137,7 @@ async def _make_child_run(
     prompt_body: str,
 ) -> str:
     """Insert a child run row directly (no fanout sentinel)."""
-    from relay_v2.orchestrator.lifecycle import create_run
+    from relay.orchestrator.lifecycle import create_run
 
     child_id = core._new_run_id()
     await create_run(
@@ -200,7 +200,7 @@ async def test_list_children_returns_direct_children_only(
         # earlier than child_b's, making the desired ORDER BY effect visible.
         from sqlalchemy import update
 
-        from relay_v2.db.models import Run
+        from relay.db.models import Run
 
         async with core._sm() as s:
             await s.execute(

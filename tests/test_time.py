@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta, timezone
 
-from relay_v2._time import to_utc_iso
+from relay._time import to_utc_iso
 
 
 def test_to_utc_iso_tags_naive_as_utc() -> None:

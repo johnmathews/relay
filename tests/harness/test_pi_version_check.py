@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from relay_v2.harness.pi import pi_version_mismatch_warning
+from relay.harness.pi import pi_version_mismatch_warning
 
 
 def test_matching_version_returns_none() -> None:

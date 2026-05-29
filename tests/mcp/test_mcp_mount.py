@@ -2,7 +2,7 @@
 
 This is the explicit test for the highest-risk line in Phase 5: the
 ``async with mcp.session_manager.run():`` wrap in
-:func:`relay_v2.app.create_app`'s lifespan. A sub-app mounted via
+:func:`relay.app.create_app`'s lifespan. A sub-app mounted via
 ``app.mount()`` does not get its ASGI lifespan auto-run by Starlette
 (the #1367 footgun); ``streamable_http_app()``'s session manager is
 started in that lifespan. If the wrap is missing, every ``/mcp``
@@ -27,8 +27,8 @@ from typing import Any
 
 import httpx
 
-from relay_v2.app import create_app
-from relay_v2.config import Settings
+from relay.app import create_app
+from relay.config import Settings
 from tests.orchestrator.scripted_harness import ScriptedHarness, TextScript
 
 DONE_BLOCK = "All work complete.\n\n[[engteam:done]]"
@@ -72,7 +72,7 @@ def _run(
 
 
 def test_mcp_mounted_handshake_and_tools(tmp_path: Path) -> None:
-    """initialize handshake returns relay-v2 + a session id (proves the
+    """initialize handshake returns relay + a session id (proves the
     session manager is running, not hung), and tools/list returns all
     seven spec §8 tools — over the mounted ``/mcp`` endpoint."""
 
@@ -99,7 +99,7 @@ def test_mcp_mounted_handshake_and_tools(tmp_path: Path) -> None:
         assert sid, "no Mcp-Session-Id — session manager not running"
         assert (
             _first_sse_json(r.text)["result"]["serverInfo"]["name"]
-            == "relay-v2"
+            == "relay"
         )
 
         sess_headers = {**_MCP_HEADERS, "mcp-session-id": sid}

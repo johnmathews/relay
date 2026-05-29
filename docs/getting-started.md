@@ -1,4 +1,4 @@
-# Getting started — install, run, and verify relay-v2
+# Getting started — install, run, and verify relay
 
 > Single end-to-end walkthrough. Cross-links the per-subsystem docs
 > instead of duplicating them. If a step's detail isn't here, the
@@ -102,14 +102,14 @@ curl -s http://127.0.0.1:7800/api/runs
 The backend mounts an MCP server at `/mcp` with seven tools that are
 thin adapters over the same `RelayCore` ([`mcp.md`](mcp.md), ADR-27).
 
-1. Copy the `relay-v2` entry from [`mcp-config.example.json`](mcp-config.example.json)
+1. Copy the `relay` entry from [`mcp-config.example.json`](mcp-config.example.json)
    into your `.mcp.json` (Claude Code) or `claude_desktop_config.json`
    (Claude Desktop). The URL must stay on `127.0.0.1`/`localhost` —
    the server enforces a localhost DNS-rebinding allow-list (ADR-12 +
    ADR-27).
 2. Restart your MCP client.
 3. **Smoke test.** Ask Claude to call `relay__list_runs` (e.g. "use
-   the relay-v2 MCP server and list current runs"). A successful call
+   the relay MCP server and list current runs"). A successful call
    returns the list you saw via REST in step 4.
 
 The full tool list ([`mcp.md`](mcp.md) §"Tools"): `relay__list_runs`,
@@ -182,8 +182,8 @@ The shape:
 Build and run locally:
 
 ```bash
-docker build -t relay-v2 .
-docker run -p 7800:7800 relay-v2          # dashboard at :7800
+docker build -t relay .
+docker run -p 7800:7800 relay          # dashboard at :7800
 # or with the example compose:
 docker compose -f docker-compose.example.yml up
 ```

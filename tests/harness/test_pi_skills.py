@@ -13,9 +13,9 @@ from pathlib import Path
 
 import pytest
 
-from relay_v2.config import Settings
-from relay_v2.harness.pi import PiHarness
-from relay_v2.harness.skills import bundled_skill_dir
+from relay.config import Settings
+from relay.harness.pi import PiHarness
+from relay.harness.skills import bundled_skill_dir
 
 
 def _argv(settings: Settings, prompt: str = "p") -> list[str]:

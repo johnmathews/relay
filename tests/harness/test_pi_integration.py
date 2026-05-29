@@ -15,10 +15,10 @@ from pathlib import Path
 
 import pytest
 
-from relay_v2.harness import AssistantText, SessionEnded
-from relay_v2.harness.pi import PiHarness
-from relay_v2.harness.protocol import SignalConfig
-from relay_v2.harness.signaling import detect_in_text
+from relay.harness import AssistantText, SessionEnded
+from relay.harness.pi import PiHarness
+from relay.harness.protocol import SignalConfig
+from relay.harness.signaling import detect_in_text
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("PI_INTEGRATION") != "1",

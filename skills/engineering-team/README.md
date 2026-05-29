@@ -34,7 +34,7 @@ directory.
 
 There is no install step. Relay's pi harness injects the bundled
 `pi/` variant into every pi spawn via `pi --skill <bundled-path>` —
-the path resolves to the wheel-bundled `relay_v2/skills/engineering-team/pi/`
+the path resolves to the wheel-bundled `relay/skills/engineering-team/pi/`
 in deployed installs and the repo-root `skills/engineering-team/pi/` in
 editable installs. Override with `RELAY_PI_SKILLS=<path[:path...]>`
 or opt out entirely with `RELAY_PI_SKILLS=`. ADR-44 records the

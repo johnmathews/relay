@@ -13,8 +13,8 @@ from collections.abc import Iterator
 
 import pytest
 
-from relay_v2 import __main__ as cli
-from relay_v2.config import get_settings
+from relay import __main__ as cli
+from relay.config import get_settings
 
 
 @pytest.fixture(autouse=True)

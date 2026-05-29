@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 
-from relay_v2.harness import (
+from relay.harness import (
     AssistantText,
     Harness,
     HarnessEvent,

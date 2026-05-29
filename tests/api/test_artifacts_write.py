@@ -26,14 +26,14 @@ from pathlib import Path
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
-from relay_v2.api.files import MAX_FILE_BYTES
-from relay_v2.app import create_app
-from relay_v2.config import Settings
-from relay_v2.core import RelayCore
-from relay_v2.db.models import Event
-from relay_v2.db.models import Iter as IterModel
-from relay_v2.db.models import Run as RunModel
-from relay_v2.harness.protocol import Harness
+from relay.api.files import MAX_FILE_BYTES
+from relay.app import create_app
+from relay.config import Settings
+from relay.core import RelayCore
+from relay.db.models import Event
+from relay.db.models import Iter as IterModel
+from relay.db.models import Run as RunModel
+from relay.harness.protocol import Harness
 from tests.orchestrator.scripted_harness import ScriptedHarness, TextScript
 
 DONE_BLOCK = "All work complete.\n\n[[engteam:done]]"

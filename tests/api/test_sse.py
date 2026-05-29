@@ -17,10 +17,10 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from relay_v2.api.events import sse_event_stream
-from relay_v2.config import Settings
-from relay_v2.core import RelayCore
-from relay_v2.sse import CLOSED, SUBSCRIBER_QUEUE_MAXSIZE, Broadcaster
+from relay.api.events import sse_event_stream
+from relay.config import Settings
+from relay.core import RelayCore
+from relay.sse import CLOSED, SUBSCRIBER_QUEUE_MAXSIZE, Broadcaster
 from tests.orchestrator.scripted_harness import ScriptedHarness, TextScript
 
 HANDOFF = (
@@ -309,7 +309,7 @@ def test_sse_treats_awaiting_children_as_live(tmp_path: Path) -> None:
     ``awaiting_children`` to any of them would break this test (or its
     frontend equivalent) by silently flipping the stream to replay-EOF.
     """
-    from relay_v2.orchestrator.lifecycle import set_run_status
+    from relay.orchestrator.lifecycle import set_run_status
 
     settings = _settings(tmp_path)
     harness = ScriptedHarness([TextScript(DONE)])
@@ -387,7 +387,7 @@ def test_live_idle_emits_heartbeat_frame(
     cursor (heartbeats are not persisted; bumping the cursor would
     point at a phantom DB row on reconnect).
     """
-    import relay_v2.api.events as ev_mod
+    import relay.api.events as ev_mod
 
     # Shrink the cadence so the test does not wait 5s for the idle
     # timeout to fire.
@@ -397,7 +397,7 @@ def test_live_idle_emits_heartbeat_frame(
     harness = ScriptedHarness([TextScript(DONE)])
 
     async def scenario(core: RelayCore) -> None:
-        from relay_v2.orchestrator.lifecycle import set_run_status
+        from relay.orchestrator.lifecycle import set_run_status
 
         pid = await core.register_project(tmp_path, "p")
         run_id = await core.start_run(pid, "Go.", max_iters=2)
@@ -448,11 +448,11 @@ def test_live_drain_forwards_ephemeral_frames(
     cursor is preserved across deltas (a delta is recoverable from
     the canonical AssistantText replay on reconnect).
     """
-    import relay_v2.api.events as ev_mod
+    import relay.api.events as ev_mod
 
     monkeypatch.setattr(ev_mod, "_KEEPALIVE_S", 0.05)
 
-    from relay_v2.orchestrator.lifecycle import set_run_status
+    from relay.orchestrator.lifecycle import set_run_status
 
     settings = _settings(tmp_path)
     harness = ScriptedHarness([TextScript(DONE)])
@@ -516,11 +516,11 @@ def test_live_drained_event_updates_last_event_ts(
     """ADR-45: after a live-drain event is forwarded, the next
     idle-tick heartbeat reports that event's ts as ``last_event_ts``.
     """
-    import relay_v2.api.events as ev_mod
+    import relay.api.events as ev_mod
 
     monkeypatch.setattr(ev_mod, "_KEEPALIVE_S", 0.05)
 
-    from relay_v2.orchestrator.lifecycle import set_run_status
+    from relay.orchestrator.lifecycle import set_run_status
 
     settings = _settings(tmp_path)
     harness = ScriptedHarness([TextScript(DONE)])
@@ -572,7 +572,7 @@ def test_route_404_and_204_and_stream(tmp_path: Path) -> None:
     import httpx
     from fastapi import FastAPI
 
-    from relay_v2.api.events import router
+    from relay.api.events import router
 
     settings = _settings(tmp_path)
     harness = ScriptedHarness([TextScript(DONE)])

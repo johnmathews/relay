@@ -1,6 +1,6 @@
 # MCP server (Phase 5)
 
-Operational reference for the relay-v2 MCP server. Design contract:
+Operational reference for the relay MCP server. Design contract:
 `docs/spec.md §8`; toolchain rationale: **ADR-27**. The server is a
 thin adapter layer — for *why* it exists and how it fits the
 architecture, read those; this doc is the how-to.
@@ -65,13 +65,13 @@ intentional and recorded in ADR-27.
 
 ## Registering with a client
 
-Copy the `relay-v2` block from `docs/mcp-config.example.json` into:
+Copy the `relay` block from `docs/mcp-config.example.json` into:
 
 - **Claude Code:** your project's `.mcp.json`
 - **Claude Desktop:** `claude_desktop_config.json` → `mcpServers`
 
 ```json
-{ "mcpServers": { "relay-v2": { "type": "http",
+{ "mcpServers": { "relay": { "type": "http",
   "url": "http://127.0.0.1:7800/mcp" } } }
 ```
 
@@ -89,7 +89,7 @@ valid pass — it proves the transport and tool wiring).
 - **Lifespan wiring (the #1367 footgun):** a sub-app mounted via
   `app.mount()` does not get its ASGI lifespan auto-run, and
   `streamable_http_app()`'s session manager starts in that lifespan.
-  `relay_v2.app`'s lifespan therefore wraps its body in
+  `relay.app`'s lifespan therefore wraps its body in
   `async with mcp.session_manager.run():`. Omitting this makes every
   `/mcp` request hang — covered by `tests/mcp/test_mcp_mount.py`.
 - **Mount path:** the FastMCP server is built with

@@ -116,7 +116,7 @@ These are not blockers, but they are unresolved and the architecture should ackn
 2. **Pi version churn.** Pi releases weekly (current upstream v0.75.3 at the time of writing; v2 is initially pinned to v0.74.0, the version exercised by the de-risking suite). The event-stream schema and CLI flags may change between releases; v2 treats schema drift as a maintenance task on each pin bump.
 3. **MCP-via-community-extension.** If the signaling strategy graduates from text-sentinels to MCP tools on pi, the dependency is `pi-mcp-adapter` (community, ~81k DL/mo). That's a real maintenance risk worth re-evaluating at the time of the switch.
 4. **TypeScript creep.** Pi's extension system is TypeScript-only. Custom hooks, custom tools, or extensions all require TS. v2 contains TS to the extension layer (relay extension, MCP shim if used); orchestration stays Python.
-5. **`relay-v2` superseding the engineering-team skill in `~/projects/relay`.** The skill source-of-truth currently lives in v1's repo. v2 must port it (with v2-shaped preamble and signaling) before the skill can be installed against v2.
+5. **`relay` superseding the engineering-team skill in `~/projects/relay`.** The skill source-of-truth currently lives in v1's repo. v2 must port it (with v2-shaped preamble and signaling) before the skill can be installed against v2.
 
 ## One-paragraph summary
 

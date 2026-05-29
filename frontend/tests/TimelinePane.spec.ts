@@ -6,7 +6,7 @@ import TimelinePane from '../src/components/runs/TimelinePane.vue'
 import type { StreamEvent } from '../src/stores/events'
 import { useBrowserUiStore } from '../src/stores/files'
 
-// Realistic relay event kinds + payloads (spec §3.2 / src/relay_v2/
+// Realistic relay event kinds + payloads (spec §3.2 / src/relay/
 // events.py / orchestrator/loop.py — NOT invented).
 const MIXED: StreamEvent[] = [
   { seq: 1, kind: 'run_started', payload: { project_id: 1, max_iters: 5 } },

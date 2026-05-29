@@ -20,11 +20,11 @@ from pathlib import Path
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from relay_v2.config import Settings
-from relay_v2.core import RelayCore
-from relay_v2.db import init_db
-from relay_v2.db.models import Event, Iter, Run
-from relay_v2.orchestrator.lifecycle import create_run, set_run_status
+from relay.config import Settings
+from relay.core import RelayCore
+from relay.db import init_db
+from relay.db.models import Event, Iter, Run
+from relay.orchestrator.lifecycle import create_run, set_run_status
 from tests.orchestrator.scripted_harness import ScriptedHarness, TextScript
 
 FANOUT_TWO = (

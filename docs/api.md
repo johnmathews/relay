@@ -1,7 +1,7 @@
 # REST API — operational reference
 
-> Phase 3 deliverable. Implementation reference for `src/relay_v2/api/`
-> and `src/relay_v2/sse.py`. **Canonical design is `spec.md` §7**;
+> Phase 3 deliverable. Implementation reference for `src/relay/api/`
+> and `src/relay/sse.py`. **Canonical design is `spec.md` §7**;
 > ADR-07/15 (single-RelayCore write path), ADR-10 (event store is the
 > source of truth), ADR-12 (single-user localhost), ADR-23 (SSE
 > broadcaster), ADR-24 (test toolchain) carry the rationale. When this
@@ -9,7 +9,7 @@
 
 ## Shape
 
-FastAPI app (`relay_v2.app:create_app`). One process, bound to
+FastAPI app (`relay.app:create_app`). One process, bound to
 `127.0.0.1:7800` by default (ADR-12 — no auth, no multi-user;
 `user_id` stays the sentinel). `relay serve` runs it via uvicorn.
 Auto-generated OpenAPI 3.1 at `GET /openapi.json`, operations grouped by
@@ -18,16 +18,16 @@ resource tag (`runs`, `projects`, `prompts`, `files`, `events`,
 
 **Every route is a thin adapter over the single shared `RelayCore`**
 (`app.state.core`, owned by the lifespan — ADR-07/15). Handlers resolve
-the core via the `get_core` dependency (`relay_v2.api.deps`) and call a
+the core via the `get_core` dependency (`relay.api.deps`) and call a
 `RelayCore` service method; they never touch the DB, an engine, a
 sessionmaker, or ORM models directly. New read/write capability is a new
-`RelayCore` method, not route logic. `relay_v2.api.include_api_routers`
+`RelayCore` method, not route logic. `relay.api.include_api_routers`
 is the single place all routers are mounted (called from `create_app`).
 
 ## Endpoints
 
 All paths are prefixed `/api`. Request/response bodies are Pydantic v2
-models in `relay_v2.api.schemas` (response models use
+models in `relay.api.schemas` (response models use
 `from_attributes=True` over ORM rows).
 
 ### Runs
@@ -141,7 +141,7 @@ The replay path returns no delta rows — deltas are never persisted
 | PUT | `/runs/{id}/artifacts/{file_path:path}` | `write_artifact` | body `{content: str, editor?: str}`. **Single write entry on the run artifacts dir.** Coupled to `run.status == 'paused'` AND set-membership in the paused iter's `signal_args.review_paths` (14b/14f; legacy scalar `review_path` is read as a one-element list during the migration window). 200 `{path, size, sha256}`; 400 sandbox violation, 404 unknown run, 409 `not_paused` / `no_review_path` / `path_mismatch` / `missing_parent_dir`, 413 oversize, 415 binary or non-JSON / malformed body (also covers `content` not a string and `editor` not a string). Every success appends one `artifact_edited` event iter-scoped to the paused iter (§3.2) |
 
 **Sandbox.** All confinement is in one audited function,
-`relay_v2.api.files.resolve_within_sandbox(root, rel)`. It rejects (→
+`relay.api.files.resolve_within_sandbox(root, rel)`. It rejects (→
 HTTP **400**, `SandboxViolation`): a NUL byte, an absolute path, any
 `..` component (lexical, before touching the filesystem), and any
 symlink whose real target escapes the project root (`root.resolve()` +
@@ -181,7 +181,7 @@ resolution of this spec ambiguity; no contract change to RelayCore.)
 ## Error mapping
 
 `RelayCore` signals domain failures as `ValueError`.
-`relay_v2.api.deps.http_error` maps them: state conflicts ("is not
+`relay.api.deps.http_error` maps them: state conflicts ("is not
 paused", "is already running") → **409**; preview bad-request
 ("must be provided") → **400** at the call site; everything else
 (unknown entity, "no saved pause prompt", resume of a run whose project

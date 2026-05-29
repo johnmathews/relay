@@ -17,11 +17,11 @@ from typing import Any
 
 from httpx import ASGITransport, AsyncClient
 
-from relay_v2.app import create_app
-from relay_v2.config import Settings
-from relay_v2.core import RelayCore
-from relay_v2.harness.protocol import Harness
-from relay_v2.orchestrator.lifecycle import create_run
+from relay.app import create_app
+from relay.config import Settings
+from relay.core import RelayCore
+from relay.harness.protocol import Harness
+from relay.orchestrator.lifecycle import create_run
 from tests.orchestrator.scripted_harness import ScriptedHarness, TextScript
 
 DONE_BLOCK = "All work complete.\n\n[[engteam:done]]"
@@ -369,7 +369,7 @@ def test_delete_run_active_returns_409(tmp_path: Path) -> None:
             await core.wait_for_run(run_id)
             # Force the row back to 'running' to simulate an active run
             # (the scripted harness already settled, so no real task races us).
-            from relay_v2.orchestrator.lifecycle import set_run_status
+            from relay.orchestrator.lifecycle import set_run_status
             await set_run_status(core._sm, run_id, "running", ended=False)
 
             res = await ac.delete(f"/api/runs/{run_id}")

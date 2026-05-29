@@ -12,9 +12,9 @@ from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from relay_v2.config import Settings
-from relay_v2.db import init_db, make_async_engine, make_async_sessionmaker
-from relay_v2.orchestrator.lifecycle import (
+from relay.config import Settings
+from relay.db import init_db, make_async_engine, make_async_sessionmaker
+from relay.orchestrator.lifecycle import (
     compose_resume_prompt,
     provision_workspace,
     register_project,

@@ -29,7 +29,7 @@ user whether to run this phase — it runs automatically as the final step
 of every engineering team invocation.
 
 > **v2 note: there is no `/done` or `/merge-push` slash-skill.** Those
-> are Claude Code skills; relay-v2 runs the engineering-team skill under
+> are Claude Code skills; relay runs the engineering-team skill under
 > the **pi** harness, where they do not exist. v1's Phase 4 delegated the
 > quality gate to `/done` and the merge to `/merge-push`. In v2 you
 > perform their steps **inline**, as described below. The intent is

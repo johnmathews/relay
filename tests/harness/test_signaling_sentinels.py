@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import pytest
 
-from relay_v2.harness.protocol import SignalConfig
-from relay_v2.harness.signaling import detect_in_text
-from relay_v2.harness.signaling.sentinels import (
+from relay.harness.protocol import SignalConfig
+from relay.harness.signaling import detect_in_text
+from relay.harness.signaling.sentinels import (
     MarkerError,
     count_closing_sentinels,
     extract_handoff_prompt,

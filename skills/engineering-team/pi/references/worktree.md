@@ -22,7 +22,7 @@ The target repo is the current working directory unless the user specifies anoth
 
 This is the load-bearing v2 difference (ADR-13, ADR-14). In v1 the
 Phase-3 skill created the worktree itself (`EnterWorktree` / `git
-worktree add`). **In relay-v2 the orchestrator provisions the per-run
+worktree add`). **In relay the orchestrator provisions the per-run
 worktree before your session starts** and runs you with your working
 directory already inside it:
 

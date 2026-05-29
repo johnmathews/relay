@@ -18,11 +18,11 @@ from typing import Any
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from relay_v2.config import Settings
-from relay_v2.core import RelayCore
-from relay_v2.db import init_db
-from relay_v2.db.models import Event, Run
-from relay_v2.orchestrator.lifecycle import (
+from relay.config import Settings
+from relay.core import RelayCore
+from relay.db import init_db
+from relay.db.models import Event, Run
+from relay.orchestrator.lifecycle import (
     close_iter,
     create_run,
     open_iter,
@@ -318,8 +318,8 @@ def test_maybe_resume_parent_emits_events_and_enqueues(
             # Need a _RunState entry so resume can install a fresh one;
             # simulate "parent's first task settled" exactly like _run
             # would have left it.
-            from relay_v2.core import _RunState
-            from relay_v2.orchestrator.loop import LoopResult
+            from relay.core import _RunState
+            from relay.orchestrator.loop import LoopResult
             core._runs[parent_id] = _RunState()
             core._runs[parent_id].result = LoopResult(
                 "awaiting_children", reason="signal",
@@ -406,7 +406,7 @@ def test_maybe_resume_parent_synthesizer_runcontext_body(
                 child_statuses=["done", "done"],
                 child_summaries=["a ok", "b ok"],
             )
-            from relay_v2.core import _RunState
+            from relay.core import _RunState
             core._runs[parent_id] = _RunState()
             core._runs[parent_id].settled.set()
 
@@ -439,7 +439,7 @@ def test_maybe_resume_parent_continues_iter_seq(tmp_path: Path) -> None:
                 core, tmp_path,
                 child_statuses=["done", "done"],
             )
-            from relay_v2.core import _RunState
+            from relay.core import _RunState
             core._runs[parent_id] = _RunState()
             core._runs[parent_id].settled.set()
             await core._maybe_resume_parent(parent_id)
@@ -472,7 +472,7 @@ def test_maybe_resume_parent_partial_failure_still_resumes(
                 child_statuses=["done", "failed", "cancelled"],
                 child_summaries=["ok", "timed out", "user cancelled"],
             )
-            from relay_v2.core import _RunState
+            from relay.core import _RunState
             core._runs[parent_id] = _RunState()
             core._runs[parent_id].settled.set()
             await core._maybe_resume_parent(parent_id)
@@ -514,7 +514,7 @@ def test_maybe_resume_parent_idempotent_under_double_fire(
                 core, tmp_path,
                 child_statuses=["done", "done"],
             )
-            from relay_v2.core import _RunState
+            from relay.core import _RunState
             core._runs[parent_id] = _RunState()
             core._runs[parent_id].settled.set()
 

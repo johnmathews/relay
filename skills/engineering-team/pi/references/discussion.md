@@ -24,7 +24,7 @@ Use this workflow when the user wants to:
 ### How It Works
 
 You are still the Lead Engineer. Your "team" is still the set of engineer and product-owner
-lenses (see `team-structure.md`) — but in relay-v2's single-session MVP you work each lens
+lenses (see `team-structure.md`) — but in relay's single-session MVP you work each lens
 yourself, in sequence, rather than dispatching subagents. Instead of doing work, you are
 **having a structured conversation with yourself on the user's behalf** — researching,
 analyzing, debating each perspective, and presenting findings to the user so the user can

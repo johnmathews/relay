@@ -7,7 +7,7 @@
 
 ## Team Structure (single-session lenses)
 
-relay-v2's MVP runs **one long session per phase, no subagent dispatch**
+relay's MVP runs **one long session per phase, no subagent dispatch**
 (spec.md §12, ADR-14). The v1 "team" is preserved here as a set of
 **analysis lenses you work yourself, in sequence, within the one
 session** — not agents you spawn. Treat each as a distinct hat you put

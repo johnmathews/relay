@@ -1,4 +1,4 @@
-# relay-v2 — example compose (Phase 8).
+# relay — example compose (Phase 8).
 #
 # Runs the relay backend (which also serves the built dashboard at
 # http://localhost:7800/). Copy to docker-compose.yml and adjust.

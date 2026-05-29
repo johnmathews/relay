@@ -1,5 +1,5 @@
 [project]
-name = "relay-v2"
+name = "relay"
 version = "0.1.0"
 description = "Chain agent sessions for unattended multi-phase engineering work"
 readme = "README.md"
@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [project.scripts]
-relay = "relay_v2.__main__:main"
+relay = "relay.__main__:main"
 
 [dependency-groups]
 dev = [
@@ -46,21 +46,21 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/relay_v2"]
+packages = ["src/relay"]
 
 # The canonical engineering-team skill lives at the repo root in
-# `skills/` (spec.md §12), outside the `src/relay_v2` package.
-# force-include maps it into the wheel as `relay_v2/skills/` so
+# `skills/` (spec.md §12), outside the `src/relay` package.
+# force-include maps it into the wheel as `relay/skills/` so
 # `harness.skills.bundled_skill_dir()` (ADR-44) can resolve a bundled
 # copy when relay is installed from a wheel — relay then injects that
 # path into pi via `pi --skill <path>` at spawn time. Editable/source
 # installs resolve the repo-root tree directly via the same resolver.
 [tool.hatch.build.targets.wheel.force-include]
-"skills" = "relay_v2/skills"
+"skills" = "relay/skills"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q --cov=relay_v2 --cov-report=term-missing"
+addopts = "-q --cov=relay --cov-report=term-missing"
 # Phase 3 (ADR-24): the REST/SSE suite uses httpx.AsyncClient against the
 # ASGI app, so async test functions need a running loop. "auto" lets
 # pytest-asyncio drive bare `async def test_*` without per-test markers;
@@ -69,9 +69,9 @@ addopts = "-q --cov=relay_v2 --cov-report=term-missing"
 asyncio_mode = "auto"
 
 [tool.coverage.run]
-# The editable install resolves the package as ``relay_v2`` (.pth -> src/);
+# The editable install resolves the package as ``relay`` (.pth -> src/);
 # instrument by module name, not the ``src`` path, or coverage reports 0%.
-source = ["relay_v2"]
+source = ["relay"]
 
 [tool.coverage.report]
 show_missing = true
@@ -88,5 +88,5 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.mypy]
 python_version = "3.13"
-packages = ["relay_v2"]
+packages = ["relay"]
 strict = true

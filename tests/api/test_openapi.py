@@ -13,8 +13,8 @@ from pathlib import Path
 
 from openapi_spec_validator import validate
 
-from relay_v2.app import create_app
-from relay_v2.config import Settings
+from relay.app import create_app
+from relay.config import Settings
 
 # spec.md §7 surface (path templates as FastAPI emits them).
 EXPECTED_PATHS = {

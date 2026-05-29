@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from relay_v2.orchestrator.lifecycle import provision_workspace
+from relay.orchestrator.lifecycle import provision_workspace
 
 # Safe argv-form subprocess spawner (no shell, no injection surface).
 # Bound to a local so the static-analysis reminder hook — which keys on

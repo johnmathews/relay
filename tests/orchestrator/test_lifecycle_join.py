@@ -7,9 +7,9 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from relay_v2.config import Settings
-from relay_v2.db import init_db, make_async_engine, make_async_sessionmaker
-from relay_v2.orchestrator.lifecycle import (
+from relay.config import Settings
+from relay.db import init_db, make_async_engine, make_async_sessionmaker
+from relay.orchestrator.lifecycle import (
     close_iter,
     compose_join_prompt,
     create_run,
@@ -124,7 +124,7 @@ def test_latest_fanout_iter_returns_most_recent_fanout_iter(tmp_path: Path) -> N
         try:
             # Project + run row (project FK satisfied by direct insert).
             async with sm() as s:
-                from relay_v2.db.models import Project
+                from relay.db.models import Project
                 s.add(Project(root_path=str(tmp_path), name="p"))
                 await s.commit()
                 project = (await s.scalars(

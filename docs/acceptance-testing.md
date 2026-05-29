@@ -348,7 +348,7 @@ MVP-acceptance phase with no open doc gaps.
   with the `tail` exit-code hazard.
 - ~~ADR-30 carries the pre-rename ghcr image name.~~ Closed —
   ADR-42 appended documenting the GHCR repo + image rename
-  `relay-v2 → relay` under the append-only convention; ADR-30 is
+  `relay → relay` under the append-only convention; ADR-30 is
   left as-is per CLAUDE.md.
 - ~~`docs/motivation.md` Goal 3 doesn't reflect inline-editor
   workflow.~~ Closed — Goal 3 rephrased to name the 14a–14f review

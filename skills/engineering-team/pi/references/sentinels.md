@@ -6,7 +6,7 @@ from v1 (spec.md §12 mandates a verbatim port of the v1 `text_sentinels`
 strategy); this doc mirrors it for skill consumers and adds the
 operational "when to emit" guidance the skill needs.
 
-> Contract source in relay-v2: `docs/spec.md` §4.3 (signaling) and §12
+> Contract source in relay: `docs/spec.md` §4.3 (signaling) and §12
 > (skill port). The harness's text-sentinel parser implements this
 > grammar; its fixtures port from v1's `tests/test-parsing.sh`.
 
@@ -162,7 +162,7 @@ Then merge.
 ## Who emits
 
 Only the lead engineer (you, the single session) emits sentinels in the
-user-facing transcript. relay-v2's MVP runs one session per iter with no
+user-facing transcript. relay's MVP runs one session per iter with no
 subagent dispatch, so there is no subagent text to worry about. When relay
 later gains subagent dispatch (spec.md §12, post-MVP), dispatched children
 must NOT emit sentinels — only the top-level session's assistant text is
@@ -224,7 +224,7 @@ When the pause asks the user to **read or edit a file** (typically the
 improvement plan or a discussion note), add the optional `review_path`
 attribute to point at the file. The dashboard reads this and offers an
 inline editor; the run's event store records each save as an
-`artifact_edited` event (relay-v2 spec §3.2, ADR-40).
+`artifact_edited` event (relay spec §3.2, ADR-40).
 
 `review_path` is **relative to `$RELAY_RUN_DIR`** (the run's artifacts
 dir, `<project_root>/.relay/runs/<run_id>/`). Absolute paths, `..`

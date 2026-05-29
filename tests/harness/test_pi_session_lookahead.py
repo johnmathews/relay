@@ -12,8 +12,8 @@ import asyncio
 import json
 from typing import Any
 
-from relay_v2.harness.pi import PiSession
-from relay_v2.harness.protocol import AssistantText, SessionEnded
+from relay.harness.pi import PiSession
+from relay.harness.protocol import AssistantText, SessionEnded
 
 DONE = "All done.\n\n[[engteam:done]]"
 USAGE_MSGS = [

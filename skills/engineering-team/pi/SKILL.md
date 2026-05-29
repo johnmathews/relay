@@ -21,9 +21,9 @@ a lead engineer who works each phase as a single long-running session. The
 skill is split into a thin router (this file) plus per-phase docs in
 `phases/` and cross-cutting reference docs in `references/`.
 
-> **v2 / single-session note.** This is the relay-v2 port of the
+> **v2 / single-session note.** This is the relay port of the
 > engineering-team skill (spec.md §12, ADR-14). In v1 the lead engineer
-> dispatched Task-tool subagents per role. relay-v2 runs
+> dispatched Task-tool subagents per role. relay runs
 > **one long session per phase** — the "Engineer N" / "Product Owner"
 > roles below are *analysis lenses you work yourself in sequence*, not
 > agents you spawn. For coarse-grained parallelism across whole

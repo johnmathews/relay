@@ -7,7 +7,7 @@ captured streams as ground truth, not assumptions.
 
 from __future__ import annotations
 
-from relay_v2.harness import (
+from relay.harness import (
     AssistantText,
     AssistantTextDelta,
     SessionEnded,
@@ -16,7 +16,7 @@ from relay_v2.harness import (
     ToolUseStart,
     ToolUseUpdate,
 )
-from relay_v2.harness.pi import map_pi_events
+from relay.harness.pi import map_pi_events
 
 from .conftest import load_jsonl
 

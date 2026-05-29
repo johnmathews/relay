@@ -22,8 +22,8 @@ from pathlib import Path
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from relay_v2.app import create_app
-from relay_v2.config import Settings
+from relay.app import create_app
+from relay.config import Settings
 from tests.orchestrator.scripted_harness import ScriptedHarness, TextScript
 
 DONE_BLOCK = "All work complete.\n\n[[engteam:done]]"
@@ -108,8 +108,8 @@ def test_delete_project_409_when_run_is_active(tmp_path: Path) -> None:
     refuses; the caller must cancel the run first."""
     from sqlalchemy import select
 
-    from relay_v2.db.models import Project
-    from relay_v2.orchestrator.lifecycle import (
+    from relay.db.models import Project
+    from relay.orchestrator.lifecycle import (
         create_run,
         open_iter,
         set_run_status,

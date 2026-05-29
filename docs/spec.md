@@ -27,7 +27,7 @@ orchestrator. Single-user, localhost-only.
 ## 2. Architecture
 
 ```
-┌─ FastAPI Python process (relay-v2 daemon) ──────────────────────────┐
+┌─ FastAPI Python process (relay daemon) ──────────────────────────┐
 │                                                                     │
 │   ┌─ HTTP/REST routes ─┐                                            │
 │   │  /api/runs         │                                            │
@@ -234,7 +234,7 @@ specifically.
 ### 4.1 Protocols and event types
 
 ```python
-# relay_v2/harness/protocol.py
+# relay/harness/protocol.py
 
 from typing import Protocol, AsyncIterator, Literal
 from dataclasses import dataclass
@@ -605,7 +605,7 @@ Concerns the pseudocode elides, all owned by the orchestrator:
   run; this keeps `iters.exit_reason` within §3.1's set (the marker
   headline is preserved in `signal_args` / the `run_ended` summary).
 - **DB access.** All orchestrator I/O uses an async (`aiosqlite`) engine
-  encapsulated in `relay_v2.db` (ADR-21); the sync engine survives only
+  encapsulated in `relay.db` (ADR-21); the sync engine survives only
   for `create_all` schema bootstrap (ADR-17). The event log is the
   single source of truth (ADR-10): every status transition also appends
   an event; `runs.status` / `iters.*` are a projection updated in step.
@@ -759,7 +759,7 @@ Streamable HTTP headers — same auth path as REST.
 SDK (`mcp.server.fastmcp.FastMCP` + `mcp.streamable_http_app()`), not
 the standalone `jlowin/fastmcp`. Pinned `mcp>=1.27.1,<2` — the `<2`
 cap is load-bearing (v2 rearchitects the transport). The server is
-mounted in `relay_v2.app`'s lifespan with `async with
+mounted in `relay.app`'s lifespan with `async with
 mcp.session_manager.run():` wrapping the existing body (a sub-app
 mount does not auto-run its lifespan). `relay__tail_events` is
 implemented as a bounded snapshot of events after `since_seq` (a
@@ -939,7 +939,7 @@ Per ADR-10.
   available for the future prompt-library feature.
 
 > **Phase-7 implementation note (ADR-29).** The mirror lives in
-> `src/relay_v2/observability/` and is wired into the orchestrator as an
+> `src/relay/observability/` and is wired into the orchestrator as an
 > `Instrumentation` object passed by parameter (default: a literal
 > no-op). Span tree: `relay.run` (opened/closed in `RelayCore._run`'s
 > `try/finally`, so a crashed run still closes its span) → `relay.iter`
@@ -1048,7 +1048,7 @@ Pi-side env vars (passed through to subprocess):
   GitHub Actions, per the user's global Docker/CI policy.
 
 > **Phase-8 implementation note (ADR-30).** The static-serving and
-> packaging above are implemented. `relay_v2.api.static.mount_frontend`
+> packaging above are implemented. `relay.api.static.mount_frontend`
 > conditionally mounts the built SPA at `/` (a `StaticFiles` subclass
 > with vue-router history-mode fallback), appended **after** the REST
 > routers and `/mcp` in the app lifespan so it never shadows an API
@@ -1076,7 +1076,7 @@ relay cancel <run_id>              # cancel
 > **Accuracy note (Phase-8 review, ADR-30; updated 2026-05-25 for
 > ADR-44).** This is the *target* command surface. As of the MVP, only
 > `relay serve` and `relay --version` are implemented in
-> `relay_v2.__main__`. `relay start` / `status` / `cancel` are a
+> `relay.__main__`. `relay start` / `status` / `cancel` are a
 > post-MVP CLI convenience — in the MVP, run create/list/cancel is
 > done through the dashboard, the REST API (§7), or the MCP server
 > (§8), which is the documented and tested path. The earlier
@@ -1087,7 +1087,7 @@ relay cancel <run_id>              # cancel
 ## 12. Engineering-team skill port
 
 Per ADR-14. The skill lives at `skills/engineering-team/` inside
-`relay-v2`. Differences from v1:
+`relay`. Differences from v1:
 
 - **Preamble format** keeps `RELAY_PHASE` and `RELAY_RUN_DIR` lines.
   `RELAY_RUN_DIR` resolves to `<project_root>/.relay/runs/<run_id>/`
@@ -1112,8 +1112,8 @@ Per ADR-14. The skill lives at `skills/engineering-team/` inside
 
 **Phase-6 implementation note (ADR-28, delivery model superseded by
 ADR-44).** The skill is built at `skills/engineering-team/` (repo
-root, outside the `src/relay_v2` wheel; a hatch `force-include` maps
-it into built wheels as `relay_v2/skills/`). As of ADR-44 (2026-05-25)
+root, outside the `src/relay` wheel; a hatch `force-include` maps
+it into built wheels as `relay/skills/`). As of ADR-44 (2026-05-25)
 the skill is **injected directly into pi via `--skill <bundled-path>`**
 on every spawn — `Settings.pi_skill_paths` resolves to the bundled
 tree by default, `PiHarness._build_argv` appends one `--skill` pair
@@ -1135,7 +1135,7 @@ inlines the quality gate (lint + types + tests + security review +
 journal) and the FF-merge because the pi harness has no `/done` or
 `/merge-push` Claude Code slash-skill; (5) sentinel source-doc
 pointers repoint to this spec; (6) worked-example commands use
-relay-v2's `uv run` gate. The sentinel **grammar** is unchanged from
+relay's `uv run` gate. The sentinel **grammar** is unchanged from
 v1 (this section's mandate). Behavioral acceptance (a multi-iter pi
 run against the v1 `eng-team-demo` fixture) is a documented manual
 step, gated like the other `PI_INTEGRATION=1` e2e checks — see

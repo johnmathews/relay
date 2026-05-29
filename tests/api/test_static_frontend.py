@@ -27,9 +27,9 @@ from pathlib import Path
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-import relay_v2.api.static as static_mod
-from relay_v2.app import create_app
-from relay_v2.config import Settings
+import relay.api.static as static_mod
+from relay.app import create_app
+from relay.config import Settings
 from tests.orchestrator.scripted_harness import ScriptedHarness, TextScript
 
 DONE_BLOCK = "All work complete.\n\n[[engteam:done]]"

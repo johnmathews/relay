@@ -16,11 +16,11 @@ from pathlib import Path
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from relay_v2.config import Settings
-from relay_v2.core import RelayCore, _RunState
-from relay_v2.db import init_db
-from relay_v2.db.models import Event, Run
-from relay_v2.orchestrator.lifecycle import (
+from relay.config import Settings
+from relay.core import RelayCore, _RunState
+from relay.db import init_db
+from relay.db.models import Event, Run
+from relay.orchestrator.lifecycle import (
     close_iter,
     create_run,
     open_iter,
@@ -507,7 +507,7 @@ def test_cancelled_before_start_no_iter(tmp_path: Path) -> None:
     async def scenario() -> str:
         # Use a fresh-context harness that would happily emit DONE if
         # the loop ran — if the guard is broken, we'd see an iter.
-        from relay_v2.orchestrator.lifecycle import RunContext
+        from relay.orchestrator.lifecycle import RunContext
         from tests.orchestrator.scripted_harness import TextScript
         harness = ScriptedHarness([TextScript("ok\n\n[[engteam:done]]")])
         core = RelayCore(settings, harness=harness)
@@ -562,7 +562,7 @@ def test_cancelled_before_start_no_iter(tmp_path: Path) -> None:
             assert run is not None
             assert run.status == "cancelled"
             # No iter rows — the loop never started.
-            from relay_v2.db.models import Iter
+            from relay.db.models import Iter
             iters = list(
                 s.scalars(select(Iter).where(Iter.run_id == run_id))
             )

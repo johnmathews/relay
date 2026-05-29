@@ -11,7 +11,7 @@
 ## What it is
 
 Fanout-join is the orchestrator-level mechanism for parallel work in
-relay-v2. The agent declares N child runs via a closing sentinel; the
+relay. The agent declares N child runs via a closing sentinel; the
 orchestrator spawns each as its own run row with its own worktree,
 the parent waits in a non-terminal `awaiting_children` status, and
 when every child settles the orchestrator runs **one more iter on

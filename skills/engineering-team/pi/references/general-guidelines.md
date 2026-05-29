@@ -6,7 +6,7 @@
 
 ## General Guidelines
 
-**Single-session discipline (v2):** relay-v2's MVP runs one long
+**Single-session discipline (v2):** relay's MVP runs one long
 session per phase with no subagent dispatch. The v1 "subagent
 coordination" rules become **self-review discipline** — you are the
 only reviewer, so the cross-checking that v1 distributed across agents

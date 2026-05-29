@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from relay_v2.harness.protocol import SignalConfig
-from relay_v2.harness.signaling.mcp_tools import detect_in_tool
+from relay.harness.protocol import SignalConfig
+from relay.harness.signaling.mcp_tools import detect_in_tool
 
 
 def test_mcp_tools_strategy_raises_not_implemented() -> None:

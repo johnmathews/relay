@@ -89,10 +89,10 @@ describe('RunSidebar', () => {
   it('shows the project name as a title row when project is provided', () => {
     const w = mountSidebar({
       selection: { kind: 'overview' },
-      project: { id: 7, name: 'relay-v2' },
+      project: { id: 7, name: 'relay' },
     })
     const title = w.get('[data-testid="sidebar-project-title"]')
-    expect(title.text()).toContain('relay-v2')
+    expect(title.text()).toContain('relay')
     expect(title.attributes('href')).toBe('/projects/7')
   })
 

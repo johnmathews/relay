@@ -328,7 +328,7 @@ export interface paths {
         /**
          * List Artifacts
          * @description Directory listing of the run's artifacts dir (thin adapter over
-         *     the shared :func:`~relay_v2.api.files.serve_listing`).
+         *     the shared :func:`~relay.api.files.serve_listing`).
          */
         get: operations["list_artifacts_api_runs__run_id__artifacts_get"];
         put?: never;
@@ -349,7 +349,7 @@ export interface paths {
         /**
          * Get Artifact
          * @description Text content of one artifact file (thin adapter over the shared
-         *     :func:`~relay_v2.api.files.serve_file`; binary → 415, >5 MiB →
+         *     :func:`~relay.api.files.serve_file`; binary → 415, >5 MiB →
          *     413).
          */
         get: operations["get_artifact_api_runs__run_id__artifacts__file_path__get"];
@@ -357,7 +357,7 @@ export interface paths {
          * Put Artifact
          * @description Write text content to a sandboxed artifact during a paused review
          *     (spec §6.2, §7; ADR-40). Thin adapter over
-         *     :meth:`relay_v2.core.RelayCore.write_artifact`.
+         *     :meth:`relay.core.RelayCore.write_artifact`.
          *
          *     Body: ``{"content": str, "editor"?: str}``. The endpoint is the
          *     **single write entry point** on the run artifacts dir; it requires

@@ -1,5 +1,5 @@
 {
-  "name": "relay-v2-frontend",
+  "name": "relay-frontend",
   "version": "0.1.0",
   "private": true,
   "type": "module",

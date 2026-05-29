@@ -17,7 +17,7 @@ from typing import Any
 import httpx
 from fastapi import FastAPI
 
-from relay_v2.api.files import (
+from relay.api.files import (
     SandboxViolation,
     resolve_within_sandbox,
     router,

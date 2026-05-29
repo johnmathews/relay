@@ -7,7 +7,7 @@ synthesizer iter whose user prompt is the `join_prompt` you supplied and
 whose body trailer lists every child's `id` / `role` / `status` / `summary` /
 `branch` / `worktree_path`.
 
-This is the only mechanism for parallel work in relay-v2 today. Within a
+This is the only mechanism for parallel work in relay today. Within a
 single iter you still work sequentially — the lenses in Phase 1, the units
 in Phase 3. Fanout operates at a coarser grain: an entire iter dispatches,
 the parent waits, the parent resumes with the merged results.
@@ -15,8 +15,8 @@ the parent waits, the parent resumes with the merged results.
 > Contract source: `docs/spec.md` §3 (event taxonomy: `subagent_dispatch`,
 > `subagent_return`, `child_runs_resolved`), §5.4 (sentinel grammar), §6
 > (orchestrator: fanout / join lifecycle). The harness's sentinel parser
-> implements the grammar (`src/relay_v2/harness/signaling/sentinels.py`,
-> payload model in `src/relay_v2/harness/signaling/fanout.py`).
+> implements the grammar (`src/relay/harness/signaling/sentinels.py`,
+> payload model in `src/relay/harness/signaling/fanout.py`).
 
 ## When to emit `fanout`
 
@@ -77,7 +77,7 @@ existing `[[engteam:...]]` namespace:
     [[engteam:fanout]]
 
 The JSON schema (validated by `FanoutPayload` —
-`src/relay_v2/harness/signaling/fanout.py`):
+`src/relay/harness/signaling/fanout.py`):
 
 | Field         | Type          | Required | Notes                                                  |
 | ------------- | ------------- | -------- | ------------------------------------------------------ |
@@ -183,7 +183,7 @@ backend in parallel and merge findings.
     },
     {
       "role": "backend-audit",
-      "prompt": "Audit src/relay_v2/api and src/relay_v2/orchestrator for: route handlers that bypass RelayCore, missing input validation, and untested error paths. Write findings to $RELAY_RUN_DIR/backend-audit.md.\n\n[[engteam:prompt-start]]\nyou are auditing the backend; follow phase-1 evaluation discipline...\n[[engteam:prompt-end]]\n\n[[engteam:done]]"
+      "prompt": "Audit src/relay/api and src/relay/orchestrator for: route handlers that bypass RelayCore, missing input validation, and untested error paths. Write findings to $RELAY_RUN_DIR/backend-audit.md.\n\n[[engteam:prompt-start]]\nyou are auditing the backend; follow phase-1 evaluation discipline...\n[[engteam:prompt-end]]\n\n[[engteam:done]]"
     }
   ],
   "join_prompt": "Read frontend-audit.md and backend-audit.md from each child's $RELAY_RUN_DIR (paths in the trailer). Cross-reference findings, deduplicate, and produce $RELAY_RUN_DIR/unified-fix-list.md ordered by severity. Then emit [[engteam:handoff]] with a prompt for Phase 3 to begin work on the unified list."

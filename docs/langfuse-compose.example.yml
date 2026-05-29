@@ -1,4 +1,4 @@
-# Self-hosted Langfuse — minimal example for relay-v2's OTel mirror.
+# Self-hosted Langfuse — minimal example for relay's OTel mirror.
 #
 # Langfuse v3 self-host is a multi-service stack (web + worker +
 # Postgres + ClickHouse + Redis + S3/MinIO). Reproducing and
@@ -10,7 +10,7 @@
 #   cd langfuse && docker compose up -d        # serves http://localhost:3000
 #
 # Then, in the Langfuse UI: create an organisation + project, copy the
-# project's API keys, and wire relay-v2 to it. relay only needs three
+# project's API keys, and wire relay to it. relay only needs three
 # env vars (spec.md §11; see docs/observability.md):
 #
 #   RELAY_OTEL_EXPORT=langfuse

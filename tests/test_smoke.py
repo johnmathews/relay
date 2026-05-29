@@ -11,10 +11,10 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import inspect
 
-from relay_v2 import __version__
-from relay_v2.app import create_app
-from relay_v2.config import Settings
-from relay_v2.db import make_engine
+from relay import __version__
+from relay.app import create_app
+from relay.config import Settings
+from relay.db import make_engine
 
 SPEC_TABLES = {"projects", "users", "prompts", "runs", "iters", "events"}
 
@@ -51,7 +51,7 @@ def test_version_constant_is_semver_ish() -> None:
 
 
 def test_cli_version_matches_constant(capsys: pytest.CaptureFixture[str]) -> None:
-    from relay_v2.__main__ import main
+    from relay.__main__ import main
 
     with pytest.raises(SystemExit) as exc:
         main(["--version"])
