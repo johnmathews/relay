@@ -121,6 +121,14 @@ state from the proposal alone.
 
 ## Deferred — kind-colour contrast
 
+**Resolved 2026-05-29** in
+[`260529-kind-colour-contrast-fix.md`](260529-kind-colour-contrast-fix.md).
+Option (b) from the menu below — solid bolder hues across both
+themes, with tool swapped off amber to teal to preserve the
+amber-for-pause-banner reservation. Lowest post-fix ratio is
+4.57:1 (light-theme assistant border vs row-bg); the audit
+numbers below remain useful as the "before" baseline.
+
 The proposal §Accessibility nominates a WCAG contrast spot-check on
 each kind colour against the row background. I computed real ratios
 for both themes against both surfaces; numbers below. Every kind

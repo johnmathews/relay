@@ -47,31 +47,21 @@
   --color-success: #4ec9a3;
   --color-running: #f08a3e;
 
-  /* Per-row-type palette — dark theme.
-     Tuned for legibility on the dark base: low-alpha tint over the
-     surface for the background, higher-alpha for the border. The
-     header strip on a card inherits the bg via mix-blend in the row
-     CSS so the body stays calm.
-
-     Phase 7 contrast audit (2026-05-29): every kind border below
-     fails WCAG 1.4.11 non-text contrast (3:1) against --color-surface.
-     Composited ratios: assistant 2.40, thinking 2.30, tool 2.72,
-     signal 3.02, other 1.95. Light-theme solid colours below are
-     also under (signal 1.74, tool 1.92). Deferred from Phase 7:
-     fixing requires a visual rebalance across 5 kinds × 2 themes
-     and is independent of the structural ARIA / empty-state work
-     shipped in this commit. Tracked in journal/260529-run-detail-
-     phase-7.md §"Deferred — kind-colour contrast". */
+  /* Per-row-type palette — dark theme. Low-alpha tint for the row
+     background, solid hue for the border (≥ 3:1 vs surface AND vs
+     row-bg per WCAG 1.4.11). Tool is teal, NOT amber — amber
+     (#e0b341) is reserved for human-attention affordances (pause
+     banner). */
   --color-row-assistant-bg: rgba(96, 165, 250, 0.10);
-  --color-row-assistant-border: rgba(96, 165, 250, 0.45);
+  --color-row-assistant-border: #60a5fa;
   --color-row-thinking-bg: rgba(167, 139, 250, 0.10);
-  --color-row-thinking-border: rgba(167, 139, 250, 0.45);
-  --color-row-tool-bg: rgba(251, 191, 36, 0.08);
-  --color-row-tool-border: rgba(251, 191, 36, 0.40);
-  --color-row-signal-bg: rgba(74, 222, 128, 0.09);
-  --color-row-signal-border: rgba(74, 222, 128, 0.45);
-  --color-row-other-bg: rgba(148, 163, 184, 0.07);
-  --color-row-other-border: rgba(148, 163, 184, 0.35);
+  --color-row-thinking-border: #a78bfa;
+  --color-row-tool-bg: rgba(45, 212, 191, 0.10);
+  --color-row-tool-border: #2dd4bf;
+  --color-row-signal-bg: rgba(74, 222, 128, 0.10);
+  --color-row-signal-border: #4ade80;
+  --color-row-other-bg: rgba(148, 163, 184, 0.08);
+  --color-row-other-border: #94a3b8;
 }
 
 :root[data-theme='light'] {
@@ -101,19 +91,19 @@
   --color-success: #1f7a4d;
   --color-running: #b15a00;
 
-  /* Per-row-type palette — light theme.
-     Pastel surfaces (very low chroma) with the same hue at higher
-     saturation for the border, mirroring the dark theme contract. */
+  /* Per-row-type palette — light theme. Pastel surfaces with darker
+     (Tailwind 600/700-band) borders to clear ≥ 3:1 vs white. Tool
+     is teal — amber is reserved for the pause banner. */
   --color-row-assistant-bg: #eff6ff;
-  --color-row-assistant-border: #60a5fa;
+  --color-row-assistant-border: #2563eb;
   --color-row-thinking-bg: #f5f3ff;
-  --color-row-thinking-border: #a78bfa;
-  --color-row-tool-bg: #fef9c3;
-  --color-row-tool-border: #eab308;
+  --color-row-thinking-border: #7c3aed;
+  --color-row-tool-bg: #ccfbf1;
+  --color-row-tool-border: #0f766e;
   --color-row-signal-bg: #dcfce7;
-  --color-row-signal-border: #4ade80;
+  --color-row-signal-border: #15803d;
   --color-row-other-bg: #f1f5f9;
-  --color-row-other-border: #94a3b8;
+  --color-row-other-border: #475569;
 }
 
 /* Auto: follow OS preference. Only applies when no explicit data-theme
@@ -149,15 +139,15 @@
     --color-running: #b15a00;
 
     --color-row-assistant-bg: #eff6ff;
-    --color-row-assistant-border: #60a5fa;
+    --color-row-assistant-border: #2563eb;
     --color-row-thinking-bg: #f5f3ff;
-    --color-row-thinking-border: #a78bfa;
-    --color-row-tool-bg: #fef9c3;
-    --color-row-tool-border: #eab308;
+    --color-row-thinking-border: #7c3aed;
+    --color-row-tool-bg: #ccfbf1;
+    --color-row-tool-border: #0f766e;
     --color-row-signal-bg: #dcfce7;
-    --color-row-signal-border: #4ade80;
+    --color-row-signal-border: #15803d;
     --color-row-other-bg: #f1f5f9;
-    --color-row-other-border: #94a3b8;
+    --color-row-other-border: #475569;
   }
 }
 
