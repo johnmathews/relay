@@ -308,9 +308,10 @@ async function onConfirmUnregister(): Promise<void> {
               type="button"
               class="project-view__unregister"
               data-testid="unregister-button"
+              title="Remove project from relay. Files on disk will not be changed. Custom prompts will be lost."
               @click="confirmUnregister = true"
             >
-              Unregister
+              Remove project
             </button>
           </div>
           <p class="project-view__path">
@@ -320,13 +321,13 @@ async function onConfirmUnregister(): Promise<void> {
             v-if="confirmUnregister"
             class="project-view__confirm"
             role="alertdialog"
-            aria-label="Confirm unregister"
+            aria-label="Confirm remove project"
             data-testid="unregister-confirm"
           >
             <p class="project-view__confirm-text">
-              Unregister “{{ project.name }}” from relay? This only
-              removes it from relay — it does NOT delete any files on
-              disk. You can register the same path again later.
+              Remove “{{ project.name }}” from relay? Files on disk
+              will not be changed, but custom prompts will be lost.
+              You can register the same path again later.
             </p>
             <p
               v-if="unregisterError"
@@ -341,7 +342,7 @@ async function onConfirmUnregister(): Promise<void> {
                 data-testid="unregister-confirm-button"
                 @click="onConfirmUnregister"
               >
-                Unregister
+                Remove project
               </ActionButton>
               <button
                 type="button"
@@ -691,7 +692,8 @@ async function onConfirmUnregister(): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 1rem;
-  max-width: 1100px;
+  max-width: 1200px;
+  margin: 0 auto;
 }
 
 .project-view__title-row {

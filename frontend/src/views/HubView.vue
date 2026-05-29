@@ -8,6 +8,7 @@ import { storeToRefs } from 'pinia'
 import { useProjectsUiStore } from '@/stores/projects'
 import ProjectList from '@/components/projects/ProjectList.vue'
 import RegisterProjectForm from '@/components/projects/RegisterProjectForm.vue'
+import HomeIntroPanel from '@/components/projects/HomeIntroPanel.vue'
 
 const ui = useProjectsUiStore()
 const { registerFormOpen } = storeToRefs(ui)
@@ -35,6 +36,8 @@ const { registerFormOpen } = storeToRefs(ui)
     />
 
     <ProjectList />
+
+    <HomeIntroPanel />
   </section>
 </template>
 
@@ -44,6 +47,7 @@ const { registerFormOpen } = storeToRefs(ui)
   flex-direction: column;
   gap: 1.25rem;
   max-width: 1100px;
+  margin: 0 auto;
 }
 
 .hub__header {

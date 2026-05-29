@@ -352,7 +352,7 @@ describe('ProjectView', () => {
     expect(w.find('.md-stub').exists()).toBe(false)
   })
 
-  it('W8: Unregister confirms (files NOT deleted copy) → DELETE project → navigates to /', async () => {
+  it('W8: Remove project confirms (files NOT deleted copy) → DELETE project → navigates to /', async () => {
     deleteProjectMutate.mockResolvedValue(undefined)
     const w = mountView()
     await flushPromises()
@@ -360,9 +360,9 @@ describe('ProjectView', () => {
     await w.get('[data-testid="unregister-button"]').trigger('click')
     const confirm = w.find('[data-testid="unregister-confirm"]')
     expect(confirm.exists()).toBe(true)
-    // The confirm copy must state files on disk are NOT deleted.
+    // The confirm copy must reassure that files on disk are preserved.
     expect(confirm.text()).toContain(
-      'does NOT delete any files on disk',
+      'Files on disk will not be changed',
     )
 
     await w

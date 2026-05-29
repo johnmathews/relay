@@ -69,4 +69,14 @@ describe('HubView', () => {
     expect(toggle.text()).toBe('New project')
     expect(w.find('.register-form-stub').exists()).toBe(false)
   })
+
+  it('renders the intro panel below the project list', async () => {
+    projectsData.value = []
+    const w = mountHub()
+    await flushPromises()
+    const intro = w.find('[data-testid="home-intro"]')
+    expect(intro.exists()).toBe(true)
+    expect(intro.text()).toContain('What is Relay?')
+    expect(intro.text()).toContain('engineering-team')
+  })
 })
