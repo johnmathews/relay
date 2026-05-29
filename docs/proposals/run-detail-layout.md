@@ -23,11 +23,11 @@ All phases complete. Frontend-only; no backend, REST, SSE, OTel,
 sentinel, or schema change. Targets `RunDetailView.vue` and the
 panes under `frontend/src/components/runs/`.
 
-Deferred follow-up (documented in `journal/260529-run-detail-phase-
-7.md` §"Deferred — kind-colour contrast"): a contrast pass on the
-`--color-row-*` tokens — every kind border currently fails WCAG
-1.4.11 non-text contrast on both themes. Multi-token visual
-rebalance, independent of the structural a11y work.
+Phase-7 deferred kind-colour contrast resolved 2026-05-29 in
+`journal/260529-kind-colour-contrast-fix.md`: dark-theme borders
+moved to solid hex, light-theme borders shifted to Tailwind 600/700
+band, tool kind swapped off amber (reserved) to teal. Lowest ratio
+4.57:1 — every kind clears WCAG 1.4.11's 3:1 non-text bar.
 
 ## Problem
 
