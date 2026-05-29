@@ -19,7 +19,7 @@
 // exposed via `data-event-count` (TOTAL) and `data-rendered-rows`
 // (windowed DOM count) for the plan.md live-tail parity check.
 
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import ToolCallCard from './ToolCallCard.vue'
 import SignalCard from './SignalCard.vue'
@@ -461,18 +461,7 @@ function onScroll(): void {
   // handler, but since we always assign to the bottom in that case
   // distanceFromBottom ≤ 0 and the pin stays true.
   isPinned.value = distanceFromBottom(el) <= PIN_TOLERANCE_PX
-}
-
-/**
- * Programmatic scroll target from the minimap. Clamps to the valid
- * range and unsets the auto-follow pin so jumping back up doesn't
- * snap-to-bottom on the next event.
- */
-function scrollToPixel(px: number): void {
-  const el = scrollEl.value
-  if (el == null) return
-  const max = Math.max(0, el.scrollHeight - el.clientHeight)
-  el.scrollTop = Math.max(0, Math.min(px, max))
+  measureViewportRange()
 }
 
 function scrollToBottom(): void {
@@ -575,10 +564,32 @@ watch(
     // doesn't lag a frame behind the appended rows.
     const el = scrollEl.value
     if (el != null) scrollHeight.value = el.scrollHeight
+    measureViewportRange()
     if (!isPinned.value) return
     scrollToBottom()
   },
 )
+
+/**
+ * Row-expansion changes (per-row override, group expand/collapse,
+ * type-default toggle) mutate real DOM heights, which shifts the
+ * mapping from scrollTop → display-row index. Re-measure on the next
+ * tick so the minimap overlay tracks the new layout.
+ */
+watch(
+  [rowOverrides, groupExpanded, () => prefs.expanded],
+  async () => {
+    await nextTick()
+    measureViewportRange()
+  },
+  { deep: true },
+)
+
+onMounted(() => {
+  // Initial measurement once the DOM exists — without this the
+  // overlay would show {0, 0} until the user first scrolls.
+  void nextTick().then(measureViewportRange)
+})
 
 /**
  * Compact tick descriptor for the minimap — one entry per row in the
@@ -587,9 +598,130 @@ watch(
  * Only the `type` is needed; the minimap colours each tick from the
  * existing `--color-row-*-border` palette via `data-row-type`.
  */
+/**
+ * Minimap ticks — one tick per DISPLAY row (post tool-call grouping).
+ * A 115-tool burst collapsed to a single anchor row contributes one
+ * teal tick, not 115. This makes the minimap's coloured shape match
+ * what the operator actually sees in the timeline: if thinking +
+ * assistant + signal rows are scrolled into view, they appear as
+ * distinct purple / blue / green ticks inside the viewport box,
+ * regardless of how many raw events surround them.
+ *
+ * When the operator expands a group, each tool becomes its own
+ * display row and the minimap regains its 115 individual teal ticks
+ * — still matching the timeline.
+ */
 const minimapTicks = computed(() =>
-  rows.value.map((r, i) => ({ type: r.type, index: i })),
+  displayRows.value.map((item, i) => ({
+    type: item.kind === 'group-anchor' ? 'tool' : item.row.type,
+    index: i,
+  })),
 )
+
+/**
+ * Display-row index range currently visible in the timeline. Both
+ * ticks and the viewport overlay live in display-row index space, so
+ * the box's top / bottom edges align exactly with the ticks of the
+ * rows at the top / bottom of the timeline viewport.
+ *
+ * Updated by measureViewportRange() rather than a pure computed
+ * because the math reads live DOM geometry — `displayRows` has
+ * variable per-row heights (a collapsed group anchor is short, an
+ * expanded thinking row can be hundreds of px). The previous
+ * uniform-`ROW_HEIGHT` estimate framed the wrong slots, especially
+ * around tall expanded rows.
+ */
+const viewportDisplayRange = ref<{ start: number; end: number }>({ start: 0, end: 0 })
+
+/** Walk the rendered <li> elements in the scroll container and pick
+ *  the first / last that overlap with [scrollTop, scrollTop+clientH].
+ *  For non-virtualized lists every row is in the DOM so the mapping
+ *  is exact. For virtualized lists we map the rendered-slice index
+ *  back to the full displayRows index via `window.value.start`. With
+ *  zero rendered li (initial mount / empty list) we fall back to the
+ *  ROW_HEIGHT estimate so the overlay isn't blank for a frame. */
+function measureViewportRange(): void {
+  const el = scrollEl.value
+  const total = displayRows.value.length
+  if (el == null || total === 0) {
+    viewportDisplayRange.value = { start: 0, end: 0 }
+    return
+  }
+  const list = el.querySelector<HTMLElement>('.timeline__list')
+  const lis = list == null
+    ? ([] as HTMLElement[])
+    : Array.from(list.children).filter(
+        (n): n is HTMLElement => n instanceof HTMLElement && n.tagName === 'LI',
+      )
+  const top = scrollTop.value
+  const viewH = Math.max(1, viewportH.value)
+  const bottom = top + viewH
+  if (lis.length === 0) {
+    const firstIdx = Math.max(0, Math.min(total - 1, Math.floor(top / ROW_HEIGHT)))
+    const lastIdx = Math.max(
+      firstIdx,
+      Math.min(total - 1, Math.floor((bottom - 1) / ROW_HEIGHT)),
+    )
+    viewportDisplayRange.value = { start: firstIdx, end: lastIdx }
+    return
+  }
+  const offset = window.value.start
+  let first = -1
+  let last = -1
+  for (let i = 0; i < lis.length; i++) {
+    const li = lis[i]!
+    const liTop = li.offsetTop
+    const liBottom = liTop + li.offsetHeight
+    if (liBottom <= top) continue
+    if (liTop >= bottom) break
+    if (first === -1) first = i
+    last = i
+  }
+  if (first === -1) {
+    const clamp = Math.max(0, Math.min(total - 1, offset))
+    viewportDisplayRange.value = { start: clamp, end: clamp }
+    return
+  }
+  viewportDisplayRange.value = { start: first + offset, end: last + offset }
+}
+
+/**
+ * Scroll the timeline to centre the given display-row index in the
+ * viewport. Used by the minimap click / drag handler. Like
+ * `measureViewportRange`, uses real `offsetTop` of the target row
+ * when it is in the rendered slice (always true for non-virtualized
+ * lists); falls back to the ROW_HEIGHT estimate only when the target
+ * is outside the windowed slice (a follow-up onScroll then re-
+ * measures with real geometry).
+ */
+function scrollToDisplayIndex(idx: number): void {
+  const el = scrollEl.value
+  if (el == null) return
+  const display = displayRows.value
+  if (display.length === 0) return
+  const clamped = Math.max(0, Math.min(display.length - 1, Math.round(idx)))
+  const list = el.querySelector<HTMLElement>('.timeline__list')
+  const lis = list == null
+    ? ([] as HTMLElement[])
+    : Array.from(list.children).filter(
+        (n): n is HTMLElement => n instanceof HTMLElement && n.tagName === 'LI',
+      )
+  const renderedFirst = window.value.start
+  const localIdx = clamped - renderedFirst
+  let targetTop: number
+  let targetHeight: number
+  if (localIdx >= 0 && localIdx < lis.length) {
+    const li = lis[localIdx]!
+    targetTop = li.offsetTop
+    targetHeight = li.offsetHeight
+  } else {
+    targetTop = clamped * ROW_HEIGHT
+    targetHeight = ROW_HEIGHT
+  }
+  const target = targetTop - Math.max(0, viewportH.value - targetHeight) / 2
+  const max = Math.max(0, el.scrollHeight - el.clientHeight)
+  el.scrollTop = Math.max(0, Math.min(target, max))
+}
 
 // Windowed slice over `displayRows` (post tool-call grouping).
 // Below the threshold this returns the full list (the math
@@ -1252,10 +1384,9 @@ function onArtifactEditedClick(path: string): void {
       v-if="minimapTicks.length > 0"
       class="timeline-pane__minimap"
       :ticks="minimapTicks"
-      :scroll-top="scrollTop"
-      :viewport-h="viewportH"
-      :scroll-height="scrollHeight"
-      @scroll-to="scrollToPixel"
+      :viewport-start="viewportDisplayRange.start"
+      :viewport-end="viewportDisplayRange.end"
+      @scroll-to-index="scrollToDisplayIndex"
     />
   </div>
 </template>

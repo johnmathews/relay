@@ -1038,6 +1038,54 @@ describe('TimelinePane', () => {
       const w = mount(TimelinePane, { props: { events: [] } })
       expect(w.find('[data-testid="timeline-minimap"]').exists()).toBe(false)
     })
+
+    // Regression for the variable-row-height viewport-overlay bug
+    // (2026-05-29): the overlay's `[start, end]` slot range used to
+    // be computed from `Math.floor(scrollTop / ROW_HEIGHT)` assuming
+    // uniform 88px rows. With a tall expanded thinking row pushing
+    // surrounding rows out of view (or a short group anchor inflating
+    // the displayed row count past the estimate), the overlay framed
+    // the wrong ticks. The fix walks real DOM `offsetTop`/`offsetHeight`
+    // — verified here by planting unequal geometry on each <li> and
+    // checking the overlay's reported slot range matches the rows
+    // actually overlapping the scroll viewport.
+    it('viewport overlay tracks real per-row heights, not a uniform estimate', async () => {
+      const events: StreamEvent[] = [
+        { seq: 1, kind: 'assistant_text', payload: { text: 'a', kind: 'text' } },
+        { seq: 2, kind: 'assistant_text', payload: { text: 'b', kind: 'thinking' } },
+        { seq: 3, kind: 'signal_emit', payload: { kind: 'phase_start', args: {} } },
+        { seq: 4, kind: 'assistant_text', payload: { text: 'c', kind: 'text' } },
+      ]
+      const w = mount(TimelinePane, { props: { events } })
+      const scrollEl = w.get('.timeline').element as HTMLElement
+      // Plant non-uniform geometry: row 0 = 50px, row 1 = 800px
+      // (a long expanded thinking row), row 2 = 60px, row 3 = 90px.
+      const heights = [50, 800, 60, 90]
+      const lis = scrollEl.querySelectorAll<HTMLElement>('.timeline__list > li')
+      expect(lis.length).toBe(4)
+      let cursor = 0
+      for (let i = 0; i < lis.length; i++) {
+        const li = lis[i]!
+        Object.defineProperty(li, 'offsetTop', { configurable: true, value: cursor })
+        Object.defineProperty(li, 'offsetHeight', { configurable: true, value: heights[i]! })
+        cursor += heights[i]!
+      }
+      Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, value: 1000 })
+      Object.defineProperty(scrollEl, 'clientHeight', { configurable: true, value: 400 })
+      // Scroll so the viewport sits at y=[100, 500] — fully inside
+      // the tall row 1, with row 0 just out of view above and row 2
+      // just out of view below. Under the old `floor(100/88) = 1,
+      // floor(499/88) = 5 → clamped to 3` math the overlay would
+      // frame [1, 3], wrongly including the signal + final assistant.
+      scrollEl.scrollTop = 100
+      scrollEl.dispatchEvent(new Event('scroll'))
+      await w.vm.$nextTick()
+      const overlay = w.get('[data-testid="minimap-viewport"]')
+      const style = overlay.attributes('style') ?? ''
+      // 4 slots → each is 25%. Row 1 → top 25%, height 25%.
+      expect(style).toContain('top: 25%')
+      expect(style).toContain('height: 25%')
+    })
   })
 })
 
