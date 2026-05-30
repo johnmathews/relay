@@ -52,7 +52,7 @@ describe('TimelinePane', () => {
     // expand defaults (2026-05-25). Every mount needs an active
     // Pinia or the store factory throws "no active Pinia".
     setActivePinia(createPinia())
-    localStorage.removeItem('relay.timeline.hiddenKinds')
+    localStorage.removeItem('relay.timeline.kindFilter')
     // TimelinePane calls useRouter() + useRoute() (Phase 1 fix —
     // onArtifactEditedClick pushes ?view=artifact:<path>). Every mount
     // needs a router plugin or vue-router throws "No active router".

@@ -453,18 +453,31 @@ appended rows on a live stream).
 (`rows.length === 0`) suppresses the strip so the timeline fills
 the full pane width.
 
-## Chip row — per-category visibility (260530)
+## Chip row — focus-style category filter (260530)
 
 `EventKindFilter.vue` is an **eight-chip** toolbar (Assistant /
 Thinking / Tool calls / Signals / Boundaries / Pauses / Artifacts /
 Other) rendered above the timeline in both `OverviewPanel`
-(cross-iter scope) and `IterTimelinePanel` (iter scope). Clicking a
-chip flips that category's **visibility** in
-`useTimelinePrefsStore` (persisted as the hidden set in
-`localStorage['relay.timeline.hiddenKinds']`); a lit chip means
-rows of that kind are shown, a dim chip means they are filtered out
-of the timeline entirely. Default = every chip lit (all categories
-visible).
+(cross-iter scope) and `IterTimelinePanel` (iter scope). The chip
+row drives a **focus-style filter** against `useTimelinePrefsStore`
+(persisted under `localStorage['relay.timeline.kindFilter']`), the
+same shape as Gmail labels or Material filter chips: the first
+click on a chip enters "focus mode" with just that kind visible,
+subsequent clicks add or remove kinds from the active set.
+
+Three modes:
+
+| Mode | What's visible | How you enter it |
+|---|---|---|
+| `all` (default) | every category | first load, or `Show all` button, or removing the last active chip |
+| `subset` | only chips in the active set | clicking any chip from `all` or `none` |
+| `none` | nothing | explicit `Show none` button |
+
+A dead-state guard is load-bearing: removing the last active chip
+in `subset` mode snaps the store back to `all` (rather than landing
+in `none`), so the operator can't strand themselves on an empty
+timeline via chip clicks alone. The only way to reach `none` is the
+explicit button.
 
 This replaces the prior model where the chip toggled
 **expand-by-default** for a per-type prefs map keyed on
@@ -491,11 +504,26 @@ Each chip carries:
    the chip's contents are never a mystery. Tooltip source-of-
    truth: `KIND_MEMBERS` in `src/lib/eventKinds.ts`.
 
-Visual treatment for the "lit" state pulls in the matching pastel
-background + saturated border + `font-weight: 600` on the label.
-A dim chip drops `opacity` to 0.55 (0.85 on hover) so the off-state
-is obvious but the chip stays readable. A `Show all` link appears
-on the right whenever at least one chip is dim.
+Visual treatment for the "lit" / active state pulls in the matching
+pastel background + saturated border + `font-weight: 600` on the
+label. A dim chip drops `opacity` to 0.55 (0.85 on hover) so the
+off-state is obvious but the chip stays readable. The right-hand
+action area shows `Show all` whenever `mode !== 'all'` and
+`Show none` whenever `mode !== 'none'` — so the operator always has
+a one-click escape to either extreme.
+
+Store surface (`useTimelinePrefsStore`):
+
+- `mode: 'all' | 'subset' | 'none'` — the current filter mode.
+- `selected: Set<KindCategory>` — the active set in `subset` mode.
+- `isHidden(c)` / `isActive(c)` — read-side helpers (`isActive` is
+  the chip-template alias, the negation of `isHidden`).
+- `toggle(c)` — Gmail-label add/remove; from `all` or `none` enters
+  `subset` with just `c`; from `subset` adds/removes `c`; if
+  removing leaves the set empty, snaps back to `all`.
+- `showAll()` / `showNone()` — jump-to buttons.
+- `hasSelection` (computed) — `mode !== 'all'`; drives the
+  `Show all` button visibility.
 
 `src/lib/eventKinds.ts::classifyEvent` is the single source of
 truth for kind → category mapping:
@@ -523,9 +551,12 @@ me peek at this card" shouldn't outlive a refresh).
 
 Visibility filtering lands in `TimelinePane.vue::rows` — every
 event is classified via `classifyEvent(ev)` and dropped if
-`prefs.isHidden(category)`. Counts shown on the chips are computed
-off the pre-filter event list (in `OverviewPanel` / `IterTimelinePanel`)
-so a hidden chip still reads `N available, hidden by you`.
+`prefs.isHidden(category)`. The minimap re-measure watcher
+includes `() => prefs.mode` + `() => prefs.selected` so the
+viewport overlay tracks the row count when the active set changes.
+Counts shown on the chips are computed off the pre-filter event
+list (in `OverviewPanel` / `IterTimelinePanel`) so a hidden chip
+still reads `N available, hidden by your focus`.
 
 ## Worktree pane — MVP degradation
 

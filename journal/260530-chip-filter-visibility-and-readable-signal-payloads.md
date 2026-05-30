@@ -68,6 +68,45 @@ same session, so both fixes shipped together. Per
 and this category of friction is exactly what the gate is meant to
 flush out before sign-off.
 
+## Mid-session refinement — focus-style filter
+
+The first cut shipped a plain hidden-set model (`isHidden` /
+`toggleHidden` / `showAll`, persisted as `KindCategory[]` under
+`relay.timeline.hiddenKinds`). On reading the result back, that
+intuition felt wrong for the operator's mental model — flipping
+seven chips to "look at just thinking" is the inverse of what they
+want to do. Pivoted in the same session to a Gmail-label /
+Material-filter-chip focus model: three modes (`all` / `subset` /
+`none`), first chip click enters `subset` with just that kind,
+subsequent clicks add/remove. Removing the last selected chip
+snaps back to `all` (load-bearing dead-state guard — the operator
+can't strand themselves on an empty timeline via chip clicks
+alone; reaching `none` requires the explicit `Show none` button).
+
+Store surface settled on:
+
+- `mode: 'all' | 'subset' | 'none'`
+- `selected: Set<KindCategory>` (the active set in subset mode)
+- `isHidden(c)` / `isActive(c)` (read-side; `isActive` is the
+  chip-template alias)
+- `toggle(c)` — Gmail-label add/remove with the snap-back guard
+- `showAll()` / `showNone()` — jump-to buttons
+- `hasSelection` (computed, drives the `Show all` button)
+
+LS key changed from `relay.timeline.hiddenKinds` →
+`relay.timeline.kindFilter` and the payload shape from `string[]`
+to `{mode, selected}` to record the tri-state cleanly.
+
+`EventKindFilter.vue` gained a `Show none` action button alongside
+the existing `Show all`, both rendered conditionally
+(`mode !== 'none'` / `mode !== 'all'`) so they're a one-click escape
+to either extreme without ever showing the no-op button.
+
+`TimelinePane.vue`'s minimap re-measure watcher now keys off
+`[() => prefs.mode, () => prefs.selected]` (was `() => prefs.hidden`
+on the first cut) so the viewport overlay tracks the row count when
+the active set changes.
+
 ## Migration / persistence
 
 `useTimelinePrefsStore` now persists a different shape under a
@@ -75,8 +114,8 @@ different localStorage key:
 
 - Was: `relay.timeline.expanded` → `Record<TimelineRowType, boolean>`
   (per-row-type expand-by-default).
-- Is: `relay.timeline.hiddenKinds` → `string[]` (set of hidden
-  `KindCategory` values).
+- Is: `relay.timeline.kindFilter` → `{mode, selected: string[]}`
+  (tri-state focus filter).
 
 The old key is silently ignored — fresh defaults (all visible) on
 first load. The `TimelineRowType` type was removed from the store
