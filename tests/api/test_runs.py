@@ -213,6 +213,137 @@ def test_list_runs_includes_children_when_requested(tmp_path: Path) -> None:
     asyncio.run(body())
 
 
+# ── W1: chat-mode create + mode filter on list ────────────────────────
+
+
+def test_create_run_default_mode_task(tmp_path: Path) -> None:
+    """POST /api/runs without mode → task-mode run (regression guard)."""
+    s = _settings(tmp_path)
+    proj_root = tmp_path / "proj"
+    proj_root.mkdir()
+
+    async def body() -> None:
+        async with _client_with_core(s) as (ac, _core):
+            project_id = await _register_project(ac, proj_root)
+            res = await ac.post(
+                "/api/runs",
+                json={"project_id": project_id, "prompt_body": "hello"},
+            )
+            assert res.status_code == 201, res.text
+            assert res.json()["mode"] == "task"
+
+    asyncio.run(body())
+
+
+def test_create_chat_run_via_rest(tmp_path: Path) -> None:
+    """POST /api/runs with mode=chat creates a chat-mode run with empty
+    prompt_body and the chat_max_iters cap."""
+    s = _settings(tmp_path)
+    proj_root = tmp_path / "proj"
+    proj_root.mkdir()
+
+    async def body() -> None:
+        async with _client_with_core(s) as (ac, _core):
+            project_id = await _register_project(ac, proj_root)
+            res = await ac.post(
+                "/api/runs",
+                json={"project_id": project_id, "mode": "chat"},
+            )
+            assert res.status_code == 201, res.text
+            row = res.json()
+            assert row["mode"] == "chat"
+            assert row["prompt_body"] == ""
+            # Chat-mode default cap is chat_max_iters (200), not the
+            # task-mode 12 — confirm the right default is applied.
+            assert row["max_iters"] == s.chat_max_iters
+
+    asyncio.run(body())
+
+
+def test_create_chat_run_rejects_prompt_body(tmp_path: Path) -> None:
+    """POST /api/runs with mode=chat AND prompt_body → 422 (validator)."""
+    s = _settings(tmp_path)
+    proj_root = tmp_path / "proj"
+    proj_root.mkdir()
+
+    async def body() -> None:
+        async with _client_with_core(s) as (ac, _core):
+            project_id = await _register_project(ac, proj_root)
+            res = await ac.post(
+                "/api/runs",
+                json={
+                    "project_id": project_id,
+                    "mode": "chat",
+                    "prompt_body": "stray text",
+                },
+            )
+            assert res.status_code == 422
+
+    asyncio.run(body())
+
+
+def test_create_task_run_still_requires_prompt_source(tmp_path: Path) -> None:
+    """POST /api/runs with mode=task (or omitted) without prompt_body or
+    prompt_id → 422. Regression guard on the existing validator."""
+    s = _settings(tmp_path)
+    proj_root = tmp_path / "proj"
+    proj_root.mkdir()
+
+    async def body() -> None:
+        async with _client_with_core(s) as (ac, _core):
+            project_id = await _register_project(ac, proj_root)
+            res = await ac.post(
+                "/api/runs",
+                json={"project_id": project_id},
+            )
+            assert res.status_code == 422
+
+    asyncio.run(body())
+
+
+def test_list_runs_filters_by_mode_query_param(tmp_path: Path) -> None:
+    """GET /api/runs?mode=chat returns only chat-mode rows."""
+    s = _settings(tmp_path)
+    proj_root = tmp_path / "proj"
+    proj_root.mkdir()
+
+    async def body() -> None:
+        async with _client_with_core(s) as (ac, core):
+            project_id = await _register_project(ac, proj_root)
+            task_id = await _start_run(ac, project_id, "task body")
+
+            # Seed a chat-mode row directly so the loop doesn't run it.
+            chat_id = core._new_run_id()
+            await create_run(
+                core._sm,
+                run_id=chat_id,
+                project_id=project_id,
+                prompt_body="",
+                max_iters=1,
+                iter_timeout=60,
+                worktree_path=None,
+                branch=None,
+                mode="chat",
+            )
+
+            res_all = await ac.get(
+                "/api/runs", params={"project_id": project_id}
+            )
+            assert {row["id"] for row in res_all.json()} == {task_id, chat_id}
+
+            res_chats = await ac.get(
+                "/api/runs", params={"project_id": project_id, "mode": "chat"}
+            )
+            assert [row["id"] for row in res_chats.json()] == [chat_id]
+
+            res_tasks = await ac.get(
+                "/api/runs", params={"project_id": project_id, "mode": "task"}
+            )
+            assert [row["id"] for row in res_tasks.json()] == [task_id]
+
+    asyncio.run(body())
+
+
 # ── REST integration: scripted fanout → children endpoint ──────────────
 
 

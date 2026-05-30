@@ -1106,6 +1106,7 @@ class RelayCore:
         max_iters: int | None = None,
         iter_timeout: int | None = None,
         parent_run_id: str | None = None,
+        mode: str = "task",
     ) -> str:
         async with self._sm() as s:
             project = await s.get(Project, project_id)
@@ -1117,7 +1118,14 @@ class RelayCore:
         wt, branch, run_dir = await provision_workspace(
             project_root, run_id
         )
-        max_i = max_iters or self._settings.max_iters
+        # Chat-mode default cap is higher (200) than task mode (12) — each
+        # user turn = one iter and conversations are open-ended (ADR-NN).
+        default_max = (
+            self._settings.chat_max_iters
+            if mode == "chat"
+            else self._settings.max_iters
+        )
+        max_i = max_iters or default_max
         timeout = iter_timeout or self._settings.iter_timeout
         await create_run(
             self._sm,
@@ -1129,12 +1137,13 @@ class RelayCore:
             worktree_path=str(wt) if wt else None,
             branch=branch,
             parent_run_id=parent_run_id,
+            mode=mode,
         )
         await self._store.append(
             run_id,
             "run_started",
             {"project_id": project_id, "prompt_body": prompt_body,
-             "max_iters": max_i},
+             "max_iters": max_i, "mode": mode},
         )
         self._runs[run_id] = _RunState()
         await self._queue.put(
@@ -1149,9 +1158,24 @@ class RelayCore:
                 phase=None,
                 body=prompt_body,
                 parent_run_id=parent_run_id,
+                mode=mode,
             )
         )
         return run_id
+
+    async def start_chat(self, project_id: int) -> str:
+        """Start a chat-mode run with an empty initial body (W1).
+
+        Chat runs use pi's native multi-turn model: the run sits paused
+        immediately so the user can type the first message, which becomes
+        the first iter's prompt body. The loop branch that turns this
+        into a useful conversation lands in W2; in W1 isolation a chat
+        run created here will be picked up by the existing task-mode
+        loop and complete trivially against a scripted/empty harness.
+        """
+        return await self.start_run(
+            project_id, prompt_body="", mode="chat"
+        )
 
     async def cancel_run(self, run_id: str) -> None:
         """Cancel ``run_id``.
@@ -1308,6 +1332,7 @@ class RelayCore:
         project_id: int | None = None,
         *,
         include_children: bool = False,
+        mode: str | None = None,
     ) -> list[Run]:
         """List runs for a project (or all if ``project_id`` is None).
 
@@ -1315,6 +1340,10 @@ class RelayCore:
         pass ``include_children=True`` to include child runs dispatched via
         fanout. The dashboard Run lists (spec.md §9.1, 9e) default-hide children
         so the list stays readable when fanout is in use.
+
+        ``mode`` filter (W1): ``"task"`` / ``"chat"`` / ``None`` (no filter).
+        Chats and tasks share the runs table but the dashboard renders them
+        as separate surfaces (ADR-NN).
         """
         async with self._sm() as s:
             stmt = select(Run).order_by(Run.started_at.desc())
@@ -1322,6 +1351,8 @@ class RelayCore:
                 stmt = stmt.where(Run.project_id == project_id)
             if not include_children:
                 stmt = stmt.where(Run.parent_run_id.is_(None))
+            if mode is not None:
+                stmt = stmt.where(Run.mode == mode)
             return list(await s.scalars(stmt))
 
     async def list_children(self, parent_run_id: str) -> list[Run]:

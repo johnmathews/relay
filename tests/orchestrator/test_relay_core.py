@@ -258,6 +258,100 @@ async def test_list_runs_includes_children_when_requested(
         await core.aclose()
 
 
+# ── W1: chat-mode column + start_chat + list_runs mode filter ──────────
+
+
+async def test_start_run_defaults_to_task_mode(tmp_path: Path) -> None:
+    """Existing start_run callers (no mode kwarg) yield mode='task'.
+
+    Regression guard: a chat-mode default would silently break every
+    task-mode test in the suite. The default must stay 'task'.
+    """
+    core, _settings = await _make_core(tmp_path)
+    try:
+        project_id = await _make_project(core, tmp_path / "proj")
+        run_id = await core.start_run(project_id, "hello", max_iters=1)
+        run = await core.get_run(run_id)
+        assert run is not None
+        assert run.mode == "task"
+    finally:
+        await core.aclose()
+
+
+async def test_start_chat_creates_chat_mode_run(tmp_path: Path) -> None:
+    """start_chat() yields a chat-mode run with empty prompt_body and
+    the chat_max_iters cap, not the task max_iters cap.
+
+    Sets ``chat_max_iters=1`` so the (W2-pending) loop branch doesn't
+    run the empty-prompt iter 200 times against the no-script fallback.
+    """
+    settings = Settings(data_dir=tmp_path / ".relay", chat_max_iters=1)
+    init_db(settings).dispose()
+    core = RelayCore(
+        settings,
+        harness=ScriptedHarness([TextScript(DONE_BLOCK)]),
+    )
+    await core.start()
+    try:
+        project_id = await _make_project(core, tmp_path / "proj")
+        chat_id = await core.start_chat(project_id)
+        run = await core.get_run(chat_id)
+        assert run is not None
+        assert run.mode == "chat"
+        assert run.prompt_body == ""
+        assert run.max_iters == 1  # chat_max_iters override
+        await core.wait_for_run(chat_id)
+    finally:
+        await core.aclose()
+
+
+async def test_list_runs_filters_by_mode(tmp_path: Path) -> None:
+    """list_runs(mode=...) returns only rows matching that mode.
+
+    Seeds rows via create_run directly to avoid the (W2-pending) loop
+    branch running the chat row's empty body.
+    """
+    from relay.orchestrator.lifecycle import create_run
+
+    core, _settings = await _make_core(tmp_path)
+    try:
+        project_id = await _make_project(core, tmp_path / "proj")
+        task_id = core._new_run_id()
+        chat_id = core._new_run_id()
+        await create_run(
+            core._sm,
+            run_id=task_id,
+            project_id=project_id,
+            prompt_body="task body",
+            max_iters=1,
+            iter_timeout=60,
+            worktree_path=None,
+            branch=None,
+            mode="task",
+        )
+        await create_run(
+            core._sm,
+            run_id=chat_id,
+            project_id=project_id,
+            prompt_body="",
+            max_iters=1,
+            iter_timeout=60,
+            worktree_path=None,
+            branch=None,
+            mode="chat",
+        )
+        all_rows = await core.list_runs(project_id)
+        assert {r.id for r in all_rows} == {task_id, chat_id}
+
+        only_tasks = await core.list_runs(project_id, mode="task")
+        assert {r.id for r in only_tasks} == {task_id}
+
+        only_chats = await core.list_runs(project_id, mode="chat")
+        assert {r.id for r in only_chats} == {chat_id}
+    finally:
+        await core.aclose()
+
+
 # ── Phase 9f Task 4: parent_iter_ctx threading ─────────────────────────
 
 

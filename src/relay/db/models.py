@@ -77,6 +77,12 @@ class Run(Base):
     prompt_body: Mapped[str] = mapped_column(Text, nullable=False)
     user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     status: Mapped[str] = mapped_column(Text, nullable=False)
+    # Chat mode (W1): a single column drives a small set of conditional
+    # branches in the loop (W2). Defaults to "task" so every existing
+    # row + every existing call site stays correct.
+    mode: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="task", default="task"
+    )
     started_at: Mapped[datetime] = mapped_column(
         nullable=False, server_default=func.current_timestamp()
     )

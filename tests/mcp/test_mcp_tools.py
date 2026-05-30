@@ -79,7 +79,7 @@ async def _structured(mcp: FastMCP, name: str, **args: Any) -> Any:
 # ── tool registration ──────────────────────────────────────────────────
 
 
-def test_all_seven_tools_registered(tmp_path: Path) -> None:
+def test_all_tools_registered(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
 
     async def scenario(_core: RelayCore, mcp: FastMCP) -> None:
@@ -93,6 +93,9 @@ def test_all_seven_tools_registered(tmp_path: Path) -> None:
                 "relay__pause_response",
                 "relay__tail_events",
                 "relay__read_artifact",
+                # W1 (chat mode).
+                "relay__create_chat",
+                "relay__list_chats",
             ]
         )
 
@@ -415,5 +418,79 @@ def test_read_artifact_unknown_run_errors(tmp_path: Path) -> None:
                 "relay__read_artifact",
                 {"run_id": "absent", "path": "x.md"},
             )
+
+    _run(scenario, settings)
+
+
+# ── W1: relay__create_chat + relay__list_chats ────────────────────────
+
+
+def test_create_chat_tool_creates_chat_mode_row(tmp_path: Path) -> None:
+    """relay__create_chat returns a RunOut with mode='chat' and empty body."""
+    # chat_max_iters=1 caps the (W2-pending) loop's empty-prompt iter so
+    # the test doesn't drift through 200 no-signal iterations.
+    settings = Settings(data_dir=tmp_path / ".relay", chat_max_iters=1)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+
+    async def scenario(core: RelayCore, mcp: FastMCP) -> None:
+        await core.register_project(proj, "demo")
+        row = await _structured(
+            mcp, "relay__create_chat", project_root=str(proj)
+        )
+        assert row["mode"] == "chat"
+        assert row["prompt_body"] == ""
+        assert row["max_iters"] == 1
+
+    _run(scenario, settings)
+
+
+def test_create_chat_tool_unknown_project_errors(tmp_path: Path) -> None:
+    """Unknown project_root → ValueError surfaces as ToolError."""
+    settings = _settings(tmp_path)
+
+    async def scenario(_core: RelayCore, mcp: FastMCP) -> None:
+        with pytest.raises(ToolError, match="no registered project"):
+            await mcp.call_tool(
+                "relay__create_chat", {"project_root": "/nope"}
+            )
+
+    _run(scenario, settings)
+
+
+def test_list_chats_excludes_task_runs(tmp_path: Path) -> None:
+    """relay__list_chats returns only chat-mode rows (task runs filtered out)."""
+    settings = _settings(tmp_path)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+
+    async def scenario(core: RelayCore, mcp: FastMCP) -> None:
+        from relay.orchestrator.lifecycle import create_run
+
+        project_id = await core.register_project(proj, "demo")
+        # A task run goes through start_run + the supervisor.
+        task_id = await core.start_run(project_id, "Go.", max_iters=1)
+        await core.wait_for_run(task_id)
+        # Seed a chat row directly to skip the (W2-pending) loop branch.
+        chat_id = core._new_run_id()
+        await create_run(
+            core._sm,
+            run_id=chat_id,
+            project_id=project_id,
+            prompt_body="",
+            max_iters=1,
+            iter_timeout=60,
+            worktree_path=None,
+            branch=None,
+            mode="chat",
+        )
+
+        scoped = await _structured(
+            mcp, "relay__list_chats", project_root=str(proj)
+        )
+        assert [r["id"] for r in scoped] == [chat_id]
+
+        all_chats = await _structured(mcp, "relay__list_chats")
+        assert [r["id"] for r in all_chats] == [chat_id]
 
     _run(scenario, settings)

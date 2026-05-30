@@ -63,6 +63,12 @@ class Settings(BaseSettings):
     max_iters: int = 12
     iter_timeout: int = 1800  # seconds
 
+    # Chat mode (W1, ADR-NN). Safety cap on a chat's turn count; high
+    # enough that no real chat hits it. Each user turn = one iter; chat
+    # runs use pause-for-input between turns (ADR-40), so this caps the
+    # whole conversation length, not a single sub-loop.
+    chat_max_iters: int = 200
+
     # Fanout/join (Phase 9, ADR-35).
     # max_fanout_depth: maximum parent→child recursion depth.
     #   Default 2, hard cap 4 (proposal §recursion-bounds).

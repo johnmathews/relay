@@ -32,8 +32,12 @@ router = APIRouter(prefix="/api", tags=["runs"])
 async def create_run(
     body: RunCreate, core: CoreDep
 ) -> RunOut:
-    # RunCreate's validator already guaranteed exactly one prompt source.
-    if body.prompt_id is not None:
+    # RunCreate's validator already enforced the mode-specific prompt rules.
+    if body.mode == "chat":
+        # Chat-mode runs start empty; resume_run (W2) feeds user messages
+        # as subsequent iter bodies. No prompt_body / prompt_id to resolve.
+        prompt_body = ""
+    elif body.prompt_id is not None:
         prompt = await core.get_prompt(body.prompt_id)
         if prompt is None:
             raise HTTPException(
@@ -50,6 +54,7 @@ async def create_run(
             prompt_body,
             max_iters=body.max_iters,
             iter_timeout=body.iter_timeout,
+            mode=body.mode,
         )
     except ValueError as exc:
         raise http_error(exc) from exc
@@ -64,11 +69,14 @@ async def list_runs(
     core: CoreDep,
     project_id: int | None = None,
     status: str | None = None,
+    mode: str | None = None,
     limit: int = 50,
     offset: int = 0,
     include_children: bool = False,
 ) -> list[RunOut]:
-    rows = await core.list_runs(project_id, include_children=include_children)
+    rows = await core.list_runs(
+        project_id, include_children=include_children, mode=mode
+    )
     if status is not None:
         rows = [r for r in rows if r.status == status]
     rows = rows[offset : offset + limit]

@@ -120,6 +120,35 @@ def create_mcp_server(core: RelayCore) -> FastMCP:
             raise ValueError(f"run {run_id} vanished after creation")
         return RunOut.model_validate(run)
 
+    @mcp.tool(name="relay__create_chat")
+    async def create_chat(project_root: str) -> RunOut:
+        """Create a chat-mode run in the project at ``project_root`` (W1).
+
+        Chats use pi's native multi-turn model: the run starts empty and
+        the operator types messages via the dashboard or
+        ``relay__pause_response``. Returns the created chat run."""
+        project_id = await _resolve_project_id(project_root)
+        chat_id = await core.start_chat(project_id)
+        run = await core.get_run(chat_id)
+        if run is None:  # pragma: no cover - just-created row must exist
+            raise ValueError(f"chat {chat_id} vanished after creation")
+        return RunOut.model_validate(run)
+
+    @mcp.tool(name="relay__list_chats")
+    async def list_chats(project_root: str | None = None) -> list[RunOut]:
+        """List chat-mode runs, newest first (W1). With ``project_root``,
+        scope to that registered project; without it, all chats across
+        all projects. Excludes task-mode runs."""
+        project_id = (
+            await _resolve_project_id(project_root)
+            if project_root is not None
+            else None
+        )
+        rows = await core.list_runs(
+            project_id, include_children=True, mode="chat"
+        )
+        return [RunOut.model_validate(r) for r in rows]
+
     @mcp.tool(name="relay__cancel_run")
     async def cancel_run(run_id: str) -> RunOut:
         """Request cancellation of a run; returns its current state.
