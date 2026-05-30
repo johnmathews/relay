@@ -303,16 +303,30 @@ click-to-navigate behaviour (selects the file + scrolls the
 sidebar's Artifacts section into view); without a `runId` it falls
 back to a non-interactive `<div>`.
 
-**Boundary / generic body — pretty-printed JSON.** Expanded
-`boundary` and `generic` rows render their payload as
-indented JSON via the new `.timeline__bmeta--pretty` `<pre><code>`
-block (whitespace preserved, monospace, soft surface). The single-
-line `generic()` helper is still used for the row preview where
-vertical space is at a premium; the expanded view gets `prettyJson()`
-(indent 2) so a 50-line payload is readable instead of one giant
-wrap-broken string. That is what makes `iter_started` (the
-load-bearing anchor between iters) finally readable from the
-dashboard.
+**Boundary / generic body — field-aware via `EventPayloadView`
+(260530).** Expanded `boundary` and `generic` rows render their
+payload via `EventPayloadView.vue`, which lays out each top-level
+field as a labeled section. Multi-line string fields (the
+`iter_started` `prompt` + `preamble`, a pause `question`, etc.)
+render in a `<pre>` with **real newlines** — not the literal `\n`
+escape sequences that `JSON.stringify` emits — so the iter prompt
+is finally scannable on the page. Strings longer than
+`collapseLinesAt` (default 12 lines) collapse with a `Show all N
+lines` toggle so a 200-line preamble doesn't dominate the timeline.
+Short scalars (`seq`, `phase`, booleans, numbers) render inline next
+to the label; nested objects / arrays drop back to indented JSON.
+
+A `[ View raw JSON / View formatted ]` toggle in the corner swaps
+the whole view for a single shiki-highlighted JSON block via
+`lib/render.renderCode(src, 'json')` — kept for cases where the
+structural shape matters (copying for a bug report) or where the
+field layout misses something. Default mode is field-aware. The
+same component powers the embedded body of `SignalCard.vue`, so
+signal-emit rows (handoff / pause / done payloads) get the same
+treatment. The single-line `generic()` helper is still used for
+the row's collapsed header preview where vertical space is at a
+premium. This replaces the older `.timeline__bmeta--pretty`
+`<pre><code>{{ prettyJson(...) }}</code></pre>` path.
 
 **Tool-call grouping (Batch 3, 260529).** Adjacent tool rows
 within the same iter collapse into a single group anchor by
@@ -439,59 +453,79 @@ appended rows on a live stream).
 (`rows.length === 0`) suppresses the strip so the timeline fills
 the full pane width.
 
-## Chip row — per-type expand-by-default
+## Chip row — per-category visibility (260530)
 
-`EventKindFilter.vue` is a five-chip toolbar (Assistant / Thinking /
-Tool calls / Signals / Other) rendered above the timeline in both
-`OverviewPanel` (cross-iter scope) and `IterTimelinePanel` (iter
-scope). Clicking a chip flips that category's **expand-by-default**
-state in the `useTimelinePrefsStore` (persisted in
-`localStorage['relay.timeline.expanded']`); a lit chip means every
-row of that kind opens its body on first render, a dim chip means
-the row stays as a one-line header until the operator clicks
-through.
+`EventKindFilter.vue` is an **eight-chip** toolbar (Assistant /
+Thinking / Tool calls / Signals / Boundaries / Pauses / Artifacts /
+Other) rendered above the timeline in both `OverviewPanel`
+(cross-iter scope) and `IterTimelinePanel` (iter scope). Clicking a
+chip flips that category's **visibility** in
+`useTimelinePrefsStore` (persisted as the hidden set in
+`localStorage['relay.timeline.hiddenKinds']`); a lit chip means
+rows of that kind are shown, a dim chip means they are filtered out
+of the timeline entirely. Default = every chip lit (all categories
+visible).
 
-There is **no visibility filter** — every step is always rendered.
-The chip row is the merger of the old `?kinds=` URL-driven
-visibility filter and the retired `TimelineDisplayMenu` popover.
-Operators were never asking to hide steps; they were asking to
-control how much was unfolded at once. Defaults: all five types
-collapsed.
+This replaces the prior model where the chip toggled
+**expand-by-default** for a per-type prefs map keyed on
+`relay.timeline.expanded`. Operators found the row dim/lit state
+confusing as an "expanded" indicator (the underlying rows still
+existed but were collapsed); reframing the chip as a visibility
+filter matched the intuition the icon already implied. Per-row
+expand/collapse is now driven entirely by clicking a row's own
+header — there is no automatic expand-by-default for any kind.
 
 Each chip carries:
 
-- A colour dot keyed off `--color-row-<kind>-border` (same token the
-  per-card border uses — chip row doubles as colour legend).
-- A human label.
-- An in-scope row count. `tool` is rendered as `ceil(N/2)` so the
-  chip number matches the number of CARDS the operator sees (the
-  timeline pairs `tool_use_start` + `tool_use_end` into one card).
+1. A colour dot keyed off `--color-row-<kind>-border` (same token
+   the per-card border uses — chip row doubles as colour legend).
+   Boundaries borrow the signal hue at 65% opacity; pauses borrow
+   `--color-warning`; artifacts + other share `--color-row-other-*`.
+2. A human label.
+3. An in-scope row count. `tool` is rendered as `ceil(N/2)` so the
+   chip number matches the number of CARDS the operator sees (the
+   timeline pairs `tool_use_start` + `tool_use_end` into one card).
+4. A `title` tooltip listing the underlying event kinds (e.g.,
+   hovering `Pauses` shows `pause_requested, pause_resolved,
+   subagent_dispatch, subagent_return, child_runs_resolved`) so
+   the chip's contents are never a mystery. Tooltip source-of-
+   truth: `KIND_MEMBERS` in `src/lib/eventKinds.ts`.
 
-Visual treatment for the "lit" state pulls in the matching pastel:
-`background: var(--color-row-<kind>-bg)` + `border-color:
-var(--color-row-<kind>-border)` + `font-weight: 600` on the label.
-A `Reset to collapsed` link appears on the right whenever at least
-one chip is on.
+Visual treatment for the "lit" state pulls in the matching pastel
+background + saturated border + `font-weight: 600` on the label.
+A dim chip drops `opacity` to 0.55 (0.85 on hover) so the off-state
+is obvious but the chip stays readable. A `Show all` link appears
+on the right whenever at least one chip is dim.
 
-The `other` chip category bridges to the `generic` row type in the
-prefs store via `categoryToRowType` in `src/lib/eventKinds.ts` —
-the two vocabularies predate the merge (chip row uses `other`, the
-prefs store uses `generic`), and the bridge is asserted in
-`tests/eventKinds.spec.ts` so a future rename can't break it
-silently.
+`src/lib/eventKinds.ts::classifyEvent` is the single source of
+truth for kind → category mapping:
 
-`src/lib/eventKinds.ts::classifyEvent` is the single source of truth
-for kind → category mapping: `tool_use_start`/`tool_use_end` →
-`tool`, `assistant_text` splits on `payload.kind` (`text` →
-`assistant`, `thinking` → `thinking`), structural / boundary kinds
-(`signal_emit`, `iter_*`, `run_*`, `subagent_*`,
-`child_runs_resolved`, `harness_session_ended`, `pause_*`) →
-`signal`, everything else → `other`.
+| Category | Event kinds |
+|---|---|
+| `assistant` | `assistant_text` (`payload.kind === 'text'`, or absent) |
+| `thinking` | `assistant_text` (`payload.kind === 'thinking'`) |
+| `tool` | `tool_use_start`, `tool_use_end` |
+| `signal` | `signal_emit` (sentinel signals only) |
+| `boundary` | `iter_started`, `iter_ended`, `run_started`, `run_ended`, `harness_session_ended` |
+| `pause` | `pause_requested`, `pause_resolved`, `subagent_dispatch`, `subagent_return`, `child_runs_resolved` |
+| `artifact` | `artifact_edited` |
+| `other` | unknown / future event kinds only |
 
-Per-row override (a single row the operator has expanded against
-its type default) stays in `TimelinePane`'s component state via
+The previous five-chip split (where `signal` lumped lifecycle +
+pause + fanout + harness_session_ended together, and `other`
+silently swallowed `artifact_edited` alongside future unknowns) is
+gone — every concrete event kind now has a named home.
+
+Per-row override (a single row the operator has expanded by
+clicking the header) stays in `TimelinePane`'s component state via
 `rowOverrides` — it's intentionally session-scoped (a one-off "let
 me peek at this card" shouldn't outlive a refresh).
+
+Visibility filtering lands in `TimelinePane.vue::rows` — every
+event is classified via `classifyEvent(ev)` and dropped if
+`prefs.isHidden(category)`. Counts shown on the chips are computed
+off the pre-filter event list (in `OverviewPanel` / `IterTimelinePanel`)
+so a hidden chip still reads `N available, hidden by you`.
 
 ## Worktree pane — MVP degradation
 
