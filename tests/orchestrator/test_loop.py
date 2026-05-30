@@ -792,6 +792,7 @@ def test_internal_error_finalises_run_as_failed(tmp_path: Path) -> None:
             env: dict[str, str],
             signal_config: object,
             resume_from: str | None = None,
+            skill_paths: list[Path] | None = None,
         ) -> object:
             raise FileNotFoundError(
                 "[Errno 2] No such file or directory: '/bogus'"
@@ -1358,3 +1359,242 @@ def test_loop_captures_iter_context_on_fanout_terminal(
 
     result = asyncio.run(scenario())
     assert result.fanout_parent_ctx is not None
+
+
+# ── W2 / ADR-NN — chat-mode loop branch ────────────────────────────────────
+
+
+CHAT_REPLY_NO_SENTINEL = "Sure, here's the answer to your question."
+CHAT_REPLY_WITH_STRAY_SENTINEL = (
+    "Sure. By the way:\n\n"
+    "[[engteam:done]]"
+)
+
+
+def test_chat_mode_starts_paused_without_loop(tmp_path: Path) -> None:
+    """W2: start_chat lands in ``paused`` immediately. No iter row is
+    created; no harness spawn happens. The dashboard timeline gets a
+    ``run_started`` followed by an empty-question ``pause_requested``
+    so ChatView can render an empty transcript with a focused input.
+    """
+    settings = _settings(tmp_path)
+    harness = ScriptedHarness([])  # No scripts — none should be consumed.
+
+    async def scenario(core: RelayCore) -> str:
+        pid = await core.register_project(tmp_path, "p")
+        chat_id = await core.start_chat(pid)
+        result = await core.wait_for_run(chat_id)
+        assert result.status == "paused"
+        return chat_id
+
+    chat_id = _run(scenario, settings, harness)
+
+    assert harness.spawn_calls == [], (
+        "no pi spawn should happen before the first user message"
+    )
+
+    with _read(settings) as s:
+        run = s.get(Run, chat_id)
+        assert run is not None
+        assert run.status == "paused"
+        assert run.mode == "chat"
+        iters = list(s.scalars(select(Iter).where(Iter.run_id == chat_id)))
+        assert iters == [], "no iter row before the first user message"
+        kinds = [
+            e.kind for e in s.scalars(
+                select(Event).where(Event.run_id == chat_id)
+                .order_by(Event.seq)
+            )
+        ]
+        assert kinds == ["run_started", "pause_requested"]
+
+
+def test_chat_mode_first_resume_uses_message_as_body_no_preamble(
+    tmp_path: Path,
+) -> None:
+    """W2: the first ``resume_run(chat_id, msg)`` becomes iter 1's prompt
+    body verbatim — no preamble, no compose_resume_prompt wrapping. The
+    spawn is called with ``resume_from=None`` (first turn has no prior
+    session) and ``skill_paths=[]`` (no skill injection in chat mode).
+    """
+    settings = _settings(tmp_path)
+    harness = ScriptedHarness([TextScript(CHAT_REPLY_NO_SENTINEL)])
+
+    async def scenario(core: RelayCore) -> str:
+        pid = await core.register_project(tmp_path, "p")
+        chat_id = await core.start_chat(pid)
+        await core.wait_for_run(chat_id)  # initial paused
+        await core.resume_run(chat_id, "what is 2+2?")
+        result = await core.wait_for_run(chat_id)
+        assert result.status == "paused"
+        return chat_id
+
+    chat_id = _run(scenario, settings, harness)
+
+    assert len(harness.spawn_calls) == 1
+    spawn = harness.spawn_calls[0]
+    assert spawn["prompt"] == "what is 2+2?", (
+        "chat-mode body is the user message verbatim (no preamble, no "
+        "compose_resume_prompt wrapping)"
+    )
+    assert spawn["resume_from"] is None, "first turn has no prior session"
+    assert spawn["skill_paths"] == [], (
+        "chat mode injects no skills (empty list, not None)"
+    )
+
+    with _read(settings) as s:
+        iters = list(
+            s.scalars(select(Iter).where(Iter.run_id == chat_id)
+                      .order_by(Iter.seq))
+        )
+        assert [it.seq for it in iters] == [1]
+        assert iters[0].preamble == ""
+        assert "RELAY_RUN_DIR" not in iters[0].prompt
+        assert "RELAY_PHASE" not in iters[0].prompt
+        assert iters[0].prompt == "what is 2+2?"
+
+
+def test_chat_mode_auto_pauses_on_session_end(tmp_path: Path) -> None:
+    """W2: a chat-mode iter that ends cleanly without a sentinel
+    auto-pauses. The iter row carries ``signal_kind="pause"`` and a
+    synthetic pause_id; the run lands in ``paused`` (NOT ``failed``).
+    """
+    settings = _settings(tmp_path)
+    harness = ScriptedHarness([TextScript(CHAT_REPLY_NO_SENTINEL)])
+
+    async def scenario(core: RelayCore) -> str:
+        pid = await core.register_project(tmp_path, "p")
+        chat_id = await core.start_chat(pid)
+        await core.wait_for_run(chat_id)
+        await core.resume_run(chat_id, "hello")
+        result = await core.wait_for_run(chat_id)
+        assert result.status == "paused"
+        assert result.pause_id is not None
+        assert result.pause_id.startswith(f"chat-{chat_id}-")
+        return chat_id
+
+    chat_id = _run(scenario, settings, harness)
+    with _read(settings) as s:
+        run = s.get(Run, chat_id)
+        assert run is not None and run.status == "paused"
+        iters = list(
+            s.scalars(select(Iter).where(Iter.run_id == chat_id))
+        )
+        assert len(iters) == 1
+        assert iters[0].signal_kind == "pause"
+        assert iters[0].exit_reason == "signal"
+        assert iters[0].signal_args is not None
+        assert iters[0].signal_args["id"] == f"chat-{chat_id}-1"
+        assert iters[0].signal_args["question"] == ""
+        assert iters[0].signal_args["next_prompt"] == ""
+        assert iters[0].signal_args["review_paths"] == []
+
+
+def test_chat_mode_subsequent_resume_threads_pi_session_id(
+    tmp_path: Path,
+) -> None:
+    """W2 / ADR-NN: the second user message is spawned with
+    ``--session <iter1.pi_session_id>``. This is the deliberate inversion
+    of ADR-20's fresh-context-per-iter invariant — chat mode uses pi's
+    native multi-turn model via ``--session``.
+    """
+    settings = _settings(tmp_path)
+    harness = ScriptedHarness([
+        TextScript(CHAT_REPLY_NO_SENTINEL),
+        TextScript(CHAT_REPLY_NO_SENTINEL),
+    ])
+
+    async def scenario(core: RelayCore) -> str:
+        pid = await core.register_project(tmp_path, "p")
+        chat_id = await core.start_chat(pid)
+        await core.wait_for_run(chat_id)
+        await core.resume_run(chat_id, "first message")
+        await core.wait_for_run(chat_id)
+        await core.resume_run(chat_id, "follow-up")
+        result = await core.wait_for_run(chat_id)
+        assert result.status == "paused"
+        return chat_id
+
+    chat_id = _run(scenario, settings, harness)
+
+    assert len(harness.spawn_calls) == 2
+    first, second = harness.spawn_calls
+    assert first["resume_from"] is None, "first turn has no prior session"
+    assert first["skill_paths"] == []
+    # The scripted session_id is f"scripted-{idx}" (see scripted_harness).
+    assert second["resume_from"] == "scripted-0", (
+        "second turn must resume the first turn's pi_session_id"
+    )
+    assert second["skill_paths"] == []
+    assert second["prompt"] == "follow-up"
+
+    with _read(settings) as s:
+        iters = list(
+            s.scalars(select(Iter).where(Iter.run_id == chat_id)
+                      .order_by(Iter.seq))
+        )
+        assert [it.seq for it in iters] == [1, 2]
+        # iter 1's pi_session_id is what iter 2 resumes from.
+        assert iters[0].pi_session_id == "scripted-0"
+        assert iters[1].pi_session_id == "scripted-1"
+
+
+def test_chat_mode_ignores_stray_sentinel(tmp_path: Path) -> None:
+    """W2 / ADR-NN: a chat-mode iter that emits a sentinel (e.g. pi got
+    confused and tried to ``[[engteam:done]]``) is logged and treated as
+    no-signal. The run still auto-pauses — chat mode never terminates
+    on a sentinel.
+    """
+    settings = _settings(tmp_path)
+    harness = ScriptedHarness([TextScript(CHAT_REPLY_WITH_STRAY_SENTINEL)])
+
+    async def scenario(core: RelayCore) -> str:
+        pid = await core.register_project(tmp_path, "p")
+        chat_id = await core.start_chat(pid)
+        await core.wait_for_run(chat_id)
+        await core.resume_run(chat_id, "hello")
+        result = await core.wait_for_run(chat_id)
+        assert result.status == "paused", (
+            "stray sentinel must not terminate a chat-mode run"
+        )
+        return chat_id
+
+    chat_id = _run(scenario, settings, harness)
+    with _read(settings) as s:
+        run = s.get(Run, chat_id)
+        assert run is not None and run.status == "paused"
+        iters = list(
+            s.scalars(select(Iter).where(Iter.run_id == chat_id))
+        )
+        assert iters[0].signal_kind == "pause"
+
+
+def test_task_mode_loop_unchanged_by_chat_branches(tmp_path: Path) -> None:
+    """W2 regression guard: a task-mode run (default ``mode="task"``)
+    behaves byte-for-byte as before — preamble emitted, no
+    ``resume_from`` carry-forward, default ``skill_paths=None`` passed
+    to spawn, no synthetic chat-pause on session_end.
+    """
+    settings = _settings(tmp_path)
+    harness = ScriptedHarness([TextScript(DONE_BLOCK)])
+
+    async def scenario(core: RelayCore) -> str:
+        pid = await core.register_project(tmp_path, "p")
+        run_id = await core.start_run(pid, "Go.")
+        result = await core.wait_for_run(run_id)
+        assert result.status == "done"
+        return run_id
+
+    run_id = _run(scenario, settings, harness)
+    assert len(harness.spawn_calls) == 1
+    spawn = harness.spawn_calls[0]
+    assert spawn["resume_from"] is None
+    assert spawn["skill_paths"] is None, (
+        "task-mode spawn must pass None (= use settings.pi_skill_paths), "
+        "NOT an empty list"
+    )
+    with _read(settings) as s:
+        iters = list(s.scalars(select(Iter).where(Iter.run_id == run_id)))
+        assert iters[0].preamble.startswith("RELAY_RUN_DIR:"), (
+            "task mode still emits the engteam preamble"
+        )

@@ -32,8 +32,12 @@ router = APIRouter(prefix="/api", tags=["runs"])
 async def create_run(
     body: RunCreate, core: CoreDep
 ) -> RunOut:
-    # RunCreate's validator already guaranteed exactly one prompt source.
-    if body.prompt_id is not None:
+    # RunCreate's validator already enforced the mode-specific prompt rules.
+    if body.mode == "chat":
+        # Chat-mode runs start empty; resume_run (W2) feeds user messages
+        # as subsequent iter bodies. No prompt_body / prompt_id to resolve.
+        prompt_body = ""
+    elif body.prompt_id is not None:
         prompt = await core.get_prompt(body.prompt_id)
         if prompt is None:
             raise HTTPException(
@@ -50,6 +54,7 @@ async def create_run(
             prompt_body,
             max_iters=body.max_iters,
             iter_timeout=body.iter_timeout,
+            mode=body.mode,
         )
     except ValueError as exc:
         raise http_error(exc) from exc
@@ -64,11 +69,14 @@ async def list_runs(
     core: CoreDep,
     project_id: int | None = None,
     status: str | None = None,
+    mode: str | None = None,
     limit: int = 50,
     offset: int = 0,
     include_children: bool = False,
 ) -> list[RunOut]:
-    rows = await core.list_runs(project_id, include_children=include_children)
+    rows = await core.list_runs(
+        project_id, include_children=include_children, mode=mode
+    )
     if status is not None:
         rows = [r for r in rows if r.status == status]
     rows = rows[offset : offset + limit]
@@ -123,6 +131,46 @@ async def cancel_run(
     await core.cancel_run(run_id)
     updated = await core.get_run(run_id)
     if updated is None:  # pragma: no cover - existed a line ago
+        raise HTTPException(status_code=404, detail=f"unknown run {run_id}")
+    return RunOut.model_validate(updated)
+
+
+@router.post("/runs/{run_id}/close", response_model=RunOut)
+async def close_chat(
+    run_id: str, core: CoreDep
+) -> RunOut:
+    """Close a chat-mode run (W3).
+
+    Chat-only sibling of POST ``/runs/{id}/cancel``. Returns 404 if the
+    run is unknown, 409 if it is not chat-mode, 409 if it is already
+    terminal. Successful close flips ``status → closed`` and appends a
+    ``run_ended`` event with ``summary="user closed chat"``.
+    """
+    run = await core.get_run(run_id)
+    if run is None:
+        raise HTTPException(
+            status_code=404, detail=f"unknown run {run_id}"
+        )
+    if run.mode != "chat":
+        raise HTTPException(
+            status_code=409,
+            detail=f"run {run_id} is not a chat-mode run "
+                   f"(mode={run.mode!r})",
+        )
+    if run.status in ("done", "failed", "cancelled", "closed"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"run {run_id} is already terminal "
+                   f"(status={run.status!r})",
+        )
+    try:
+        await core.close_chat(run_id)
+    except ValueError as exc:
+        # Defensive: a status race between get_run and close_chat would
+        # land here. Same mapping as resume — state conflict → 409, else 404.
+        raise http_error(exc) from exc
+    updated = await core.get_run(run_id)
+    if updated is None:  # pragma: no cover - existed a line above
         raise HTTPException(status_code=404, detail=f"unknown run {run_id}")
     return RunOut.model_validate(updated)
 

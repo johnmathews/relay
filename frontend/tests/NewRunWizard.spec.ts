@@ -269,6 +269,7 @@ describe('NewRunWizard', () => {
     expect(state.createMutate).toHaveBeenCalledTimes(1)
     expect(state.createMutate).toHaveBeenCalledWith({
       project_id: 5,
+      mode: 'task',
       prompt_id: 11,
       max_iters: 7,
     })
@@ -366,9 +367,62 @@ describe('NewRunWizard', () => {
 
     expect(state.createMutate).toHaveBeenCalledWith({
       project_id: 5,
+      mode: 'task',
       prompt_id: 11,
       max_iters: 8,
       iter_timeout: 600,
     })
+  })
+
+  it('prefills inline prompt from sessionStorage on a `?promoteFrom=<id>` deep link (W6)', async () => {
+    // Chat → task promotion handoff: ChatView wrote the transcript
+    // body to sessionStorage under `relay:promotion:<chatRunId>` and
+    // navigated here with the marker query param. The wizard reads
+    // and consumes the entry on mount.
+    sessionStorage.setItem(
+      'relay:promotion:chat-7',
+      '<<promotion-body>>',
+    )
+    const router = makeRouter()
+    router.push({
+      path: '/projects/5/new-run',
+      query: { promoteFrom: 'chat-7' },
+    })
+    await router.isReady()
+    const wrapper = mount(
+      { template: '<router-view />' },
+      { global: { plugins: [router] } },
+    )
+    await flushPromises()
+
+    const ta = wrapper.get('textarea[name="inline-body"]')
+      .element as HTMLTextAreaElement
+    expect(ta.value).toBe('<<promotion-body>>')
+    // One-shot: a refresh of the wizard URL must not re-populate.
+    expect(sessionStorage.getItem('relay:promotion:chat-7')).toBeNull()
+    // Inline mode is selected so the textarea, not the saved list, is
+    // visible.
+    expect(wrapper.find('[data-testid="prompt-list"]').exists()).toBe(false)
+  })
+
+  it('a `?promoteFrom=` deep link with no stored body leaves the prompt empty', async () => {
+    // sessionStorage may be unavailable or empty (private mode, the
+    // user cleared it, a refresh without re-promoting); the wizard
+    // falls back to its default empty-inline state.
+    sessionStorage.removeItem('relay:promotion:chat-7')
+    const router = makeRouter()
+    router.push({
+      path: '/projects/5/new-run',
+      query: { promoteFrom: 'chat-7' },
+    })
+    await router.isReady()
+    const wrapper = mount(
+      { template: '<router-view />' },
+      { global: { plugins: [router] } },
+    )
+    await flushPromises()
+    const ta = wrapper.get('textarea[name="inline-body"]')
+      .element as HTMLTextAreaElement
+    expect(ta.value).toBe('')
   })
 })

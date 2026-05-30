@@ -213,6 +213,137 @@ def test_list_runs_includes_children_when_requested(tmp_path: Path) -> None:
     asyncio.run(body())
 
 
+# ── W1: chat-mode create + mode filter on list ────────────────────────
+
+
+def test_create_run_default_mode_task(tmp_path: Path) -> None:
+    """POST /api/runs without mode → task-mode run (regression guard)."""
+    s = _settings(tmp_path)
+    proj_root = tmp_path / "proj"
+    proj_root.mkdir()
+
+    async def body() -> None:
+        async with _client_with_core(s) as (ac, _core):
+            project_id = await _register_project(ac, proj_root)
+            res = await ac.post(
+                "/api/runs",
+                json={"project_id": project_id, "prompt_body": "hello"},
+            )
+            assert res.status_code == 201, res.text
+            assert res.json()["mode"] == "task"
+
+    asyncio.run(body())
+
+
+def test_create_chat_run_via_rest(tmp_path: Path) -> None:
+    """POST /api/runs with mode=chat creates a chat-mode run with empty
+    prompt_body and the chat_max_iters cap."""
+    s = _settings(tmp_path)
+    proj_root = tmp_path / "proj"
+    proj_root.mkdir()
+
+    async def body() -> None:
+        async with _client_with_core(s) as (ac, _core):
+            project_id = await _register_project(ac, proj_root)
+            res = await ac.post(
+                "/api/runs",
+                json={"project_id": project_id, "mode": "chat"},
+            )
+            assert res.status_code == 201, res.text
+            row = res.json()
+            assert row["mode"] == "chat"
+            assert row["prompt_body"] == ""
+            # Chat-mode default cap is chat_max_iters (200), not the
+            # task-mode 12 — confirm the right default is applied.
+            assert row["max_iters"] == s.chat_max_iters
+
+    asyncio.run(body())
+
+
+def test_create_chat_run_rejects_prompt_body(tmp_path: Path) -> None:
+    """POST /api/runs with mode=chat AND prompt_body → 422 (validator)."""
+    s = _settings(tmp_path)
+    proj_root = tmp_path / "proj"
+    proj_root.mkdir()
+
+    async def body() -> None:
+        async with _client_with_core(s) as (ac, _core):
+            project_id = await _register_project(ac, proj_root)
+            res = await ac.post(
+                "/api/runs",
+                json={
+                    "project_id": project_id,
+                    "mode": "chat",
+                    "prompt_body": "stray text",
+                },
+            )
+            assert res.status_code == 422
+
+    asyncio.run(body())
+
+
+def test_create_task_run_still_requires_prompt_source(tmp_path: Path) -> None:
+    """POST /api/runs with mode=task (or omitted) without prompt_body or
+    prompt_id → 422. Regression guard on the existing validator."""
+    s = _settings(tmp_path)
+    proj_root = tmp_path / "proj"
+    proj_root.mkdir()
+
+    async def body() -> None:
+        async with _client_with_core(s) as (ac, _core):
+            project_id = await _register_project(ac, proj_root)
+            res = await ac.post(
+                "/api/runs",
+                json={"project_id": project_id},
+            )
+            assert res.status_code == 422
+
+    asyncio.run(body())
+
+
+def test_list_runs_filters_by_mode_query_param(tmp_path: Path) -> None:
+    """GET /api/runs?mode=chat returns only chat-mode rows."""
+    s = _settings(tmp_path)
+    proj_root = tmp_path / "proj"
+    proj_root.mkdir()
+
+    async def body() -> None:
+        async with _client_with_core(s) as (ac, core):
+            project_id = await _register_project(ac, proj_root)
+            task_id = await _start_run(ac, project_id, "task body")
+
+            # Seed a chat-mode row directly so the loop doesn't run it.
+            chat_id = core._new_run_id()
+            await create_run(
+                core._sm,
+                run_id=chat_id,
+                project_id=project_id,
+                prompt_body="",
+                max_iters=1,
+                iter_timeout=60,
+                worktree_path=None,
+                branch=None,
+                mode="chat",
+            )
+
+            res_all = await ac.get(
+                "/api/runs", params={"project_id": project_id}
+            )
+            assert {row["id"] for row in res_all.json()} == {task_id, chat_id}
+
+            res_chats = await ac.get(
+                "/api/runs", params={"project_id": project_id, "mode": "chat"}
+            )
+            assert [row["id"] for row in res_chats.json()] == [chat_id]
+
+            res_tasks = await ac.get(
+                "/api/runs", params={"project_id": project_id, "mode": "task"}
+            )
+            assert [row["id"] for row in res_tasks.json()] == [task_id]
+
+    asyncio.run(body())
+
+
 # ── REST integration: scripted fanout → children endpoint ──────────────
 
 
@@ -375,5 +506,103 @@ def test_delete_run_active_returns_409(tmp_path: Path) -> None:
             res = await ac.delete(f"/api/runs/{run_id}")
             assert res.status_code == 409, res.text
             assert "running" in res.json()["detail"]
+
+    asyncio.run(body())
+
+
+# ── W3: POST /api/runs/{id}/close ─────────────────────────────────────
+
+
+async def _start_chat(ac: AsyncClient, project_id: int) -> str:
+    """REST helper: POST a chat-mode run, return the new id."""
+    r = await ac.post(
+        "/api/runs",
+        json={"project_id": project_id, "mode": "chat"},
+    )
+    assert r.status_code == 201, r.text
+    return str(r.json()["id"])
+
+
+def test_close_endpoint_paused_chat(tmp_path: Path) -> None:
+    """POST /api/runs/{paused-chat-id}/close → 200, status flips to closed."""
+    s = _settings(tmp_path)
+    proj_root = tmp_path / "proj"
+    proj_root.mkdir()
+
+    async def body() -> None:
+        async with _client_with_core(s) as (ac, core):
+            project_id = await _register_project(ac, proj_root)
+            chat_id = await _start_chat(ac, project_id)
+            await core.wait_for_run(chat_id)  # settle on initial paused
+
+            res = await ac.post(f"/api/runs/{chat_id}/close")
+            assert res.status_code == 200, res.text
+            assert res.json()["status"] == "closed"
+
+    asyncio.run(body())
+
+
+def test_close_endpoint_409_on_task_mode(tmp_path: Path) -> None:
+    """POST /api/runs/{task-id}/close → 409 with mode error.
+
+    Close is chat-only; calling it on a task-mode run must surface a
+    state-conflict so the operator sees feedback (the cancel endpoint
+    is the right tool for a task)."""
+    s = _settings(tmp_path)
+    proj_root = tmp_path / "proj"
+    proj_root.mkdir()
+
+    async def body() -> None:
+        async with _client_with_core(s) as (ac, core):
+            project_id = await _register_project(ac, proj_root)
+            task_id = await _start_run(ac, project_id, "hello")
+            await core.wait_for_run(task_id)
+
+            # Force the row back to non-terminal so the mode check is
+            # what surfaces the 409 (not the already-terminal check).
+            from relay.orchestrator.lifecycle import set_run_status
+            await set_run_status(core._sm, task_id, "running", ended=False)
+
+            res = await ac.post(f"/api/runs/{task_id}/close")
+            assert res.status_code == 409, res.text
+            assert "chat-mode" in res.json()["detail"]
+
+    asyncio.run(body())
+
+
+def test_close_endpoint_unknown_run_returns_404(tmp_path: Path) -> None:
+    """POST /api/runs/{unknown}/close → 404."""
+    s = _settings(tmp_path)
+
+    async def body() -> None:
+        async with _client_with_core(s) as (ac, _core):
+            res = await ac.post("/api/runs/does-not-exist/close")
+            assert res.status_code == 404
+
+    asyncio.run(body())
+
+
+def test_close_endpoint_409_on_already_terminal(tmp_path: Path) -> None:
+    """POST /api/runs/{closed-chat}/close → 409 (already terminal).
+
+    Core is idempotent but the REST layer pre-checks so the operator
+    sees explicit feedback (mirrors the pattern for ``cancel`` on a
+    finished run)."""
+    s = _settings(tmp_path)
+    proj_root = tmp_path / "proj"
+    proj_root.mkdir()
+
+    async def body() -> None:
+        async with _client_with_core(s) as (ac, core):
+            project_id = await _register_project(ac, proj_root)
+            chat_id = await _start_chat(ac, project_id)
+            await core.wait_for_run(chat_id)
+            # First close succeeds.
+            r1 = await ac.post(f"/api/runs/{chat_id}/close")
+            assert r1.status_code == 200
+            # Second close is rejected at the REST layer.
+            r2 = await ac.post(f"/api/runs/{chat_id}/close")
+            assert r2.status_code == 409
+            assert "already terminal" in r2.json()["detail"]
 
     asyncio.run(body())

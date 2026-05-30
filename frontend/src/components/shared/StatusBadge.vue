@@ -6,9 +6,9 @@
 //
 // Props:
 //   status: string  — a run status. Known: running | done | failed |
-//                      paused | cancelled | awaiting_children. Any
-//                      other string is allowed and falls back to the
-//                      "unknown" treatment.
+//                      paused | cancelled | awaiting_children | closed.
+//                      Any other string is allowed and falls back to
+//                      the "unknown" treatment.
 
 import { computed } from 'vue'
 
@@ -21,6 +21,7 @@ const KNOWN = new Set([
   'paused',
   'cancelled',
   'awaiting_children',
+  'closed',
 ])
 
 /** CSS modifier class; falls back to `--unknown` for any other string. */
@@ -78,6 +79,16 @@ const variant = computed(() =>
    a glance. See ADR-34. */
 .status-badge--awaiting_children {
   color: var(--color-running);
+}
+
+/* Neutral grey + dashed border — chat closed by the operator.
+   Distinct from `cancelled` (dim grey, solid) so a chat ended cleanly
+   by the user reads differently from a task the user gave up on, and
+   from `done` (green) which signifies the agent emitted the terminating
+   sentinel. W3. */
+.status-badge--closed {
+  color: var(--color-text-dim);
+  border-style: dashed;
 }
 
 .status-badge--unknown {

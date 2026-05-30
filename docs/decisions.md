@@ -3122,3 +3122,70 @@ The fix requires distinguishing pi's view (`stop_reason`) from relay's reason fo
 
 **Related ADRs:** ADR-39 (original `harness_session_ended` contract — additively extended, not superseded; ADR-39 stays the load-bearing decision for the row's existence and ordering invariant); ADR-29 (OTel `relay.iter` span attributes from the same payload — unchanged); ADR-18 (pi-shape `messages` opacity — unchanged); ADR-10 (event store is the source of truth — the new key keeps that invariant by surfacing a fact already in the iter row to the timeline replay path).
 
+## ADR-49 — Chat mode: a conversational webui for pi alongside the chained-iter task model
+
+**Status:** active.
+
+**Date:** 2026-05-30.
+
+**Context.** Relay's task model — fresh harness session per iter with a compressed handoff between iters (ADR-20) — is exactly wrong for conversational queries. The operator asks "what is the current state of X?", the agent answers in three sentences, the operator wants to ask a follow-up — and under the task model each follow-up either (a) spawns a brand-new run with no shared context, forcing a re-bootstrap; or (b) lives as another iter of the original run, but then the ADR-20 fresh-context rule actively destroys the prior turn's working memory. Pi's native `--session <id>` resume mechanism is the right shape for this use case: each turn is a fresh process spawn but the model carries forward the prior turn's conversation. Relay had no UI surface for that mode of interaction, so operators were dropping out of the dashboard to a terminal `pi` invocation — losing replay, OTel, and the worktree isolation relay's runtime gives them for free.
+
+The plan (`docs/archive/2026-05-30-chat-mode-arc.md`, W1–W6) added chat mode as a parallel run mode rather than a separate persistence surface. Six work units landed between 2026-05-29 and 2026-05-30: W1 schema + run creation, W2 orchestrator loop branch, W3 `closed` terminal status + close endpoint, W4 frontend ChatView, W5 project-dashboard Chats tab, W6 promote-to-task UI + this ADR.
+
+**Decision — introduce `runs.mode = "task" | "chat"`; chat mode uses pi's native session-resume across iters, the opposite of ADR-20's fresh-context-per-iter invariant for task mode.** Two run modes coexist with opposite invariants; **chat mode does not relax ADR-20 in task mode** — the existing fresh-context guarantee for the task surface is untouched. Concrete contract:
+
+- **Schema.** One new column on the `runs` table: `mode TEXT NOT NULL DEFAULT 'task'`, constrained at the Python boundary (Pydantic `Literal["task", "chat"]`) to one of the two values. No new tables. Every existing read path that doesn't filter by mode keeps working unchanged.
+- **Loop branch.** `RelayCore.start_run(mode='chat')` direct-writes `run_started` + a synthetic `pause_requested` event and settles WITHOUT spawning a first iter — the run is "ready to chat" the moment it's created. The first `resume_run` answer becomes iter 1's prompt body. `RelayCore.resume_run` branches on `run.mode`: chat-mode threads the prior iter's `pi_session_id` as pi's `--session` argument and uses the operator's answer verbatim as the next iter's body (no preamble injection — pi already has the conversation in its session). `run_loop` branches on `ctx.mode`: chat mode skips the `RELAY_*` preamble assembly, skips sentinel enforcement (no `done`/`handoff`/`pause-for-input` parsing — pi's `agent_end` is the natural turn boundary), and on `session_end` writes a synthetic `pause_requested` so the loop returns to a `paused` state ready for the next message.
+- **Skill injection.** Chat-mode pi spawns omit the bundled engineering-team skill (ADR-44) — chat is a free-form conversation, not a phased build. Pi's own auto-discovery of `<cwd>/.pi/skills/` and `~/.pi/agent/skills/` is preserved, so project-local skills still apply (`docs/archive/2026-05-30-chat-mode-arc.md` OQ-6 resolution: project conventions should apply to chats).
+- **Worktree.** Chat-mode runs still provision a per-run worktree under `<project_root>/.relay/worktrees/<run_id>/` — pi may legitimately read or write project files during a chat, and the worktree isolates that work from the operator's main checkout the same way task-mode runs do.
+- **Event store + SSE + OTel.** All unchanged. The same `events` table, the same `assistant_text` / `tool_use_*` / `iter_started` / `iter_ended` rows, the same `Last-Event-ID` replay, the same `relay.run` / `relay.iter` OTel spans. The ChatView frontend renders the same events in a different shape (alternating user/assistant turns folded from `pause_resolved` + iter-scoped `assistant_text`). The ADR-46 streaming-delta pipeline (`assistant_delta` ephemeral frames) is reused as-is — chat felt the live-stream UX gap first, but the implementation predates this ADR.
+
+**Alternatives considered.**
+
+- **Separate `chats` table + dedicated persistence path.** Rejected: duplicates ~half the orchestrator infrastructure (event store, SSE, OTel span emission, worktree provisioner, pause/resume, MCP framework) for marginal schema purity. Sharing the `runs` table makes infra reuse free; a `mode` discriminator is cheaper than a parallel persistence stack.
+- **MCP-only "ask a question" tool — no UI.** Rejected: would route conversational queries through an external client (Claude Desktop, Cursor) with no replay, no shared OTel trace, no run history visible in the relay dashboard. The dashboard IS the control plane (ADR-15); a feature with no dashboard surface fights that invariant.
+- **Reuse the existing task-run path with `max_iters=1` + empty skills + a "chat preset".** Rejected: each "turn" would spawn a new worktree (wasteful), each conversation would consume a run-ID per message (mis-classified accounting), and the natural terminal status would be `failed` (no terminating sentinel emitted by pi in chat mode) which would muddy the timeline.
+
+**Consequences.**
+
+- Cost is small: one schema column, ~3 conditional branches in `core.py` / `orchestrator/loop.py` (`start_run`, `resume_run`, `run_loop`), one new `closed` terminal status (ADR-50), and four new frontend pieces (`ChatView.vue`, `ChatHeader.vue`, `ChatTranscript.vue`, `ChatInput.vue`). The dashboard's project view gained a Chats tab (W5) listing chat-mode runs separately from task-mode runs.
+- `docs/spec.md` §3 schema, §6 loop, §9 dashboard updated. `docs/orchestrator.md` documents the loop branch. `docs/dashboard.md` documents `ChatView`. `docs/getting-started.md` gains a brief "Want to chat with a project?" section.
+- Test count grew by **+20 backend tests** and **+25 frontend tests** across W1–W6.
+- **SSE wire shape (ADR-45/46, 2026-05-25 regression) carries over unchanged.** Chat mode emits no new event kinds — every event arrives as the standard `{seq, kind, payload, ts, run_id, iter_id}` envelope and the frontend events store special-cases ephemeral `heartbeat` / `assistant_delta` frames BEFORE the envelope-unwrap path. Adding any future chat-only event kind requires the dual-list update to `frontend/src/api/sse.ts::KNOWN_EVENT_TYPES` and `frontend/src/stores/events.ts::INVALIDATING_KINDS`.
+- **Promote-to-task (W6) handoff travels through `sessionStorage`, NOT the URL query string.** Long transcripts can exceed browser URL length caps (~2KB–32KB depending on stack); the URL only carries a `?promoteFrom=<chatRunId>` marker. `NewRunWizard` reads + removes the entry on mount, keeping the prefill one-shot.
+
+**Related ADRs:** ADR-20 (fresh context per iter — task-mode invariant; chat mode is the deliberate opposite, not a relaxation); ADR-44 (skill injection at spawn — chat mode opts out, project-local auto-discovery preserved); ADR-50 (`closed` terminal status — chat mode's voluntary-end mechanism); ADR-45 + ADR-46 (live-stream UX additions — chat mode reuses both unchanged); ADR-15 (dashboard is the control plane — ChatView is the chat-mode entry).
+
+## ADR-50 — `closed` as a new terminal run status (chat-mode voluntary-end)
+
+**Status:** active.
+
+**Date:** 2026-05-30.
+
+**Context.** Chat-mode runs (ADR-49) need a terminal status distinct from the existing three: `done` (engteam-style normal completion via the terminating sentinel) tells the operator the agent finished a planned task; `cancelled` (user cancelled a task they gave up on) carries a connotation of abandonment; `failed` (error) signals a problem. A chat conversation that the operator explicitly ended by clicking "Close chat" matches none of those — it's a clean, voluntary end with no implied success or failure. Using one of the existing three would be a category error that bleeds into the dashboard's status badges, the timeline's terminal-row styling, and any future analytics (e.g. "how often do task runs fail" vs "how long do chats last on average").
+
+**Decision — `closed` is a terminal `runs.status` value, written only by the `POST /api/runs/{id}/close` endpoint (W3).** Reachable only from `paused` (the natural chat-mode resting state between turns) and `running` (the operator clicked Close while pi was streaming a reply — the close mutation cancels the in-flight session first, then flips the row). The frontend `StatusBadge` renders `closed` with a dim-grey text + dashed border, deliberately distinct from `cancelled` (dim grey, solid) so a clean operator-initiated close reads differently from a task the user abandoned, and from `done` (green) which signifies the agent emitted the terminating sentinel.
+
+**Four `_TERMINAL` declarations must stay in sync** for any future status addition or change. Failing to update one of them produces silent bugs where SSE consumers think the run is live and try to reconnect, or where the events store keeps invalidating queries past the run's end:
+
+- `src/relay/api/events.py` (backend SSE generator's terminal check that closes the stream).
+- `src/relay/core.py` (multiple cascade/safety-net tuples for orphan recovery + cancel cascade — `awaiting_children` is excluded as non-terminal here per ADR-34).
+- `frontend/src/stores/events.ts` (`TERMINAL_STATUSES` — drives the events store's `markTerminal()` self-shutdown).
+- `frontend/src/views/RunDetailView.vue` (`TERMINAL` — task-mode view's lifecycle refetch guard).
+- `frontend/src/views/ChatView.vue` (`TERMINAL` — chat-mode view's lifecycle refetch guard; W4 added).
+
+**Alternatives considered.**
+
+- **Reuse `cancelled`.** Rejected: conflates "user gave up on a task that was supposed to succeed" with "user voluntarily ended a conversation that had no defined success state." A future analytics pass would count operator-initiated chat closes as failed cancellations of work-in-flight; the badge styling would conflate two distinct states.
+- **Reuse `done`.** Rejected: `done` is reserved for the agent emitting the terminating `[[engteam:done]]` sentinel under task mode. Chat mode has no terminating sentinel — operator clicks the button. Repurposing `done` would break the invariant that a `done` row implies a clean agent-initiated finish.
+- **No terminal close — leave chats in `paused` indefinitely.** Rejected: a chat the operator considers finished still appears in "live runs" lists and the events store keeps the SSE stream alive forever; this is a resource leak (one long-poll per never-closed chat) and a UX bug (the operator's project view fills up with `paused` rows they no longer care about).
+
+**Consequences.**
+
+- One new value in the `runs.status` enum; the type annotation in `src/relay/db/models.py` and the API schemas in `src/relay/api/schemas.py` widen to include it.
+- `POST /api/runs/{id}/close` is the single write entry point for the status (mirrors W3's contract). MCP gets no new tool — closing a chat is a UI affordance, not an agent capability.
+- `closed` rows are excluded from any UI surface that lists "live runs" the operator might want to resume (the events store's `markTerminal()` self-shutdown handles this). They remain in the runs table and the events table for replay/audit, exactly like `done` rows.
+- Old replays (pre-ADR-50) never carry the value — no migration is needed.
+
+**Related ADRs:** ADR-49 (chat mode — the only writer of this status); ADR-34 (`awaiting_children` is non-terminal — explicitly excluded from the `_TERMINAL` constants); ADR-10 (event store is the source of truth — the status transition is observable through the paired `run_ended` event).
+

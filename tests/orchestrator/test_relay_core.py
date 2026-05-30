@@ -25,7 +25,11 @@ from relay.core import RelayCore
 from relay.db import init_db
 from relay.db.models import Run
 from relay.observability import IterSpan, IterSpanContext, RunSpan
-from tests.orchestrator.scripted_harness import ScriptedHarness, TextScript
+from tests.orchestrator.scripted_harness import (
+    HangScript,
+    ScriptedHarness,
+    TextScript,
+)
 
 DONE_BLOCK = "All work complete.\n\n[[engteam:done]]"
 
@@ -258,6 +262,100 @@ async def test_list_runs_includes_children_when_requested(
         await core.aclose()
 
 
+# ── W1: chat-mode column + start_chat + list_runs mode filter ──────────
+
+
+async def test_start_run_defaults_to_task_mode(tmp_path: Path) -> None:
+    """Existing start_run callers (no mode kwarg) yield mode='task'.
+
+    Regression guard: a chat-mode default would silently break every
+    task-mode test in the suite. The default must stay 'task'.
+    """
+    core, _settings = await _make_core(tmp_path)
+    try:
+        project_id = await _make_project(core, tmp_path / "proj")
+        run_id = await core.start_run(project_id, "hello", max_iters=1)
+        run = await core.get_run(run_id)
+        assert run is not None
+        assert run.mode == "task"
+    finally:
+        await core.aclose()
+
+
+async def test_start_chat_creates_chat_mode_run(tmp_path: Path) -> None:
+    """start_chat() yields a chat-mode run with empty prompt_body and
+    the chat_max_iters cap, not the task max_iters cap. Post-W2 the
+    run lands in ``paused`` immediately with no iter rows; the first
+    ``resume_run`` becomes iter 1's prompt body.
+    """
+    settings = Settings(data_dir=tmp_path / ".relay", chat_max_iters=1)
+    init_db(settings).dispose()
+    core = RelayCore(
+        settings,
+        harness=ScriptedHarness([TextScript(DONE_BLOCK)]),
+    )
+    await core.start()
+    try:
+        project_id = await _make_project(core, tmp_path / "proj")
+        chat_id = await core.start_chat(project_id)
+        run = await core.get_run(chat_id)
+        assert run is not None
+        assert run.mode == "chat"
+        assert run.prompt_body == ""
+        assert run.max_iters == 1  # chat_max_iters override
+        result = await core.wait_for_run(chat_id)
+        assert result.status == "paused"
+    finally:
+        await core.aclose()
+
+
+async def test_list_runs_filters_by_mode(tmp_path: Path) -> None:
+    """list_runs(mode=...) returns only rows matching that mode.
+
+    Seeds rows via create_run directly to avoid the (W2-pending) loop
+    branch running the chat row's empty body.
+    """
+    from relay.orchestrator.lifecycle import create_run
+
+    core, _settings = await _make_core(tmp_path)
+    try:
+        project_id = await _make_project(core, tmp_path / "proj")
+        task_id = core._new_run_id()
+        chat_id = core._new_run_id()
+        await create_run(
+            core._sm,
+            run_id=task_id,
+            project_id=project_id,
+            prompt_body="task body",
+            max_iters=1,
+            iter_timeout=60,
+            worktree_path=None,
+            branch=None,
+            mode="task",
+        )
+        await create_run(
+            core._sm,
+            run_id=chat_id,
+            project_id=project_id,
+            prompt_body="",
+            max_iters=1,
+            iter_timeout=60,
+            worktree_path=None,
+            branch=None,
+            mode="chat",
+        )
+        all_rows = await core.list_runs(project_id)
+        assert {r.id for r in all_rows} == {task_id, chat_id}
+
+        only_tasks = await core.list_runs(project_id, mode="task")
+        assert {r.id for r in only_tasks} == {task_id}
+
+        only_chats = await core.list_runs(project_id, mode="chat")
+        assert {r.id for r in only_chats} == {chat_id}
+    finally:
+        await core.aclose()
+
+
 # ── Phase 9f Task 4: parent_iter_ctx threading ─────────────────────────
 
 
@@ -369,3 +467,181 @@ async def test_non_fanout_runs_pass_none_parent_iter_ctx(
     assert calls[0][1] is None, (
         f"non-fanout run_span got parent_iter_ctx={calls[0][1]!r}, expected None"
     )
+
+
+# ── W3: close_chat ─────────────────────────────────────────────────────
+
+
+async def _make_paused_chat(core: RelayCore, project_root: Path) -> str:
+    """Helper: register a project, start a chat, await the initial pause."""
+    project_id = await _make_project(core, project_root)
+    chat_id = await core.start_chat(project_id)
+    await core.wait_for_run(chat_id)
+    return chat_id
+
+
+async def test_close_chat_paused(tmp_path: Path) -> None:
+    """close_chat on a paused chat flips it to ``closed`` immediately.
+
+    The DB row carries ``status='closed'`` and the terminal event is
+    ``run_ended`` with the user-closed summary. No iter row is created
+    (the chat had not received a first message).
+    """
+    core, settings = await _make_core(tmp_path)
+    try:
+        chat_id = await _make_paused_chat(core, tmp_path / "proj")
+        await core.close_chat(chat_id)
+        run = await core.get_run(chat_id)
+        assert run is not None
+        assert run.status == "closed"
+    finally:
+        await core.aclose()
+
+    # Verify the terminal event via a throwaway sync engine — matches
+    # the test_loop.py pattern of asserting the event log is the source
+    # of truth (ADR-10).
+    engine = create_engine(settings.db_url)
+    try:
+        with SyncSession(engine) as s:
+            from relay.db.models import Event
+
+            rows = list(
+                s.scalars(
+                    sa_select(Event)
+                    .where(Event.run_id == chat_id)
+                    .order_by(Event.seq)
+                )
+            )
+            kinds = [r.kind for r in rows]
+            # W2 emits run_started + an initial pause_requested; W3
+            # appends a single run_ended.
+            assert kinds[-1] == "run_ended"
+            assert rows[-1].payload["status"] == "closed"
+            assert rows[-1].payload["summary"] == "user closed chat"
+    finally:
+        engine.dispose()
+
+
+async def test_close_chat_running_cancels_pi(tmp_path: Path) -> None:
+    """close_chat on a running chat cancels the harness session and
+    finalises the run as ``closed`` (NOT ``cancelled``).
+
+    Uses HangScript so the second turn (after the initial pause) sits
+    blocked until close_chat fires; the loop's CancelledError branch
+    returns ``LoopResult("cancelled", ...)`` and ``_apply_result``
+    swaps the terminal status because ``_RunState.closing`` is set.
+    """
+    settings = Settings(data_dir=tmp_path / ".relay")
+    init_db(settings).dispose()
+    harness = ScriptedHarness([HangScript()])
+    core = RelayCore(settings, harness=harness)
+    await core.start()
+    try:
+        chat_id = await _make_paused_chat(core, tmp_path / "proj")
+        # Kick off the first turn — pi hangs, leaving the chat
+        # ``running``. Wait until the harness has actually blocked
+        # so the close happens against a live session (no race).
+        import asyncio
+
+        await core.resume_run(chat_id, "hello")
+        await asyncio.wait_for(harness.blocked.wait(), timeout=5)
+
+        await core.close_chat(chat_id)
+        result = await core.wait_for_run(chat_id)
+        # The loop itself returns ``cancelled`` (the cancel-event path
+        # is shared with cancel_run); the swap to ``closed`` happens in
+        # ``_apply_result`` and lands in the DB row + run_ended event.
+        # ``wait_for_run`` returns the raw ``LoopResult`` for parity
+        # with the existing cancel-mid-run test, so we assert the DB
+        # row for the final terminal status.
+        assert result.status == "cancelled"
+
+        run = await core.get_run(chat_id)
+        assert run is not None and run.status == "closed"
+    finally:
+        await core.aclose()
+
+    engine = create_engine(settings.db_url)
+    try:
+        with SyncSession(engine) as s:
+            from relay.db.models import Event
+
+            terminal = list(
+                s.scalars(
+                    sa_select(Event)
+                    .where(Event.run_id == chat_id, Event.kind == "run_ended")
+                )
+            )
+            assert len(terminal) == 1, (
+                "exactly one run_ended row — no double-emit between "
+                "the cancel signal and the close override"
+            )
+            assert terminal[0].payload["status"] == "closed"
+            assert terminal[0].payload["summary"] == "user closed chat"
+    finally:
+        engine.dispose()
+
+
+async def test_close_chat_rejects_task_mode(tmp_path: Path) -> None:
+    """close_chat raises ValueError for a task-mode run (close is
+    chat-only). The REST layer maps this to 409 separately."""
+    import pytest
+
+    core, _settings = await _make_core(tmp_path)
+    try:
+        project_id = await _make_project(core, tmp_path / "proj")
+        task_id = await core.start_run(project_id, "hello", max_iters=1)
+        await core.wait_for_run(task_id)
+        # Sanity: the task ran to done; for the rejection we want a
+        # non-terminal task-mode run though, so make one we can probe.
+        live_task_id = await core.start_run(
+            project_id, "hello again", max_iters=1
+        )
+        await core.wait_for_run(live_task_id)  # also done after scripted
+        # close_chat must reject regardless of status — mode check is first.
+        with pytest.raises(ValueError, match="is not a chat-mode run"):
+            await core.close_chat(task_id)
+    finally:
+        await core.aclose()
+
+
+async def test_close_chat_idempotent_on_terminal(tmp_path: Path) -> None:
+    """close_chat on an already-closed chat is a silent no-op; calling
+    twice does not double-emit run_ended or change the terminal status.
+    """
+    core, settings = await _make_core(tmp_path)
+    try:
+        chat_id = await _make_paused_chat(core, tmp_path / "proj")
+        await core.close_chat(chat_id)
+        await core.close_chat(chat_id)  # idempotent
+        run = await core.get_run(chat_id)
+        assert run is not None and run.status == "closed"
+    finally:
+        await core.aclose()
+
+    engine = create_engine(settings.db_url)
+    try:
+        with SyncSession(engine) as s:
+            from relay.db.models import Event
+
+            terminal = list(
+                s.scalars(
+                    sa_select(Event)
+                    .where(Event.run_id == chat_id, Event.kind == "run_ended")
+                )
+            )
+            assert len(terminal) == 1
+    finally:
+        engine.dispose()
+
+
+async def test_close_chat_unknown_run_raises(tmp_path: Path) -> None:
+    """close_chat raises ValueError for an unknown run id."""
+    import pytest
+
+    core, _settings = await _make_core(tmp_path)
+    try:
+        with pytest.raises(ValueError, match="unknown run"):
+            await core.close_chat("does-not-exist")
+    finally:
+        await core.aclose()

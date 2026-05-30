@@ -22,6 +22,7 @@ are emitted here — they are intrinsically per-iter.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -58,6 +59,8 @@ from relay.orchestrator.lifecycle import (
 from relay.orchestrator.preamble import build_preamble, compose_prompt
 
 __all__ = ["LoopResult", "SessionHandle", "run_loop"]
+
+logger = logging.getLogger(__name__)
 
 _TERMINAL = {"done", "handoff", "pause", "fanout"}
 _SIGNAL_CONFIG = SignalConfig(strategy="text_sentinels")
@@ -283,7 +286,14 @@ async def run_loop(
     seq = ctx.start_seq
     phase = ctx.phase
     body = ctx.body
-    last_session_id: str | None = None  # always None between iters
+    is_chat = ctx.mode == "chat"
+    # Task mode (ADR-20 invariant): always None between iters — fresh
+    # context per iter is the value prop, pi resume is crash recovery only.
+    # Chat mode (ADR-NN, intentional inversion): starts from ctx.resume_session_id
+    # (the prior iter's pi_session_id, threaded by resume_run). Each chat-mode
+    # loop call runs at most one iter (auto-pauses on session_end), so there
+    # is no between-iter carry-forward to maintain inside the loop body.
+    last_session_id: str | None = ctx.resume_session_id if is_chat else None
 
     # ADR-22: a resumed run is guaranteed >=1 post-answer iter even if it
     # paused on its last budgeted iter. For a fresh run (start_seq == 0)
@@ -312,8 +322,16 @@ async def run_loop(
 
     while seq < effective_max:
         seq += 1
-        preamble = build_preamble(ctx.run_dir, phase)
-        full_prompt = compose_prompt(ctx.run_dir, phase, body)
+        if is_chat:
+            # ADR-NN: chat mode sends the user's message verbatim. The
+            # RELAY_* preamble is engteam-skill plumbing (RUN_DIR / PHASE);
+            # a conversational pi has no skill loaded and would render the
+            # preamble as a noisy prefix on every turn.
+            preamble = ""
+            full_prompt = body
+        else:
+            preamble = build_preamble(ctx.run_dir, phase)
+            full_prompt = compose_prompt(ctx.run_dir, phase, body)
         iter_id = await open_iter(
             sm,
             run_id=ctx.run_id,
@@ -355,6 +373,13 @@ async def run_loop(
                 env={},  # PI_AGENT_SDK is injected inside the harness
                 signal_config=_SIGNAL_CONFIG,
                 resume_from=last_session_id,
+                # ADR-NN: chat mode suppresses skill injection — the
+                # engteam skill is the *opposite* of what chat mode
+                # wants. ``[]`` is distinct from ``None``: ``None`` means
+                # "use settings.pi_skill_paths" (task default); ``[]``
+                # means "explicit zero skills for this spawn". Pi's own
+                # auto-discovery of <cwd>/.pi/skills/ is unaffected.
+                skill_paths=[] if is_chat else None,
             )
             session_handle.session = session
             outcome = await _drive_iter(
@@ -404,6 +429,56 @@ async def run_loop(
                     messages=outcome.messages,
                 )
                 return LoopResult("failed", reason="timeout")
+
+            if is_chat and outcome.stop_reason != "crash":
+                # ADR-NN: chat mode never terminates on a sentinel and
+                # never fails on agent_end_no_signal. Any non-cancelled,
+                # non-timeout, non-crash exit auto-pauses for the next
+                # user message. A stray sentinel (pi got confused — chat
+                # mode loads no engteam skill, so any sentinel is noise)
+                # caused ``_drive_iter`` to break early; its finally then
+                # cancelled the pi session, so ``stop_reason`` is now
+                # ``"cancelled"`` even though no external cancel fired.
+                # Log + ignore + auto-pause. ``outcome.signal`` (if set)
+                # already produced a ``signal_emit`` event row that
+                # ``_drive_iter`` wrote before breaking — left in place
+                # as an honest record of what pi said; relay just
+                # doesn't act on it.
+                if outcome.signal is not None:
+                    logger.warning(
+                        "chat-mode iter %d emitted unexpected sentinel "
+                        "%r; ignoring (chat mode auto-pauses on "
+                        "session_end)",
+                        iter_id, outcome.signal.kind,
+                    )
+                if outcome.marker_headline:
+                    logger.warning(
+                        "chat-mode iter %d had a marker-contract "
+                        "violation (%s); auto-pausing anyway",
+                        iter_id, outcome.marker_headline,
+                    )
+                pause_id = f"chat-{ctx.run_id}-{seq}"
+                synth_args: dict[str, Any] = {
+                    "id": pause_id,
+                    "question": "",
+                    "next_prompt": "",
+                    "review_paths": [],
+                }
+                iter_span.set_exit("signal")
+                await _finish_iter(
+                    store, run_id=ctx.run_id, iter_id=iter_id, seq=seq,
+                    signal_kind="pause", signal_args=synth_args,
+                    exit_reason="signal",
+                    stop_reason=outcome.stop_reason,
+                    messages=outcome.messages,
+                )
+                return LoopResult(
+                    "paused",
+                    reason="signal",
+                    question="",
+                    next_prompt="",
+                    pause_id=pause_id,
+                )
 
             signal = outcome.signal
             if signal is None:

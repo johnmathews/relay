@@ -60,7 +60,7 @@ import type { EventRow } from '@/lib/queries'
  * stop receiving the eventual `child_runs_resolved` + synthesizer-iter
  * events. See ADR-34 / `docs/spec.md` §3.1.
  */
-const TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled'])
+const TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled', 'closed'])
 
 /**
  * Relay event kinds (spec §3.2) whose arrival should refresh the

@@ -108,6 +108,14 @@ class _RunState:
     # phase _RunState). None for top-level user-initiated runs, which are
     # trace roots. ADR-38.
     parent_iter_ctx: IterSpanContext | None = None
+    # W3 (chat-mode close): close_chat on a running chat re-uses the
+    # cancel signalling path but the final status must land as ``closed``
+    # rather than ``cancelled``. Flag is set under ``_enqueue_lock``
+    # immediately before signalling; ``_apply_result`` consults it when
+    # the loop returns ``LoopResult("cancelled", ...)`` and swaps the
+    # terminal status + summary. No effect on task-mode runs (which
+    # never call close_chat) or any other code path.
+    closing: bool = False
 
 
 class RelayCore:
@@ -260,7 +268,7 @@ class RelayCore:
         starting parent at the top-level call site so the first recursion
         cannot revisit the root.
         """
-        terminal = ("done", "failed", "cancelled")
+        terminal = ("done", "failed", "cancelled", "closed")
         visited = _visited if _visited is not None else set()
         async with self._sm() as s:
             children = list(
@@ -307,7 +315,7 @@ class RelayCore:
         Depth-first: a grandchild settles before its parent, so the
         intermediate parent observes a fully-cancelled subtree.
         """
-        terminal = ("done", "failed", "cancelled")
+        terminal = ("done", "failed", "cancelled", "closed")
         visited = _visited if _visited is not None else set()
         async with self._sm() as s:
             children = list(
@@ -569,7 +577,7 @@ class RelayCore:
         two near-simultaneous child terminals can't both resume the
         parent.
         """
-        terminal = ("done", "failed", "cancelled")
+        terminal = ("done", "failed", "cancelled", "closed")
         async with self._enqueue_lock:
             async with self._sm() as s:
                 parent = await s.get(Run, parent_run_id)
@@ -763,7 +771,7 @@ class RelayCore:
         # watcher would observe a non-awaiting parent and no-op anyway.
         run_row = await load_run(self._sm, ctx.run_id)
         if run_row is not None and run_row.status in (
-            "done", "failed", "cancelled"
+            "done", "failed", "cancelled", "closed"
         ):
             state.result = LoopResult(
                 run_row.status,
@@ -901,14 +909,26 @@ class RelayCore:
                 parent_iter_ctx=result.fanout_parent_ctx,
             )
             return
+        # W3 (chat-mode close): if close_chat signalled this loop, the
+        # loop returns ``cancelled`` (the cancel-event path is shared with
+        # cancel_run). Swap to ``closed`` here so the terminal event the
+        # rest of the system observes — DB row, run_ended payload, SSE —
+        # matches the operator's intent. Only consulted when the live
+        # ``_RunState`` exists and ``closing`` was set.
+        final_status = result.status
+        final_summary = result.summary or result.reason
+        if result.status == "cancelled":
+            state = self._runs.get(ctx.run_id)
+            if state is not None and state.closing:
+                final_status = "closed"
+                final_summary = "user closed chat"
         await set_run_status(
-            self._sm, ctx.run_id, result.status, ended=True
+            self._sm, ctx.run_id, final_status, ended=True
         )
         await self._store.append(
             ctx.run_id,
             "run_ended",
-            {"status": result.status,
-             "summary": result.summary or result.reason},
+            {"status": final_status, "summary": final_summary},
         )
 
     # ── public API (write path; ADR-07/ADR-15) ─────────────────────────
@@ -1106,6 +1126,7 @@ class RelayCore:
         max_iters: int | None = None,
         iter_timeout: int | None = None,
         parent_run_id: str | None = None,
+        mode: str = "task",
     ) -> str:
         async with self._sm() as s:
             project = await s.get(Project, project_id)
@@ -1117,7 +1138,14 @@ class RelayCore:
         wt, branch, run_dir = await provision_workspace(
             project_root, run_id
         )
-        max_i = max_iters or self._settings.max_iters
+        # Chat-mode default cap is higher (200) than task mode (12) — each
+        # user turn = one iter and conversations are open-ended (ADR-NN).
+        default_max = (
+            self._settings.chat_max_iters
+            if mode == "chat"
+            else self._settings.max_iters
+        )
+        max_i = max_iters or default_max
         timeout = iter_timeout or self._settings.iter_timeout
         await create_run(
             self._sm,
@@ -1129,14 +1157,39 @@ class RelayCore:
             worktree_path=str(wt) if wt else None,
             branch=branch,
             parent_run_id=parent_run_id,
+            mode=mode,
         )
         await self._store.append(
             run_id,
             "run_started",
             {"project_id": project_id, "prompt_body": prompt_body,
-             "max_iters": max_i},
+             "max_iters": max_i, "mode": mode},
         )
         self._runs[run_id] = _RunState()
+        if mode == "chat":
+            # ADR-NN: chat mode starts paused with no iter rows. The
+            # first ``resume_run(answer)`` becomes iter 1's prompt body.
+            # No worktree-spawn, no preamble — the run sits idle until
+            # the user sends the first message. ``run_started`` is
+            # written above for the dashboard timeline; ``pause_requested``
+            # below marks the "waiting for first message" boundary so
+            # ChatView renders an empty transcript with a focused input.
+            await set_run_status(
+                self._sm, run_id, "paused", ended=False
+            )
+            await self._store.append(
+                run_id, "pause_requested", {"question": ""},
+            )
+            state = self._runs[run_id]
+            state.result = LoopResult(
+                "paused",
+                reason="chat_initial",
+                question="",
+                next_prompt="",
+                pause_id=f"chat-{run_id}-0",
+            )
+            state.settled.set()
+            return run_id
         await self._queue.put(
             RunContext(
                 run_id=run_id,
@@ -1149,9 +1202,24 @@ class RelayCore:
                 phase=None,
                 body=prompt_body,
                 parent_run_id=parent_run_id,
+                mode=mode,
             )
         )
         return run_id
+
+    async def start_chat(self, project_id: int) -> str:
+        """Start a chat-mode run with an empty initial body (W1).
+
+        Chat runs use pi's native multi-turn model: the run sits paused
+        immediately so the user can type the first message, which becomes
+        the first iter's prompt body. The loop branch that turns this
+        into a useful conversation lands in W2; in W1 isolation a chat
+        run created here will be picked up by the existing task-mode
+        loop and complete trivially against a scripted/empty harness.
+        """
+        return await self.start_run(
+            project_id, prompt_body="", mode="chat"
+        )
 
     async def cancel_run(self, run_id: str) -> None:
         """Cancel ``run_id``.
@@ -1196,7 +1264,7 @@ class RelayCore:
                     summary="parent cancelled by user",
                 )
                 return
-            if run.status in ("done", "failed", "cancelled"):
+            if run.status in ("done", "failed", "cancelled", "closed"):
                 # Already terminal — idempotent no-op.
                 return
 
@@ -1223,6 +1291,93 @@ class RelayCore:
         if session is not None:
             await session.cancel()
 
+    async def close_chat(self, run_id: str) -> None:
+        """Close a chat-mode run (W3).
+
+        Chat-only sibling of :meth:`cancel_run`: a chat that the operator
+        explicitly ended via the dashboard's Close button (or the
+        ``relay__close_chat`` MCP tool) flips to a dedicated ``closed``
+        terminal status — distinct from ``cancelled`` (operator gave up
+        on an in-flight task) and ``done`` (the agent emitted the
+        terminating sentinel) so the dashboard can render a neutral
+        "ended" pill and not mix human-ended chats into the task-failure
+        list.
+
+        Three branches mirror :meth:`cancel_run`:
+
+        1. **Paused** (the common case for chat: user is between turns):
+           no loop is alive. Write ``set_run_status(closed, ended=True)``
+           + ``run_ended`` directly under ``_enqueue_lock``.
+        2. **Running** (user closed while pi was mid-response): set
+           ``state.closing = True`` under the lock, then signal the loop
+           (``cancel_event`` + ``session.cancel()``) outside the lock.
+           The loop returns ``LoopResult("cancelled", ...)`` and
+           :meth:`_apply_result` consults ``state.closing`` to swap the
+           terminal status from ``cancelled`` to ``closed``.
+        3. **Running but no in-memory state** (ADR-31 orphan safety net):
+           write the DB row directly with an orphan summary.
+
+        Raises ``ValueError`` for unknown run or non-chat mode. Already-
+        terminal runs (including a prior ``closed``) are idempotent
+        no-ops — the REST layer pre-checks and returns 409 for them so
+        the operator gets feedback; the MCP layer is permissive.
+        """
+        async with self._enqueue_lock:
+            run = await load_run(self._sm, run_id)
+            if run is None:
+                raise ValueError(f"unknown run {run_id}")
+            if run.mode != "chat":
+                raise ValueError(
+                    f"run {run_id} is not a chat-mode run "
+                    f"(mode={run.mode!r})"
+                )
+            if run.status in ("done", "failed", "cancelled", "closed"):
+                # Already terminal — idempotent no-op (mirrors cancel_run).
+                return
+            if run.status == "paused":
+                # No active loop — write directly.
+                await set_run_status(
+                    self._sm, run_id, "closed", ended=True
+                )
+                await self._store.append(
+                    run_id,
+                    "run_ended",
+                    {"status": "closed", "summary": "user closed chat"},
+                )
+                return
+            # Anything other than running here would be a chat-mode run
+            # in an unexpected state (chats don't fan out, so
+            # ``awaiting_children`` is not reachable for them). Treat as
+            # state conflict.
+            if run.status != "running":
+                raise ValueError(
+                    f"run {run_id} is not in a closable state "
+                    f"(status={run.status!r})"
+                )
+            state = self._runs.get(run_id)
+            if state is None:
+                # Orphan safety net (ADR-31): row says running but no
+                # in-process task owns it.
+                await set_run_status(
+                    self._sm, run_id, "closed", ended=True
+                )
+                await self._store.append(
+                    run_id,
+                    "run_ended",
+                    {"status": "closed",
+                     "summary": "orphaned: process state lost"},
+                )
+                return
+            # Mark the state under the lock so _apply_result observes the
+            # flag when the loop returns. The actual signalling happens
+            # outside the lock (session.cancel() may await pi I/O).
+            state.closing = True
+
+        state.cancel_event.set()
+        session = state.session_handle.session
+        if session is not None:
+            await session.cancel()
+
     async def resume_run(self, run_id: str, answer: str) -> None:
         async with self._enqueue_lock:
             run = await load_run(self._sm, run_id)
@@ -1234,9 +1389,6 @@ class RelayCore:
             live = self._runs.get(run_id)
             if live is not None and not live.settled.is_set():
                 raise ValueError(f"run {run_id} is already running")
-            paused = await latest_paused_iter(self._sm, run_id)
-            if paused is None or paused.signal_args is None:
-                raise ValueError(f"run {run_id} has no saved pause prompt")
             # Resolve the project before any side effect: a deleted
             # project must fail loudly, not silently run pi in the
             # process CWD (which corrupts an unrelated directory).
@@ -1247,12 +1399,54 @@ class RelayCore:
                     f"run {run_id} project {run.project_id} no longer exists"
                 )
             project_root = Path(project.root_path)
-            args: dict[str, Any] = dict(paused.signal_args)
-            body = compose_resume_prompt(
-                str(args.get("next_prompt", "")),
-                str(args.get("question", "")),
-                answer,
-            )
+
+            if run.mode == "chat":
+                # ADR-NN: chat mode resume — the user's message is the
+                # next iter's body verbatim (no preamble, no engteam-style
+                # answer composition). For the FIRST message, no prior
+                # iter exists and ``resume_session_id`` is None; for
+                # subsequent messages, thread the most-recent iter's
+                # pi_session_id so pi rehydrates the conversation via
+                # its own session storage. Chat mode also has no
+                # ``review_paths`` artifact accounting (14e), so
+                # ``paused_predecessor_iter_id`` stays None.
+                async with self._sm() as s:
+                    prior = await s.scalar(
+                        select(Iter)
+                        .where(Iter.run_id == run_id)
+                        .order_by(Iter.seq.desc())
+                        .limit(1)
+                    )
+                body = answer
+                resume_session_id = prior.pi_session_id if prior else None
+                start_seq = prior.seq if prior else 0
+                paused_predecessor_iter_id: int | None = None
+                phase: str | None = None
+            else:
+                paused = await latest_paused_iter(self._sm, run_id)
+                if paused is None or paused.signal_args is None:
+                    raise ValueError(
+                        f"run {run_id} has no saved pause prompt"
+                    )
+                args: dict[str, Any] = dict(paused.signal_args)
+                body = compose_resume_prompt(
+                    str(args.get("next_prompt", "")),
+                    str(args.get("question", "")),
+                    answer,
+                )
+                resume_session_id = None
+                start_seq = paused.seq
+                paused_predecessor_iter_id = paused.id
+                run_dir_for_phase = (
+                    project_data_dir(project_root) / "runs" / run_id
+                )
+                phase_file = run_dir_for_phase / "phase"
+                phase = (
+                    phase_file.read_text().strip()
+                    if phase_file.exists()
+                    else None
+                )
+
             # Projection first, then the append-only event — same order
             # the loop's other transitions use (ADR-10 consumers see a
             # consistent status when the event lands).
@@ -1262,12 +1456,6 @@ class RelayCore:
             )
 
             run_dir = project_data_dir(project_root) / "runs" / run_id
-            phase_file = run_dir / "phase"
-            phase = (
-                phase_file.read_text().strip()
-                if phase_file.exists()
-                else None
-            )
             self._runs[run_id] = _RunState()
             await self._queue.put(
                 RunContext(
@@ -1279,15 +1467,18 @@ class RelayCore:
                     run_dir=run_dir,
                     max_iters=run.max_iters,
                     iter_timeout=run.iter_timeout,
-                    start_seq=paused.seq,
+                    start_seq=start_seq,
                     phase=phase,
                     body=body,
-                    # 14e: the resumed loop's first iter carries
-                    # `relay.pause.artifacts_edited_count` on its OTel
-                    # iter span; the count is scoped to this paused
-                    # iter's id (events appended via the 14a write
-                    # endpoint while the run was paused).
-                    paused_predecessor_iter_id=paused.id,
+                    # 14e: task-mode resume threads the paused iter's
+                    # id so the resumed loop's first iter carries
+                    # ``relay.pause.artifacts_edited_count`` on its OTel
+                    # iter span. Chat mode leaves this None — there is
+                    # no review surface, so the count is structurally
+                    # zero and the attribute is omitted.
+                    paused_predecessor_iter_id=paused_predecessor_iter_id,
+                    mode=run.mode,
+                    resume_session_id=resume_session_id,
                 )
             )
 
@@ -1308,6 +1499,7 @@ class RelayCore:
         project_id: int | None = None,
         *,
         include_children: bool = False,
+        mode: str | None = None,
     ) -> list[Run]:
         """List runs for a project (or all if ``project_id`` is None).
 
@@ -1315,6 +1507,10 @@ class RelayCore:
         pass ``include_children=True`` to include child runs dispatched via
         fanout. The dashboard Run lists (spec.md §9.1, 9e) default-hide children
         so the list stays readable when fanout is in use.
+
+        ``mode`` filter (W1): ``"task"`` / ``"chat"`` / ``None`` (no filter).
+        Chats and tasks share the runs table but the dashboard renders them
+        as separate surfaces (ADR-NN).
         """
         async with self._sm() as s:
             stmt = select(Run).order_by(Run.started_at.desc())
@@ -1322,6 +1518,8 @@ class RelayCore:
                 stmt = stmt.where(Run.project_id == project_id)
             if not include_children:
                 stmt = stmt.where(Run.parent_run_id.is_(None))
+            if mode is not None:
+                stmt = stmt.where(Run.mode == mode)
             return list(await s.scalars(stmt))
 
     async def list_children(self, parent_run_id: str) -> list[Run]:

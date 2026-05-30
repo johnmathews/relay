@@ -628,6 +628,69 @@ the heartbeat arrived → live (green, pulsing dot); 15–60s → slow
 stream and a stale clock would be misleading. The badge is what makes
 a quiet "pi is thinking" phase read as healthy instead of frozen.
 
+## Chat mode (ADR-49)
+
+Chat mode renders the same backend resources (a `runs` row with
+`mode='chat'`, the same `events` table, the same SSE stream) in a
+conversational shape. The route is `/chats/:id`; `RunDetailView`'s
+setup watcher redirects a `mode='chat'` run opened via `/runs/:id` to
+the chat view, and `ChatView`'s symmetric guard redirects a
+`mode='task'` run opened via `/chats/:id` back to the run-detail view.
+
+**Composition.** `ChatView.vue` is a vertical slice that mirrors
+`RunDetailView`'s orchestration:
+
+- `ChatHeader.vue` — sticky bar with the back-link, project name,
+  status badge, "Close chat" button (`POST /api/runs/{id}/close` →
+  status `closed`, ADR-50; hidden on terminal status), and "Promote
+  to task" button (W6).
+- `ChatTranscript.vue` — the folded transcript.
+- `ChatInput.vue` — composer + Send wired to `useResumeRunMutation`.
+
+**Transcript fold.** The events store's already-unwrapped event list
+is folded into alternating user/assistant turns:
+
+- `pause_resolved.payload.answer` with non-empty text → ONE user
+  turn. The initial chat pause (synthetic `pause_requested` written
+  at `start_run` with no answer yet) contributes nothing.
+- Each `iter_started` … `iter_ended` block (matched by
+  `payload.seq`) → ONE assistant turn, body composed from the
+  concatenated `assistant_text` events with `payload.kind !=
+  'thinking'`. The chat surface intentionally hides reasoning (the
+  timeline view in `/runs/:id` remains the surface for thinking
+  channel — both modes share the same event store). Tool calls
+  interleave inline as `ToolCallCard` chips with `embedded` styling.
+- An open iter with no canonical `assistant_text` yet displays the
+  ADR-46 streaming-delta stream via the events store's `pendingTurns`
+  — same source `TimelinePane` reads, same content. The pending
+  pseudo-row is dropped automatically when the canonical
+  `assistant_text` event arrives.
+
+Both rendered text channels use `MarkdownRender` (the same XSS-safe
+markdown-it + shiki pipeline `TimelinePane` and `PauseAnswerForm`
+use); `ToolCallCard` is reused as-is in `embedded` mode so the
+transcript doesn't paint card-in-card chrome.
+
+**Promote to task (W6).** The header's promote button builds the
+transcript prefill via the pure helper `frontend/src/lib/promotion.ts`
+`buildPromotionPrompt({events, projectName})` (same fold the
+transcript renders, including the thinking-kind drop), writes the
+body to `sessionStorage` under `relay:promotion:<chatRunId>`, and
+navigates to `/projects/:id/new-run?promoteFrom=<chatRunId>`. The New
+Run wizard reads and removes the entry on mount, seeds the inline
+prompt with the prefill, and the user proceeds through the existing
+preview-then-start flow. **The chat run stays alive** — promotion is
+non-destructive (the operator may want to keep talking and promote
+again). URL-based handoff was rejected: long transcripts can exceed
+browser URL length caps (~2KB-32KB).
+
+**Project view — Chats tab (W5).** The Project view's runs pane
+defaults to task-mode runs; a sibling tab lists chat-mode runs
+separately. The two are queried with `?mode=task` and `?mode=chat`
+filters on `GET /api/runs`; a "New chat" affordance creates a
+chat-mode run inline (no wizard — the chat starts in `paused` with no
+iters, ready for the operator's first message).
+
 ## Toolchain mandates (ADR-26 — do not regress)
 
 1. **vue-router v5** (not v4) — adopted directly (`lib/routes.ts`).

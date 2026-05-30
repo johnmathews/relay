@@ -7,7 +7,7 @@ fields the corresponding ``RelayCore`` method accepts.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -69,9 +69,22 @@ class RunCreate(BaseModel):
     prompt_id: int | None = None
     max_iters: int | None = None
     iter_timeout: int | None = None
+    mode: Literal["task", "chat"] = "task"
 
     @model_validator(mode="after")
-    def _exactly_one_prompt_source(self) -> RunCreate:
+    def _validate_prompt_source(self) -> RunCreate:
+        # Chat mode (W1): runs start empty — the first user message
+        # becomes the first iter's body via resume_run (W2). Reject any
+        # prompt_body or prompt_id on a chat create so callers can't
+        # accidentally seed a chat with task-mode plumbing.
+        if self.mode == "chat":
+            if self.prompt_id is not None or (
+                self.prompt_body is not None and self.prompt_body != ""
+            ):
+                raise ValueError(
+                    "chat-mode runs must omit prompt_body and prompt_id"
+                )
+            return self
         if (self.prompt_body is None) == (self.prompt_id is None):
             raise ValueError(
                 "exactly one of prompt_body / prompt_id must be provided"
@@ -109,6 +122,7 @@ class RunOut(BaseModel):
     prompt_body: str
     user_id: int
     status: str
+    mode: str
     started_at: UtcDatetime
     ended_at: UtcDatetime | None
     max_iters: int

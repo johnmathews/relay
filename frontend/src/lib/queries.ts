@@ -189,6 +189,15 @@ export interface PreviewSelection {
 export interface RunListFilters {
   projectId?: number
   status?: string
+  /**
+   * Run mode filter (W1). `"task"` for the engteam-style chained-iter
+   * runs, `"chat"` for the conversational shell. Omit to include both.
+   * The Chats list in ProjectView uses `'chat'` to get the
+   * project-scoped chats; the existing Runs list omits it (task and
+   * chat runs would otherwise mix in one list, which is the wrong UX
+   * per docs/proposals/chat-mode.md decision 9).
+   */
+  mode?: string
   limit?: number
   offset?: number
   /**
@@ -421,6 +430,7 @@ export function useRunsQuery(
             query: {
               project_id: f.projectId,
               status: f.status,
+              mode: f.mode,
               limit: f.limit,
               offset: f.offset,
               include_children: f.includeChildren,
@@ -428,6 +438,60 @@ export function useRunsQuery(
           },
         }),
       )
+    },
+  })
+}
+
+/**
+ * `useQuery` for the project's chat-mode runs
+ * (`GET /api/runs?project_id=…&mode=chat`). Thin specialisation of
+ * {@link useRunsQuery} that pre-binds the mode filter and reuses the
+ * same `keys.runList(...)` cache key under the broad `['runs']`
+ * prefix, so any cache invalidation that drops `keys.runs()` (a new
+ * run created, a close mutation, an SSE lifecycle event from the
+ * events store) refreshes the chats list in lockstep with task lists.
+ *
+ * W5 — docs/proposals/chat-mode.md. Decision 9: chats are runs but
+ * are visually segregated, so the dashboard wants two separate
+ * queries even though they share an endpoint. The mode filter on
+ * `/api/runs` lets us do that without a dedicated endpoint.
+ *
+ * The query intentionally keeps the response sort the backend
+ * provides (created_at descending, established by the existing
+ * `list_runs` order) — re-sorting client-side would diverge from the
+ * Runs pane's order on the same view, which is the wrong UX.
+ */
+export function useProjectChatsQuery(
+  projectId: MaybeRefOrGetter<number>,
+): UseQueryReturn<Run[]> {
+  return useRunsQuery(() => ({
+    projectId: toValue(projectId),
+    mode: 'chat',
+  }))
+}
+
+/**
+ * `useMutation` to create a new chat-mode run
+ * (`POST /api/runs` body `{project_id, mode: "chat"}`; W1 +
+ * docs/proposals/chat-mode.md). Returns the created Run so callers
+ * can navigate to `/chats/<id>` on success. Invalidates `keys.runs()`
+ * so the project view's Chats list (and any hub status) refreshes.
+ */
+export function useCreateChatMutation(): UseMutationReturn<
+  Run,
+  number,
+  ApiError
+> {
+  const cache = useQueryCache()
+  return useMutation({
+    mutation: async (projectId: number) =>
+      unwrap(
+        await api.POST('/api/runs', {
+          body: { project_id: projectId, mode: 'chat' },
+        }),
+      ),
+    onSuccess: () => {
+      void cache.invalidateQueries({ key: keys.runs() })
     },
   })
 }
@@ -798,6 +862,36 @@ export function useDeleteRunMutation(): UseMutationReturn<
       )
     },
     onSuccess: () => {
+      void cache.invalidateQueries({ key: keys.runs() })
+    },
+  })
+}
+
+/**
+ * `useMutation` to close a chat-mode run
+ * (`POST /api/runs/{id}/close`; W3). The endpoint returns 409 if the
+ * run is task-mode (chat-only close) or already terminal, and 404 if
+ * unknown — both surface as an `ApiError` carrying `status`. On success
+ * the run transitions to the `closed` terminal status; invalidate
+ * `keys.runDetail(id)` (the chat view re-fetches and goes terminal)
+ * and `keys.runs()` (every chat list / project view picks up the new
+ * status).
+ */
+export function useCloseChatMutation(): UseMutationReturn<
+  Run,
+  string,
+  ApiError
+> {
+  const cache = useQueryCache()
+  return useMutation({
+    mutation: async (runId: string) =>
+      unwrap(
+        await api.POST('/api/runs/{run_id}/close', {
+          params: { path: { run_id: runId } },
+        }),
+      ),
+    onSuccess: (data: Run) => {
+      void cache.invalidateQueries({ key: keys.runDetail(data.id) })
       void cache.invalidateQueries({ key: keys.runs() })
     },
   })

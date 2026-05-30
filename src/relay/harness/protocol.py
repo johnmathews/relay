@@ -170,4 +170,5 @@ class Harness(Protocol):
         env: dict[str, str],
         signal_config: SignalConfig,
         resume_from: str | None = None,
+        skill_paths: list[Path] | None = None,
     ) -> HarnessSession: ...

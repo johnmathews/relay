@@ -97,6 +97,29 @@ curl -s http://127.0.0.1:7800/api/runs
 > earlier `relay install-skill` subcommand was retired by ADR-44 — the
 > bundled engineering-team skill is now injected into pi automatically.
 
+### Want to chat with a project? (ADR-49)
+
+Relay also has a conversational mode alongside the chained-iter task
+flow. Open a project and click **New chat** (sibling to **New run**)
+to land in a chat surface: empty transcript, focused composer, the
+status badge sitting in `paused` waiting for your first message.
+Type, hit Send, watch pi answer with live token streaming, follow up.
+Each message threads through pi's native `--session` resume so the
+model carries forward the prior turn's conversation — the opposite of
+task mode's fresh-context-per-iter invariant.
+
+When the conversation has led somewhere actionable, click **Promote
+to task** in the chat header: the New Run wizard opens with the
+chat transcript prefilled into the prompt body, ready for you to
+edit and start a normal task-mode run. The chat itself stays open
+— promotion is non-destructive, and you can keep talking and
+promote again later.
+
+Click **Close chat** when you're done; the run lands in the `closed`
+terminal status (distinct from `done` / `cancelled` / `failed`) and
+clears out of the live-runs list. Past chats remain in the project's
+Chats tab for replay.
+
 ## 5. Register the MCP server and smoke-test it
 
 The backend mounts an MCP server at `/mcp` with seven tools that are

@@ -16,6 +16,7 @@ describe('StatusBadge', () => {
       'paused',
       'cancelled',
       'awaiting_children',
+      'closed',
     ]) {
       const w = mount(StatusBadge, { props: { status: s } })
       expect(w.classes()).toContain(`status-badge--${s}`)
@@ -30,6 +31,18 @@ describe('StatusBadge', () => {
     const w = mount(StatusBadge, { props: { status: 'awaiting_children' } })
     expect(w.text()).toBe('awaiting_children')
     expect(w.classes()).toContain('status-badge--awaiting_children')
+    expect(w.classes()).not.toContain('status-badge--unknown')
+  })
+
+  it('renders closed with its dedicated style (not the "unknown" fallback)', () => {
+    // W3 regression: `closed` is a terminal status used when the
+    // operator ends a chat from the dashboard. It must NOT fall through
+    // to the `unknown` neutral style — that would visually erase the
+    // distinction from `cancelled` (gave up on a task) and `done`
+    // (agent emitted the terminating sentinel).
+    const w = mount(StatusBadge, { props: { status: 'closed' } })
+    expect(w.text()).toBe('closed')
+    expect(w.classes()).toContain('status-badge--closed')
     expect(w.classes()).not.toContain('status-badge--unknown')
   })
 

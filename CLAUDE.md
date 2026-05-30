@@ -449,6 +449,102 @@ and falls back to the legacy scalar. Engteam Phase-2 template **not**
 modified — still emits exactly one `review_path`; plural is opt-in
 for future skills. ADR-41 records the storage shape change.
 
+**Chat-mode arc (W1–W6, 2026-05-29 → 2026-05-30, ADR-49 + ADR-50,
+`docs/archive/2026-05-30-chat-mode-arc.md`)** adds a conversational webui for pi
+alongside the chained-iter task flow. **Two run modes coexist with
+opposite invariants — chat mode does NOT relax ADR-20 in task mode.**
+The plan landed in six units across the runs table, the orchestrator
+loop, the API surface, the dashboard, and an ADR pair.
+- **W1** — schema + run creation. One new column on `runs`: `mode
+  TEXT NOT NULL DEFAULT 'task'`, constrained at the Python boundary
+  to `Literal["task", "chat"]`. `RunCreate` widens to accept `mode`
+  (default `'task'`); `RunDetail` surfaces it. `RelayCore.start_run`
+  branches: chat mode direct-writes `run_started` + a synthetic
+  `pause_requested` event and settles **without spawning a first
+  iter** — the first `resume_run` answer becomes iter 1's body.
+  Worktree provisioning runs unchanged (pi may legitimately read or
+  write project files during a chat). No new event kinds.
+- **W2** — orchestrator loop branch + chat resume path. `resume_run`
+  branches on `run.mode`: chat-mode resumes thread the prior iter's
+  `pi_session_id` as pi's `--session` argument so each iter inherits
+  the model's prior conversation memory; the operator's `answer` is
+  the **verbatim** next-iter body — no preamble, no compressed
+  handoff. `run_loop` branches on `ctx.mode`: chat-mode iters skip
+  the `RELAY_*` preamble (chat has no `RELAY_RUN_DIR` /
+  `RELAY_PHASE`), skip sentinel enforcement (no `done` / `handoff` /
+  `pause-for-input` parsing — pi's `agent_end` is the natural turn
+  boundary), and on `session_end` write a synthetic `pause_requested`
+  so the run lands in `paused` waiting for the next message. Skill
+  injection (ADR-44) is omitted from chat-mode spawns; pi's own
+  auto-discovery of `<cwd>/.pi/skills/` and `~/.pi/agent/skills/` is
+  preserved so project conventions still apply.
+- **W3** — `closed` terminal status + close endpoint. New value in
+  the `runs.status` enum (ADR-50), reachable only from `paused` or
+  `running` via `POST /api/runs/{id}/close`; the close handler
+  cancels any in-flight session first. Distinct from `cancelled`
+  (user gave up on a task) and `done` (agent emitted terminating
+  sentinel) — `StatusBadge.vue` renders dim-grey + dashed border
+  (distinct from `cancelled`'s solid border). **FIVE `_TERMINAL`
+  declarations must stay in sync** for any future status work:
+  `src/relay/api/events.py`, `src/relay/core.py` (multiple
+  cascade/safety-net tuples), `frontend/src/stores/events.ts`
+  (`TERMINAL_STATUSES`), `frontend/src/views/RunDetailView.vue`
+  (`TERMINAL`), `frontend/src/views/ChatView.vue` (`TERMINAL`).
+  `awaiting_children` remains deliberately excluded (ADR-34: not
+  terminal).
+- **W4** — frontend ChatView + routing. New route `/chats/:id`;
+  `ChatView.vue` is the conversational counterpart to
+  `RunDetailView`. Composition: `ChatHeader.vue` (sticky bar with
+  Close + Promote-to-task), `ChatTranscript.vue` (folded
+  user/assistant turns), `ChatInput.vue` (composer + Send).
+  **Transcript fold** — `pause_resolved.payload.answer` (non-empty)
+  → ONE user turn; each `iter_started` … `iter_ended` block → ONE
+  assistant turn from concatenated `assistant_text` with
+  `payload.kind != 'thinking'` (chat surface hides reasoning,
+  mirroring consumer chat products — the timeline view in
+  `/runs/:id` keeps the thinking channel surface). Tool calls
+  interleave inline as `ToolCallCard` `embedded` chips. Live tokens
+  via the ADR-46 `assistant_delta` ephemeral stream — same pipeline
+  TimelinePane uses. **Wrong-view guard pair**: `RunDetailView`'s
+  setup watcher redirects `mode='chat'` runs opened via `/runs/:id`
+  to `/chats/:id`; `ChatView`'s symmetric watcher does the reverse.
+- **W5** — Project dashboard Chat button + Chats tab. Project view's
+  runs pane gains a sibling **Chats** tab listing chat-mode runs
+  separately; query filter `?mode=task` / `?mode=chat` on `GET
+  /api/runs`. A **New chat** affordance creates a chat-mode run
+  inline (no wizard — chat starts in `paused` with no iters, ready
+  for the operator's first message).
+- **W6** — Promote-to-task UI + ADRs + docs. The chat header's
+  "Promote to task" button (stubbed in W4) is wired to real
+  navigation. A new pure helper `frontend/src/lib/promotion.ts`
+  `buildPromotionPrompt({events, projectName})` folds the same
+  events the transcript renders (including the thinking-kind drop)
+  into a markdown transcript bracketed by `--- Conversation ---` /
+  `--- End conversation ---`. **Handoff travels through
+  `sessionStorage` under `relay:promotion:<chatRunId>`, NOT the URL
+  query string** — long transcripts can exceed browser URL length
+  caps (~2KB-32KB depending on stack); the URL only carries a
+  `?promoteFrom=<chatRunId>` marker. `NewRunWizard` reads + removes
+  the entry on mount (one-shot — a refresh of the wizard URL won't
+  re-populate). **Promotion is non-destructive** — `onPromote` does
+  NOT close or cancel the chat; the operator may want to keep
+  talking and promote again later. ADR-49 records the mode-split
+  decision; ADR-50 records the `closed` terminal status.
+
+**Cross-cutting trap from chat-mode (W6, 2026-05-30).** The
+**five-list `_TERMINAL` sync rule** is the chat-mode shadow of the
+9f dual-list contract — every status check across the backend +
+frontend must agree on what's terminal. Any future status addition
+must touch all five files (`api/events.py`, `core.py` cascade
+tuples, `stores/events.ts::TERMINAL_STATUSES`,
+`RunDetailView.vue::TERMINAL`, `ChatView.vue::TERMINAL`). Missing
+one produces silent bugs: SSE generators keep streaming for runs
+the dashboard considers ended, the events store keeps invalidating
+queries past the run's end, or the chat view's lifecycle refetch
+never converges. `awaiting_children` is non-terminal in all five
+(ADR-34); `done` / `failed` / `cancelled` / `closed` are terminal
+in all five.
+
 ## What relay is
 
 A Python service that orchestrates *chained agent sessions* against a

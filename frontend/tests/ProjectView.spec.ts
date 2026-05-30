@@ -6,6 +6,7 @@ import type { Project, Run, Prompt } from '../src/lib/queries'
 
 const projectData = ref<Project | null>(null)
 const runsData = ref<Run[]>([])
+const chatsData = ref<Run[]>([])
 const promptsData = ref<Prompt[]>([])
 const versionsData = ref<Prompt[]>([])
 
@@ -20,12 +21,14 @@ const {
   deletePromptMutate,
   deleteProjectMutate,
   deleteRunMutate,
+  createChatMutate,
 } = vi.hoisted(() => ({
   createPromptMutate: vi.fn(),
   updatePromptMutate: vi.fn(),
   deletePromptMutate: vi.fn(),
   deleteProjectMutate: vi.fn(),
   deleteRunMutate: vi.fn(),
+  createChatMutate: vi.fn(),
 }))
 
 // Stores the most-recently registered filter getter from useRunsQuery so
@@ -54,6 +57,17 @@ vi.mock('@/lib/queries', () => ({
         : () => filters
     return { data: runsData }
   },
+  // W5: useProjectChatsQuery delegates to useRunsQuery with mode='chat'
+  // in the real lib, but at the test boundary we mock the specialised
+  // hook directly so the chats data ref is the dedicated `chatsData`
+  // (otherwise both hooks would share `runsData` and the Runs/Chats
+  // lists couldn't be asserted independently).
+  useProjectChatsQuery: () => ({ data: chatsData }),
+  useCreateChatMutation: () => ({
+    mutateAsync: createChatMutate,
+    error: ref(null),
+    isLoading: ref(false),
+  }),
   usePromptsQuery: () => ({ data: promptsData }),
   usePromptVersionsQuery: () => ({ data: versionsData }),
   useCreatePromptMutation: () => ({
@@ -143,6 +157,7 @@ describe('ProjectView', () => {
     deletePromptMutate.mockReset()
     deleteProjectMutate.mockReset()
     deleteRunMutate.mockReset()
+    createChatMutate.mockReset()
     _runsFiltersGetter = null
     projectData.value = {
       id: 7,
@@ -150,16 +165,18 @@ describe('ProjectView', () => {
       root_path: '/srv/alpha',
     } as unknown as Project
     runsData.value = []
+    chatsData.value = []
     promptsData.value = []
     versionsData.value = []
   })
 
-  it('renders the header (name + path) and 3 tabs; New run navigates', async () => {
+  it('renders the header (name + path) and 4 tabs; New run navigates', async () => {
     const w = mountView()
     await flushPromises()
     expect(w.text()).toContain('Alpha')
     expect(w.text()).toContain('/srv/alpha')
     expect(w.find('[data-testid="tab-runs"]').exists()).toBe(true)
+    expect(w.find('[data-testid="tab-chats"]').exists()).toBe(true)
     expect(w.find('[data-testid="tab-prompts"]').exists()).toBe(true)
     expect(w.find('[data-testid="tab-files"]').exists()).toBe(true)
 
@@ -168,6 +185,19 @@ describe('ProjectView', () => {
       name: 'new-run',
       params: { id: '7' },
     })
+  })
+
+  it('Runs query filters by mode=task so chats do not appear in the Runs list', async () => {
+    mountView()
+    await flushPromises()
+    expect(_runsFiltersGetter).not.toBeNull()
+    const filters = _runsFiltersGetter!() as {
+      projectId: number
+      mode: string
+      includeChildren: boolean
+    }
+    expect(filters.mode).toBe('task')
+    expect(filters.projectId).toBe(7)
   })
 
   it('Runs pane lists runs with a StatusBadge and navigates on click', async () => {
@@ -514,11 +544,114 @@ describe('ProjectView', () => {
     }
     // Default = Runs.
     expect(visible('[data-testid="panel-runs"]')).toBe(true)
+    expect(visible('[data-testid="panel-chats"]')).toBe(false)
     expect(visible('[data-testid="panel-prompts"]')).toBe(false)
     expect(visible('[data-testid="panel-files"]')).toBe(false)
 
     await w.get('[data-testid="tab-files"]').trigger('click')
     expect(visible('[data-testid="panel-runs"]')).toBe(false)
     expect(visible('[data-testid="panel-files"]')).toBe(true)
+  })
+
+  // ── W5 Chats pane ─────────────────────────────────────────────────
+  // docs/proposals/chat-mode.md decision 9 — chats are visually
+  // segregated from the engteam-style Runs list, on their own tab and
+  // with a dedicated "New chat" affordance.
+
+  it('Chats pane shows an empty state with no chats', async () => {
+    const w = mountView()
+    await flushPromises()
+    await w.get('[data-testid="tab-chats"]').trigger('click')
+    expect(w.find('[data-testid="chats-empty"]').exists()).toBe(true)
+    expect(w.text()).toContain('No chats for this project yet')
+    expect(w.find('[data-testid="chats-list"]').exists()).toBe(false)
+  })
+
+  it('Chats pane lists chats with a StatusBadge and short-id', async () => {
+    chatsData.value = [
+      {
+        id: 'chat-abcdef123456',
+        status: 'paused',
+        mode: 'chat',
+        started_at: '2026-05-30T12:00:00Z',
+      } as unknown as Run,
+      {
+        id: 'chat-zyxwvu654321',
+        status: 'closed',
+        mode: 'chat',
+        started_at: '2026-05-29T11:00:00Z',
+      } as unknown as Run,
+    ]
+    const w = mountView()
+    await flushPromises()
+    await w.get('[data-testid="tab-chats"]').trigger('click')
+
+    expect(w.find('[data-testid="chats-list"]').exists()).toBe(true)
+    expect(
+      w.find('[data-testid="chat-row-chat-abcdef123456"]').exists(),
+    ).toBe(true)
+    expect(
+      w.find('[data-testid="chat-row-chat-zyxwvu654321"]').exists(),
+    ).toBe(true)
+    const badges = w
+      .get('[data-testid="panel-chats"]')
+      .findAll('.status-badge')
+    expect(badges).toHaveLength(2)
+    expect(badges.map((b) => b.text())).toEqual(['paused', 'closed'])
+    // Short-id uses the first 8 chars so a UUID-ish id stays compact.
+    expect(w.text()).toContain('chat-abc')
+  })
+
+  it('clicking a chat row navigates to /chats/:id', async () => {
+    chatsData.value = [
+      {
+        id: 'chat-1',
+        status: 'paused',
+        mode: 'chat',
+        started_at: '2026-05-30T12:00:00Z',
+      } as unknown as Run,
+    ]
+    const w = mountView()
+    await flushPromises()
+    await w.get('[data-testid="tab-chats"]').trigger('click')
+    await w.get('[data-testid="chat-row-chat-1"]').trigger('click')
+    expect(push).toHaveBeenCalledWith({
+      name: 'chat-detail',
+      params: { id: 'chat-1' },
+    })
+  })
+
+  it('New chat creates a chat-mode run and navigates to it', async () => {
+    createChatMutate.mockResolvedValue({ id: 'chat-new-1', status: 'paused' })
+    const w = mountView()
+    await flushPromises()
+
+    await w.get('[data-testid="new-chat-button"]').trigger('click')
+    await flushPromises()
+
+    expect(createChatMutate).toHaveBeenCalledWith(7)
+    expect(push).toHaveBeenCalledWith({
+      name: 'chat-detail',
+      params: { id: 'chat-new-1' },
+    })
+  })
+
+  it('New chat surfaces a 4xx inline without navigating', async () => {
+    createChatMutate.mockRejectedValue(
+      Object.assign(new Error('project gone'), { name: 'ApiError', status: 404 }),
+    )
+    const w = mountView()
+    await flushPromises()
+
+    await w.get('[data-testid="new-chat-button"]').trigger('click')
+    await flushPromises()
+
+    expect(push).not.toHaveBeenCalled()
+    // Flipped to Chats tab so the error is visible without a tab hunt.
+    const visible = (sel: string): boolean => {
+      const el = w.find(sel).element as HTMLElement
+      return el.style.display !== 'none'
+    }
+    expect(visible('[data-testid="panel-chats"]')).toBe(true)
   })
 })
