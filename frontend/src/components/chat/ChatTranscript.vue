@@ -45,6 +45,7 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import type { PendingTurn, StreamEvent } from '@/stores/events'
 import MarkdownRender from '@/components/files/MarkdownRender.vue'
 import ToolCallCard from '@/components/runs/ToolCallCard.vue'
+import { toolPreview } from '@/lib/toolPreview'
 
 const props = defineProps<{
   /** Ordered, deduped event list from the events store. */
@@ -236,6 +237,51 @@ function pendingTextFor(turn: AssistantTurn): string {
   return pendingByIterId.value.get(turn.iterId) ?? ''
 }
 
+// ── Tool-segment collapse ────────────────────────────────────────────
+//
+// Tool calls are collapsed to a single one-line preview by default
+// (`name · ← path`, `name · $ cmd`, etc., via `lib/toolPreview`),
+// matching the timeline's collapsed-row UX. Click the header to expand
+// the embedded ToolCallCard with full args + result.
+//
+// Auto-expand: a tool segment that has not yet received its
+// `tool_use_end` AND is the latest tool in an open assistant turn
+// defaults to expanded — the operator wants to see what the in-flight
+// tool is doing while it runs. Once a newer tool starts (or the iter
+// ends) the now-stale segment defaults back to collapsed unless the
+// user explicitly toggled it.
+
+const toolOverrides = ref<Map<string, boolean>>(new Map())
+
+function toolIsLiveLatest(turn: AssistantTurn, segIdx: number): boolean {
+  if (!turn.open) return false
+  const seg = turn.segments[segIdx]
+  if (seg == null || seg.kind !== 'tool' || seg.result !== undefined) return false
+  for (let i = segIdx + 1; i < turn.segments.length; i++) {
+    if (turn.segments[i]!.kind === 'tool') return false
+  }
+  return true
+}
+
+function isToolExpanded(
+  turn: AssistantTurn,
+  segIdx: number,
+  segKey: string,
+): boolean {
+  const override = toolOverrides.value.get(segKey)
+  if (override !== undefined) return override
+  return toolIsLiveLatest(turn, segIdx)
+}
+
+function toggleTool(segKey: string, currentlyExpanded: boolean): void {
+  // Persist the OPPOSITE of the current visible state — covers both
+  // "user collapses an auto-expanded live tool" and "user expands a
+  // historical tool" with one branch.
+  const next = new Map(toolOverrides.value)
+  next.set(segKey, !currentlyExpanded)
+  toolOverrides.value = next
+}
+
 // ── Auto-scroll ──────────────────────────────────────────────────────
 
 const PIN_TOLERANCE_PX = 50
@@ -371,7 +417,7 @@ const emptyMessage = computed<string>(() => {
           </div>
 
           <div
-            v-for="seg in turn.segments"
+            v-for="(seg, segIdx) in turn.segments"
             :key="seg.key"
             class="chat-assistant__segment"
           >
@@ -382,10 +428,26 @@ const emptyMessage = computed<string>(() => {
             <div
               v-else
               class="chat-assistant__tool"
+              :class="{ 'chat-assistant__tool--expanded': isToolExpanded(turn, segIdx, seg.key) }"
               :data-tool-id="seg.toolId ?? ''"
+              :data-expanded="isToolExpanded(turn, segIdx, seg.key) ? 'true' : 'false'"
             >
-              <div class="chat-assistant__tool-head">
+              <button
+                type="button"
+                class="chat-assistant__tool-head"
+                data-testid="chat-tool-toggle"
+                :aria-expanded="isToolExpanded(turn, segIdx, seg.key)"
+                @click="toggleTool(seg.key, isToolExpanded(turn, segIdx, seg.key))"
+              >
+                <span
+                  class="chat-assistant__tool-chevron"
+                  aria-hidden="true"
+                >{{ isToolExpanded(turn, segIdx, seg.key) ? '▾' : '▸' }}</span>
                 <span class="chat-assistant__tool-name">{{ seg.name }}</span>
+                <span
+                  v-if="toolPreview(seg.name, seg.args)"
+                  class="chat-assistant__tool-preview"
+                >{{ toolPreview(seg.name, seg.args) }}</span>
                 <span
                   v-if="seg.isError"
                   class="chat-assistant__tool-badge"
@@ -394,8 +456,13 @@ const emptyMessage = computed<string>(() => {
                   v-if="seg.durationMs != null"
                   class="chat-assistant__tool-meta"
                 >{{ seg.durationMs }}ms</span>
-              </div>
+                <span
+                  v-else-if="seg.result === undefined && turn.open"
+                  class="chat-assistant__tool-meta chat-assistant__tool-meta--pending"
+                >running…</span>
+              </button>
               <ToolCallCard
+                v-if="isToolExpanded(turn, segIdx, seg.key)"
                 :name="seg.name"
                 :args="seg.args"
                 :result="seg.result"
@@ -583,25 +650,67 @@ const emptyMessage = computed<string>(() => {
 
 .chat-assistant__tool {
   border-left: 2px solid var(--color-accent);
-  padding: 0.4rem 0.75rem;
+  padding: 0;
   background: color-mix(in oklab, var(--color-accent) 4%, var(--color-bg));
   border-radius: 0 8px 8px 0;
   font-family: var(--font-mono);
   font-size: 0.85rem;
 }
 
+.chat-assistant__tool--expanded {
+  padding: 0 0.75rem 0.4rem;
+}
+
+/* Collapsed header is the click target — it occupies the whole row and
+   reads as a clickable affordance (cursor + hover state). The button
+   reset strips the default <button> chrome since the row already has
+   the bordered container providing affordance. */
 .chat-assistant__tool-head {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
-  margin-bottom: 0.3rem;
-  font-size: 0.78em;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.35rem 0.75rem;
+  background: transparent;
+  border: none;
+  font: inherit;
+  font-size: 0.85rem;
   color: var(--color-text-dim);
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-assistant__tool-head:hover,
+.chat-assistant__tool-head:focus-visible {
+  outline: none;
+  background: color-mix(in oklab, var(--color-accent) 8%, transparent);
+}
+
+.chat-assistant__tool--expanded .chat-assistant__tool-head {
+  padding: 0.35rem 0;
+  margin-bottom: 0.25rem;
+}
+
+.chat-assistant__tool-chevron {
+  font-size: 0.75em;
+  color: var(--color-text-dim);
+  width: 0.8em;
+  display: inline-block;
+  text-align: center;
 }
 
 .chat-assistant__tool-name {
   font-weight: 600;
   color: var(--color-text);
+}
+
+.chat-assistant__tool-preview {
+  flex: 1;
+  min-width: 0;
+  color: var(--color-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .chat-assistant__tool-badge {
@@ -614,6 +723,13 @@ const emptyMessage = computed<string>(() => {
 
 .chat-assistant__tool-meta {
   margin-left: auto;
+  font-size: 0.78em;
+  white-space: nowrap;
+}
+
+.chat-assistant__tool-meta--pending {
+  color: var(--color-accent);
+  font-style: italic;
 }
 
 .chat-transcript__jump {

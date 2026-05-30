@@ -106,14 +106,14 @@ describe('ChatTranscript — turn folding', () => {
     expect(w.text()).toContain('the answer')
   })
 
-  it('interleaves tool calls inline between text segments', () => {
+  it('interleaves tool calls inline between text segments, collapsed by default', async () => {
     const w = mountTranscript([
       ev(1, 'iter_started', { seq: 1, iter_id: 11 }),
       ev(2, 'assistant_text', { kind: 'text', text: 'before tool' }),
       ev(3, 'tool_use_start', {
         tool_id: 't1',
         name: 'Bash',
-        args: { cmd: 'ls' },
+        args: { command: 'ls -la' },
       }),
       ev(4, 'tool_use_end', {
         tool_id: 't1',
@@ -124,11 +124,70 @@ describe('ChatTranscript — turn folding', () => {
       ev(5, 'assistant_text', { kind: 'text', text: 'after tool' }),
       ev(6, 'iter_ended', { seq: 1, iter_id: 11 }),
     ])
+    // Completed historical tool — collapsed default. Header shows the
+    // name + one-line preview, but the embedded ToolCallCard body is
+    // not mounted until the operator clicks.
+    expect(w.find('.stub-tool').exists()).toBe(false)
+    const header = w.find('[data-testid="chat-tool-toggle"]')
+    expect(header.exists()).toBe(true)
+    expect(header.text()).toContain('Bash')
+    expect(header.text()).toContain('$ ls -la')
+    expect(header.attributes('aria-expanded')).toBe('false')
+
+    await header.trigger('click')
     const tool = w.find('.stub-tool')
     expect(tool.exists()).toBe(true)
     expect(tool.attributes('data-tool-name')).toBe('Bash')
     expect(w.text()).toContain('before tool')
     expect(w.text()).toContain('after tool')
+  })
+
+  it('auto-expands an in-flight tool (no tool_use_end yet) in an open turn', () => {
+    const w = mountTranscript(
+      [
+        ev(1, 'iter_started', { seq: 1, iter_id: 11 }),
+        ev(2, 'tool_use_start', {
+          tool_id: 't1',
+          name: 'Bash',
+          args: { command: 'sleep 60' },
+        }),
+      ],
+      { status: 'running' },
+    )
+    const header = w.find('[data-testid="chat-tool-toggle"]')
+    expect(header.attributes('aria-expanded')).toBe('true')
+    expect(w.find('.stub-tool').exists()).toBe(true)
+    expect(header.text()).toContain('running…')
+  })
+
+  it('collapses a prior in-flight tool once a newer tool starts', () => {
+    const w = mountTranscript(
+      [
+        ev(1, 'iter_started', { seq: 1, iter_id: 11 }),
+        ev(2, 'tool_use_start', {
+          tool_id: 't1',
+          name: 'Read',
+          args: { path: '/a.md' },
+        }),
+        ev(3, 'tool_use_end', {
+          tool_id: 't1',
+          result: 'ok',
+          duration_ms: 5,
+        }),
+        ev(4, 'tool_use_start', {
+          tool_id: 't2',
+          name: 'Bash',
+          args: { command: 'ls' },
+        }),
+      ],
+      { status: 'running' },
+    )
+    const headers = w.findAll('[data-testid="chat-tool-toggle"]')
+    expect(headers).toHaveLength(2)
+    // First tool: completed, defaults back to collapsed.
+    expect(headers[0]!.attributes('aria-expanded')).toBe('false')
+    // Second tool: in flight + latest in the open turn → auto-expanded.
+    expect(headers[1]!.attributes('aria-expanded')).toBe('true')
   })
 
   it('renders the pending stream while an iter is open with no canonical text yet', () => {

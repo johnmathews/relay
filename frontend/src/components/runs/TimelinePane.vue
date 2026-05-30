@@ -31,6 +31,7 @@ import { useBrowserUiStore } from '@/stores/files'
 import { useTimelinePrefsStore } from '@/stores/timelinePrefs'
 import { classifyEvent } from '@/lib/eventKinds'
 import { serializeView } from '@/lib/runView'
+import { toolPreview, truncatePreview } from '@/lib/toolPreview'
 
 /**
  * Row types that participate in the collapse / expand workflow.
@@ -797,13 +798,6 @@ function shortSha(v: unknown): string {
    summary so a 50-row development iter is scannable without expanding
    anything. */
 
-const PREVIEW_MAX = 140
-
-function truncatePreview(s: string): string {
-  if (s.length <= PREVIEW_MAX) return s
-  return `${s.slice(0, PREVIEW_MAX - 1)}…`
-}
-
 function glyphFor(row: Row): string {
   switch (row.type) {
     case 'tool':
@@ -893,49 +887,7 @@ function firstLine(s: string): string {
 function previewFor(row: Row): string {
   const p = row.event.payload
   if (row.type === 'tool') {
-    // Pi emits tool names in either casing (`Bash` / `bash`) depending
-    // on the underlying provider. Normalise to lowercase for matching;
-    // the header still renders the original-cased name from the
-    // payload via headerName(). Args keys vary too — bash uses
-    // `command`, read/write/edit use `file_path` or `path`.
-    const name = asStr(p.name, '').toLowerCase()
-    const args =
-      typeof p.args === 'object' && p.args !== null
-        ? (p.args as Record<string, unknown>)
-        : null
-    if (args == null) return ''
-    const argStr = (k: string): string =>
-      typeof args[k] === 'string' ? (args[k] as string) : ''
-    const filePath =
-      argStr('file_path') || argStr('path') || argStr('filename')
-    const pattern = argStr('pattern')
-    if (name === 'bash') {
-      const cmd = argStr('command')
-      if (cmd === '') return ''
-      return truncatePreview(`$ ${cmd.replace(/\s+/g, ' ').trim()}`)
-    }
-    if (name === 'write' || name === 'edit') {
-      return filePath === '' ? '' : truncatePreview(`→ ${filePath}`)
-    }
-    if (name === 'read') {
-      return filePath === '' ? '' : truncatePreview(`← ${filePath}`)
-    }
-    if (name === 'grep') {
-      return pattern === '' ? '' : truncatePreview(`? ${pattern}`)
-    }
-    if (name === 'glob') {
-      return pattern === '' ? '' : truncatePreview(`* ${pattern}`)
-    }
-    if (name === 'task' || name === 'agent') {
-      const d = argStr('description') || argStr('prompt')
-      return d === '' ? '' : truncatePreview(d)
-    }
-    const keys = Object.keys(args)
-    if (keys.length === 0) return ''
-    const k = keys[0]!
-    const v = args[k]
-    const vs = typeof v === 'string' ? v : JSON.stringify(v)
-    return truncatePreview(`${k}: ${vs}`)
+    return toolPreview(asStr(p.name, ''), p.args)
   }
   if (row.type === 'assistant' || row.type === 'thinking') {
     const t = typeof p.text === 'string' ? p.text : ''

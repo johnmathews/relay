@@ -659,7 +659,14 @@ is folded into alternating user/assistant turns:
   'thinking'`. The chat surface intentionally hides reasoning (the
   timeline view in `/runs/:id` remains the surface for thinking
   channel — both modes share the same event store). Tool calls
-  interleave inline as `ToolCallCard` chips with `embedded` styling.
+  interleave inline as `ToolCallCard` chips with `embedded` styling
+  — **collapsed to a single-line preview by default** (`name · ←
+  path`, `name · $ cmd`, etc. via `lib/toolPreview.ts`, shared with
+  the timeline's per-row preview); clicking the header expands the
+  embedded card with full args + result. An in-flight tool (no
+  `tool_use_end` yet AND latest in an open assistant turn) defaults
+  to expanded with a `running…` chip, and collapses back as soon as
+  the next tool starts or the iter ends.
 - An open iter with no canonical `assistant_text` yet displays the
   ADR-46 streaming-delta stream via the events store's `pendingTurns`
   — same source `TimelinePane` reads, same content. The pending
