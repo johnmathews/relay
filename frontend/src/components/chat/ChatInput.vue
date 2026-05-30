@@ -16,7 +16,7 @@
 // because the chat composer wants different sizing/affordances from
 // `PauseAnswerForm` (no review pane, no Save button, Enter-to-submit).
 
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { ApiError, useResumeRunMutation } from '@/lib/queries'
 
 const props = defineProps<{
@@ -131,6 +131,14 @@ watch(draft, () => {
   // post-DOM by default for `v-model`, but `autoresize` reads
   // scrollHeight, which needs the textarea's content to match).
   void nextTick(autoresize)
+})
+
+// Autofocus the composer on mount so the user can start typing as soon
+// as the chat view renders (matches the chat-app reflex). Skipped when
+// the textarea is disabled — a focus call on a disabled element is a
+// no-op anyway, but checking keeps intent explicit.
+onMounted(() => {
+  if (!closed.value) textarea.value?.focus()
 })
 </script>
 
