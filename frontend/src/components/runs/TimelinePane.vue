@@ -586,7 +586,7 @@ watch(
  * tick so the minimap overlay tracks the new layout.
  */
 watch(
-  [rowOverrides, groupExpanded, () => prefs.hidden],
+  [rowOverrides, groupExpanded, () => prefs.mode, () => prefs.selected],
   async () => {
     await nextTick()
     measureViewportRange()

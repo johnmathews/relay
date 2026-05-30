@@ -17,11 +17,11 @@ function fullCounts(
   ) as Record<KindCategory, number>
 }
 
-describe('EventKindFilter — chip row drives category visibility', () => {
+describe('EventKindFilter — focus-style chip filter', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     try {
-      localStorage.removeItem('relay.timeline.hiddenKinds')
+      localStorage.removeItem('relay.timeline.kindFilter')
     } catch {
       // ignore
     }
@@ -51,7 +51,7 @@ describe('EventKindFilter — chip row drives category visibility', () => {
     expect(w.get('[data-testid="kind-count-signal"]').text()).toBe('0')
   })
 
-  it('every chip starts visible (lit) — default is all-visible', () => {
+  it('every chip starts lit — default is mode=all', () => {
     const w = mount(EventKindFilter, {
       props: { counts: fullCounts() },
     })
@@ -62,46 +62,95 @@ describe('EventKindFilter — chip row drives category visibility', () => {
     }
   })
 
-  it('clicking a chip hides that category in the timelinePrefs store', async () => {
+  it('clicking one chip enters focus mode: only that chip lit', async () => {
     const prefs = useTimelinePrefsStore()
     const w = mount(EventKindFilter, {
       props: { counts: fullCounts() },
     })
-    expect(prefs.isHidden('tool')).toBe(false)
-    await w.get('[data-testid="kind-chip-tool"]').trigger('click')
-    expect(prefs.isHidden('tool')).toBe(true)
-    const chip = w.get('[data-testid="kind-chip-tool"]')
-    expect(chip.attributes('aria-pressed')).toBe('false')
-    expect(chip.classes()).not.toContain('is-on')
+
+    await w.get('[data-testid="kind-chip-thinking"]').trigger('click')
+
+    expect(prefs.mode).toBe('subset')
+    expect(prefs.isActive('thinking')).toBe(true)
+    const thinking = w.get('[data-testid="kind-chip-thinking"]')
+    expect(thinking.attributes('aria-pressed')).toBe('true')
+    expect(thinking.classes()).toContain('is-on')
+
+    // Every other chip dim.
+    for (const k of KIND_CATEGORIES.filter((c) => c !== 'thinking')) {
+      const chip = w.get(`[data-testid="kind-chip-${k}"]`)
+      expect(chip.attributes('aria-pressed')).toBe('false')
+      expect(chip.classes()).not.toContain('is-on')
+    }
   })
 
-  it('clicking a hidden chip again shows it (independent per-chip toggle)', async () => {
+  it('clicking a second chip in focus mode adds it (additive)', async () => {
+    const w = mount(EventKindFilter, {
+      props: { counts: fullCounts() },
+    })
+    await w.get('[data-testid="kind-chip-thinking"]').trigger('click')
+    await w.get('[data-testid="kind-chip-tool"]').trigger('click')
+
+    expect(
+      w.get('[data-testid="kind-chip-thinking"]').attributes('aria-pressed'),
+    ).toBe('true')
+    expect(
+      w.get('[data-testid="kind-chip-tool"]').attributes('aria-pressed'),
+    ).toBe('true')
+    expect(
+      w.get('[data-testid="kind-chip-signal"]').attributes('aria-pressed'),
+    ).toBe('false')
+  })
+
+  it('re-clicking an active chip removes it (and snaps back to all on empty)', async () => {
     const prefs = useTimelinePrefsStore()
     const w = mount(EventKindFilter, {
       props: { counts: fullCounts() },
     })
     await w.get('[data-testid="kind-chip-signal"]').trigger('click')
     await w.get('[data-testid="kind-chip-other"]').trigger('click')
-    expect(prefs.isHidden('signal')).toBe(true)
-    expect(prefs.isHidden('other')).toBe(true)
-    // Re-click signal → only `other` stays hidden.
+    expect(prefs.isActive('signal')).toBe(true)
+    expect(prefs.isActive('other')).toBe(true)
+    // Re-click signal → only `other` stays active.
     await w.get('[data-testid="kind-chip-signal"]').trigger('click')
-    expect(prefs.isHidden('signal')).toBe(false)
-    expect(prefs.isHidden('other')).toBe(true)
+    expect(prefs.isActive('signal')).toBe(false)
+    expect(prefs.isActive('other')).toBe(true)
+    // Re-click other → empty set, snaps to all-visible.
+    await w.get('[data-testid="kind-chip-other"]').trigger('click')
+    expect(prefs.mode).toBe('all')
+    for (const k of KIND_CATEGORIES) {
+      expect(prefs.isActive(k)).toBe(true)
+    }
   })
 
-  it('shows a Show-all button only when at least one chip is hidden', async () => {
+  it('shows Show-all button only when mode != all', async () => {
     const prefs = useTimelinePrefsStore()
     const w = mount(EventKindFilter, {
       props: { counts: fullCounts() },
     })
     expect(w.find('[data-testid="kind-filter-reset"]').exists()).toBe(false)
 
-    prefs.toggleHidden('tool')
+    prefs.toggle('tool')
     await w.vm.$nextTick()
     expect(w.find('[data-testid="kind-filter-reset"]').exists()).toBe(true)
     await w.get('[data-testid="kind-filter-reset"]').trigger('click')
-    expect(prefs.isHidden('tool')).toBe(false)
+    expect(prefs.mode).toBe('all')
+    expect(w.find('[data-testid="kind-filter-reset"]').exists()).toBe(false)
+  })
+
+  it('shows Show-none button only when mode != none', async () => {
+    const prefs = useTimelinePrefsStore()
+    const w = mount(EventKindFilter, {
+      props: { counts: fullCounts() },
+    })
+    expect(w.find('[data-testid="kind-filter-none"]').exists()).toBe(true)
+    await w.get('[data-testid="kind-filter-none"]').trigger('click')
+    expect(prefs.mode).toBe('none')
+    expect(w.find('[data-testid="kind-filter-none"]').exists()).toBe(false)
+    for (const k of KIND_CATEGORIES) {
+      const chip = w.get(`[data-testid="kind-chip-${k}"]`)
+      expect(chip.attributes('aria-pressed')).toBe('false')
+    }
   })
 
   it('chip tooltip lists the underlying event kinds in that category', () => {

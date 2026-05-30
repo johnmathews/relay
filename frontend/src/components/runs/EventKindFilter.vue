@@ -1,24 +1,25 @@
 <script setup lang="ts">
 // Persistent chip row above the timeline. Eight toggles (Assistant /
 // Thinking / Tool calls / Signals / Boundaries / Pauses / Artifacts /
-// Other) — clicking a chip flips that category's **visibility** in
-// the timeline (`useTimelinePrefsStore.toggleHidden`). A "lit" chip
-// (default state) means rows of that kind are shown; a dim chip
-// means they are hidden from the timeline.
+// Other) drive a focus-style filter against
+// `useTimelinePrefsStore`:
 //
-// Default = every category visible (no chip dim). Per-row
-// expand/collapse is a separate concern handled inside TimelinePane.
+// - Default state (`mode === 'all'`): every chip lit; everything
+//   visible in the timeline.
+// - First chip click: enter `subset` mode with just that chip → only
+//   that kind visible. Other chips dim.
+// - Subsequent clicks: add / remove chips from the active set.
+// - Removing the last active chip snaps back to `all` (empty-set
+//   recovery — the user can't strand themselves on an empty timeline
+//   via chip clicks; that requires the explicit "Show none" button).
+// - "Show all" and "Show none" buttons jump directly to those states.
 //
-// The chip dot keeps the per-category colour (matches the card
-// border hue), and the count badge still shows how many rows of that
-// kind exist in the current scope so the row doubles as a colour
-// legend + live activity readout.
-//
-// Each chip's tooltip lists the underlying event kinds in that
-// category, so a user hovering "Other" sees that it's true unknown /
-// future kinds, not a mystery bucket.
+// The chip dot keeps the per-category colour (matches the card border
+// hue), and the count badge still shows how many rows of that kind
+// exist in the current scope so the row doubles as a colour legend +
+// live activity readout. Each chip's tooltip lists the underlying
+// event kinds in that category.
 
-import { computed } from 'vue'
 import {
   KIND_CATEGORIES,
   KIND_LABEL,
@@ -30,8 +31,8 @@ import { useTimelinePrefsStore } from '@/stores/timelinePrefs'
 defineProps<{
   /**
    * Per-category counts IN THE CURRENT SCOPE (cross-iter for the
-   * Overview body, iter-scoped for an Iter body). Always shown on
-   * the chip so the operator sees "how many rows of this kind exist"
+   * Overview body, iter-scoped for an Iter body). Always shown on the
+   * chip so the operator sees "how many rows of this kind exist"
    * regardless of visibility.
    */
   counts: Readonly<Record<KindCategory, number>>
@@ -39,26 +40,10 @@ defineProps<{
 
 const prefs = useTimelinePrefsStore()
 
-function isVisible(k: KindCategory): boolean {
-  return !prefs.isHidden(k)
-}
-
-function onToggle(k: KindCategory): void {
-  prefs.toggleHidden(k)
-}
-
 function chipTitle(k: KindCategory): string {
-  const verb = isVisible(k) ? 'Hide' : 'Show'
+  const verb = prefs.isActive(k) ? 'Hide' : 'Show'
   const members = KIND_MEMBERS[k].join(', ')
   return `${verb} ${KIND_LABEL[k]} steps\n${members}`
-}
-
-const hasAnyHidden = computed(() =>
-  KIND_CATEGORIES.some((k) => prefs.isHidden(k)),
-)
-
-function onShowAll(): void {
-  prefs.showAll()
 }
 </script>
 
@@ -74,12 +59,12 @@ function onShowAll(): void {
       :key="k"
       type="button"
       class="kind-filter__chip"
-      :class="{ 'is-on': isVisible(k) }"
+      :class="{ 'is-on': prefs.isActive(k) }"
       :data-kind="k"
       :data-testid="`kind-chip-${k}`"
-      :aria-pressed="isVisible(k)"
+      :aria-pressed="prefs.isActive(k)"
       :title="chipTitle(k)"
-      @click="onToggle(k)"
+      @click="prefs.toggle(k)"
     >
       <span
         class="kind-filter__dot"
@@ -92,16 +77,28 @@ function onShowAll(): void {
         :data-testid="`kind-count-${k}`"
       >{{ counts[k] }}</span>
     </button>
-    <button
-      v-if="hasAnyHidden"
-      type="button"
-      class="kind-filter__reset"
-      data-testid="kind-filter-reset"
-      title="Show every kind"
-      @click="onShowAll"
-    >
-      Show all
-    </button>
+    <div class="kind-filter__actions">
+      <button
+        v-if="prefs.mode !== 'all'"
+        type="button"
+        class="kind-filter__action"
+        data-testid="kind-filter-reset"
+        title="Show every kind"
+        @click="prefs.showAll()"
+      >
+        Show all
+      </button>
+      <button
+        v-if="prefs.mode !== 'none'"
+        type="button"
+        class="kind-filter__action"
+        data-testid="kind-filter-none"
+        title="Hide every kind"
+        @click="prefs.showNone()"
+      >
+        Show none
+      </button>
+    </div>
   </div>
 </template>
 
@@ -142,10 +139,10 @@ function onShowAll(): void {
   outline: none;
 }
 
-/* Lit ("visible") state — chip takes its category's pastel
+/* Lit ("active") state — chip takes its category's pastel
    background + border so the operator can read at a glance which
-   kinds are showing. A dim (default-off-state) chip drops opacity
-   on its dot + label so it reads as "off". */
+   kinds are showing. A dim (off-state) chip drops opacity on its dot
+   + label so it reads as "off". */
 .kind-filter__chip.is-on[data-kind='assistant'] {
   background: var(--color-row-assistant-bg);
   border-color: var(--color-row-assistant-border);
@@ -183,8 +180,8 @@ function onShowAll(): void {
   font-weight: 600;
 }
 
-/* Dim a hidden chip — keep it readable so the user can still toggle
-   it back on, but make the off-state visually obvious. */
+/* Dim an inactive chip — keep it readable so the user can still
+   toggle it back on, but make the off-state visually obvious. */
 .kind-filter__chip:not(.is-on) {
   opacity: 0.55;
 }
@@ -244,8 +241,14 @@ function onShowAll(): void {
   font-family: var(--font-mono);
 }
 
-.kind-filter__reset {
+.kind-filter__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
   margin-left: auto;
+}
+
+.kind-filter__action {
   background: none;
   border: none;
   color: var(--color-text-dim);
@@ -256,8 +259,8 @@ function onShowAll(): void {
   text-decoration: underline;
 }
 
-.kind-filter__reset:hover,
-.kind-filter__reset:focus-visible {
+.kind-filter__action:hover,
+.kind-filter__action:focus-visible {
   color: var(--color-text);
   outline: none;
 }

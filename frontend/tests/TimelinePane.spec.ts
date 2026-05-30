@@ -345,10 +345,10 @@ describe('TimelinePane', () => {
     )
   })
 
-  it('hides rows of a category that has been toggled off in timelinePrefs', async () => {
-    // The chip row now drives **visibility**, not expand-by-default.
-    // A category flipped to hidden in timelinePrefs disappears from
-    // the timeline; flipping it back restores the row.
+  it('hides rows of categories not in the active focus set', async () => {
+    // The chip row now drives a focus-style filter. Entering focus
+    // mode on `boundary` should hide tool rows; toggling that focus
+    // back off (empty set → mode=all) restores them.
     const events: StreamEvent[] = [
       {
         seq: 1,
@@ -369,13 +369,16 @@ describe('TimelinePane', () => {
       '../src/stores/timelinePrefs'
     )
     const prefs = useTimelinePrefsStore()
-    prefs.toggleHidden('tool')
+    // Focus on boundary only — tool rows should disappear.
+    prefs.toggle('boundary')
     await w.vm.$nextTick()
     expect(w.find('[data-row-type="tool"]').exists()).toBe(false)
     expect(w.find('[data-row-type="boundary"]').exists()).toBe(true)
 
-    prefs.toggleHidden('tool')
+    // Re-toggle boundary → empty set, snaps back to mode=all.
+    prefs.toggle('boundary')
     await w.vm.$nextTick()
+    expect(prefs.mode).toBe('all')
     expect(w.find('[data-row-type="tool"]').exists()).toBe(true)
   })
 

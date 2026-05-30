@@ -1003,17 +1003,18 @@ describe('RunDetailView — chip-row drives category visibility (no URL plumbing
     GET.mockReset()
     POST.mockReset()
     try {
-      localStorage.removeItem('relay.timeline.hiddenKinds')
+      localStorage.removeItem('relay.timeline.kindFilter')
     } catch {
       // ignore
     }
   })
 
   it('clicking a chip flips the timelinePrefs store, not the URL', async () => {
-    // Clicking a chip toggles category visibility in `timelinePrefs`
-    // (persisted in localStorage), and the URL stays clean. Default
-    // = every chip lit (all categories visible); a click on `tool`
-    // hides it, dropping the chip's `is-on` state to false.
+    // The chip row drives a focus-style filter in `timelinePrefs`
+    // (persisted in localStorage); the URL stays clean. Default =
+    // every chip lit (mode=all); clicking `tool` enters focus mode
+    // with only `tool` active — `tool` stays pressed, other chips
+    // become dim.
     const testRouter = await makeRouter('/runs/run-1?view=overview')
 
     GET.mockImplementation((path: string) => {
@@ -1035,18 +1036,24 @@ describe('RunDetailView — chip-row drives category visibility (no URL plumbing
     })
     await flushPromises()
 
-    // Default state: chip is lit (visible / pressed true).
+    // Default state: every chip lit.
     expect(
       w.get('[data-testid="kind-chip-tool"]').attributes('aria-pressed'),
+    ).toBe('true')
+    expect(
+      w.get('[data-testid="kind-chip-signal"]').attributes('aria-pressed'),
     ).toBe('true')
 
     await w.get('[data-testid="kind-chip-tool"]').trigger('click')
     await flushPromises()
     // URL stays clean — chip state isn't a query param.
     expect(testRouter.currentRoute.value.query.kinds).toBeUndefined()
-    // After click the chip is dim (hidden / pressed false).
+    // Focus mode: tool stays lit, every other chip is dim.
     expect(
       w.get('[data-testid="kind-chip-tool"]').attributes('aria-pressed'),
+    ).toBe('true')
+    expect(
+      w.get('[data-testid="kind-chip-signal"]').attributes('aria-pressed'),
     ).toBe('false')
   })
 })
