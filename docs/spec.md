@@ -520,7 +520,7 @@ is unchanged.** When `run.mode == 'chat'`, the loop branches:
 - Skill injection (ADR-44) is omitted from the spawn — chat is
   free-form, not a phased engteam build. Pi's own auto-discovery of
   `<cwd>/.pi/skills/` and `~/.pi/agent/skills/` still applies, so
-  project-local skills carry over (`docs/proposals/chat-mode.md`
+  project-local skills carry over (`docs/archive/2026-05-30-chat-mode-arc.md`
   OQ-6).
 - Operator terminates the chat via `POST /api/runs/{id}/close` →
   status `closed` (ADR-50, a terminal status distinct from `done` /

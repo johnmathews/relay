@@ -450,7 +450,7 @@ modified — still emits exactly one `review_path`; plural is opt-in
 for future skills. ADR-41 records the storage shape change.
 
 **Chat-mode arc (W1–W6, 2026-05-29 → 2026-05-30, ADR-49 + ADR-50,
-`docs/proposals/chat-mode.md`)** adds a conversational webui for pi
+`docs/archive/2026-05-30-chat-mode-arc.md`)** adds a conversational webui for pi
 alongside the chained-iter task flow. **Two run modes coexist with
 opposite invariants — chat mode does NOT relax ADR-20 in task mode.**
 The plan landed in six units across the runs table, the orchestrator

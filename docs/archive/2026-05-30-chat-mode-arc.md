@@ -17,7 +17,8 @@ units:
 
 # Proposal — chat mode (webui implementation of pi)
 
-**Status:** active. **Last updated:** 2026-05-30. **Supersedes:** none.
+**Status:** closed 2026-05-30 (W1–W6 all shipped; arc complete — see ADR-49, ADR-50, and `journal/260530-chat-mode-w6-and-arc-close.md`).
+**Last updated:** 2026-05-30. **Supersedes:** none.
 **Date:** 2026-05-30.
 **Touches:** `docs/spec.md` §3 (schema), §4 (harness), §6 (loop); `src/relay/db/models.py` (`runs.mode`, terminal status `closed`); `src/relay/core.py` (`start_run` mode branch, new `close_chat`, conditional skill injection); `src/relay/orchestrator/loop.py` (auto-pause on `session_end` for chat-mode runs; carry forward `last_session_id`); `src/relay/harness/pi.py` (conditional skill injection); `src/relay/api/runs.py` + `schemas.py` (mode in create payload, close endpoint); `src/relay/mcp/` (additive — `relay__create_chat`, `relay__send_chat_message`, `relay__close_chat`); `frontend/src/views/ChatView.vue` (new); `frontend/src/views/ProjectView.vue` (Chat button + Chats list); `frontend/src/router/index.ts` (route); `docs/spec.md`, `docs/decisions.md` (two new ADRs), `docs/orchestrator.md`, `docs/dashboard.md`.
 **Does not touch:** pi protocol (no harness-layer change beyond conditional skill flag), sentinel parser (chat mode emits no sentinels), the chained-iter task loop (task-mode runs are byte-identical), the engineering-team skill (skill is the *opposite* of what chat mode wants), fanout/join (chat mode is single-thread by design), pause-for-review write endpoint (chat mode doesn't review artifacts — pi just edits in worktree).
