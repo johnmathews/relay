@@ -280,10 +280,9 @@ async def test_start_run_defaults_to_task_mode(tmp_path: Path) -> None:
 
 async def test_start_chat_creates_chat_mode_run(tmp_path: Path) -> None:
     """start_chat() yields a chat-mode run with empty prompt_body and
-    the chat_max_iters cap, not the task max_iters cap.
-
-    Sets ``chat_max_iters=1`` so the (W2-pending) loop branch doesn't
-    run the empty-prompt iter 200 times against the no-script fallback.
+    the chat_max_iters cap, not the task max_iters cap. Post-W2 the
+    run lands in ``paused`` immediately with no iter rows; the first
+    ``resume_run`` becomes iter 1's prompt body.
     """
     settings = Settings(data_dir=tmp_path / ".relay", chat_max_iters=1)
     init_db(settings).dispose()
@@ -300,7 +299,8 @@ async def test_start_chat_creates_chat_mode_run(tmp_path: Path) -> None:
         assert run.mode == "chat"
         assert run.prompt_body == ""
         assert run.max_iters == 1  # chat_max_iters override
-        await core.wait_for_run(chat_id)
+        result = await core.wait_for_run(chat_id)
+        assert result.status == "paused"
     finally:
         await core.aclose()
 

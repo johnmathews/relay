@@ -407,7 +407,12 @@ class PiHarness:
             logger.debug("pi version probe skipped: %s", exc)
 
     def _build_argv(
-        self, prompt: str, model: str, provider: str, resume_from: str | None
+        self,
+        prompt: str,
+        model: str,
+        provider: str,
+        resume_from: str | None,
+        skill_paths: list[Path] | None = None,
     ) -> list[str]:
         argv = [
             self._settings.pi_bin,
@@ -425,11 +430,22 @@ class PiHarness:
         # skill so every spawn sees it regardless of CWD. Pi's own
         # auto-discovery of `<cwd>/.pi/skills/` and `~/.pi/agent/skills/`
         # remains on by default — explicit injection is additive.
-        for skill_path in self._settings.pi_skill_paths:
+        #
+        # W2: a non-None ``skill_paths`` overrides ``self._settings.pi_skill_paths``
+        # for this spawn (chat mode passes ``[]`` to suppress all skill injection,
+        # since the engteam skill is the opposite of what conversational
+        # chat mode wants — ADR-NN).
+        effective_skill_paths = (
+            skill_paths
+            if skill_paths is not None
+            else self._settings.pi_skill_paths
+        )
+        for skill_path in effective_skill_paths:
             argv += ["--skill", str(skill_path)]
         if resume_from:
-            # Crash recovery only -- never used for inter-iter chaining
-            # (CLAUDE.md: fresh context per iter is the value prop).
+            # Task mode: crash recovery only (ADR-20 — fresh context per
+            # iter is the value prop). Chat mode (ADR-NN): the primary
+            # carry-forward mechanism, deliberately inverting ADR-20.
             argv += ["--session", resume_from]
         return argv
 
@@ -440,6 +456,7 @@ class PiHarness:
         env: dict[str, str],
         signal_config: object,  # SignalConfig — used by the orchestrator (Phase 2)
         resume_from: str | None = None,
+        skill_paths: list[Path] | None = None,
     ) -> PiSession:
         await self._maybe_check_version()
         argv = self._build_argv(
@@ -447,6 +464,7 @@ class PiHarness:
             self._settings.pi_model,
             self._settings.pi_provider,
             resume_from,
+            skill_paths,
         )
         full_env = {**os.environ, **env, "PI_AGENT_SDK": "1"}
         # argv list, no shell — not subject to injection.

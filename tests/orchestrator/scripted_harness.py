@@ -125,6 +125,10 @@ class ScriptedHarness:
         # Fired by the first HangScript session when it actually blocks;
         # lets cancel/aclose tests await that point deterministically.
         self.blocked = asyncio.Event()
+        # Per-spawn record so chat-mode tests can assert the resume_from /
+        # skill_paths each iter was spawned with (W2). Each entry mirrors
+        # the kwargs the loop passed to ``spawn``.
+        self.spawn_calls: list[dict[str, object]] = []
 
     async def spawn(
         self,
@@ -133,9 +137,17 @@ class ScriptedHarness:
         env: dict[str, str],
         signal_config: object,
         resume_from: str | None = None,
+        skill_paths: list[Path] | None = None,
     ) -> ScriptedSession:
         idx = self._calls
         self._calls += 1
+        self.spawn_calls.append(
+            {
+                "prompt": prompt,
+                "resume_from": resume_from,
+                "skill_paths": skill_paths,
+            }
+        )
         script = (
             self._scripts[idx]
             if idx < len(self._scripts)

@@ -80,6 +80,16 @@ class RunContext:
     # session_end, carry pi_session_id forward, and skip the engteam
     # skill + preamble.
     mode: str = "task"
+    # W2 / ADR-NN: pi session id to thread into the loop's first iter
+    # via ``harness.spawn(resume_from=...)``. Only set on chat-mode
+    # resumes (when the prior iter persisted a non-null
+    # ``iters.pi_session_id``); None for the first message in a chat,
+    # for every task-mode run (ADR-20: fresh context per iter), and
+    # for fanout-join synth re-enqueues. Each chat-mode loop invocation
+    # runs at most one iter (auto-pause on session_end), so a
+    # between-iter carry-forward is unnecessary — RelayCore.resume_run
+    # repopulates this from the most-recent iter on the next message.
+    resume_session_id: str | None = None
 
     @property
     def cwd(self) -> Path:

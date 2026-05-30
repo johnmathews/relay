@@ -1146,6 +1146,30 @@ class RelayCore:
              "max_iters": max_i, "mode": mode},
         )
         self._runs[run_id] = _RunState()
+        if mode == "chat":
+            # ADR-NN: chat mode starts paused with no iter rows. The
+            # first ``resume_run(answer)`` becomes iter 1's prompt body.
+            # No worktree-spawn, no preamble — the run sits idle until
+            # the user sends the first message. ``run_started`` is
+            # written above for the dashboard timeline; ``pause_requested``
+            # below marks the "waiting for first message" boundary so
+            # ChatView renders an empty transcript with a focused input.
+            await set_run_status(
+                self._sm, run_id, "paused", ended=False
+            )
+            await self._store.append(
+                run_id, "pause_requested", {"question": ""},
+            )
+            state = self._runs[run_id]
+            state.result = LoopResult(
+                "paused",
+                reason="chat_initial",
+                question="",
+                next_prompt="",
+                pause_id=f"chat-{run_id}-0",
+            )
+            state.settled.set()
+            return run_id
         await self._queue.put(
             RunContext(
                 run_id=run_id,
@@ -1258,9 +1282,6 @@ class RelayCore:
             live = self._runs.get(run_id)
             if live is not None and not live.settled.is_set():
                 raise ValueError(f"run {run_id} is already running")
-            paused = await latest_paused_iter(self._sm, run_id)
-            if paused is None or paused.signal_args is None:
-                raise ValueError(f"run {run_id} has no saved pause prompt")
             # Resolve the project before any side effect: a deleted
             # project must fail loudly, not silently run pi in the
             # process CWD (which corrupts an unrelated directory).
@@ -1271,12 +1292,54 @@ class RelayCore:
                     f"run {run_id} project {run.project_id} no longer exists"
                 )
             project_root = Path(project.root_path)
-            args: dict[str, Any] = dict(paused.signal_args)
-            body = compose_resume_prompt(
-                str(args.get("next_prompt", "")),
-                str(args.get("question", "")),
-                answer,
-            )
+
+            if run.mode == "chat":
+                # ADR-NN: chat mode resume — the user's message is the
+                # next iter's body verbatim (no preamble, no engteam-style
+                # answer composition). For the FIRST message, no prior
+                # iter exists and ``resume_session_id`` is None; for
+                # subsequent messages, thread the most-recent iter's
+                # pi_session_id so pi rehydrates the conversation via
+                # its own session storage. Chat mode also has no
+                # ``review_paths`` artifact accounting (14e), so
+                # ``paused_predecessor_iter_id`` stays None.
+                async with self._sm() as s:
+                    prior = await s.scalar(
+                        select(Iter)
+                        .where(Iter.run_id == run_id)
+                        .order_by(Iter.seq.desc())
+                        .limit(1)
+                    )
+                body = answer
+                resume_session_id = prior.pi_session_id if prior else None
+                start_seq = prior.seq if prior else 0
+                paused_predecessor_iter_id: int | None = None
+                phase: str | None = None
+            else:
+                paused = await latest_paused_iter(self._sm, run_id)
+                if paused is None or paused.signal_args is None:
+                    raise ValueError(
+                        f"run {run_id} has no saved pause prompt"
+                    )
+                args: dict[str, Any] = dict(paused.signal_args)
+                body = compose_resume_prompt(
+                    str(args.get("next_prompt", "")),
+                    str(args.get("question", "")),
+                    answer,
+                )
+                resume_session_id = None
+                start_seq = paused.seq
+                paused_predecessor_iter_id = paused.id
+                run_dir_for_phase = (
+                    project_data_dir(project_root) / "runs" / run_id
+                )
+                phase_file = run_dir_for_phase / "phase"
+                phase = (
+                    phase_file.read_text().strip()
+                    if phase_file.exists()
+                    else None
+                )
+
             # Projection first, then the append-only event — same order
             # the loop's other transitions use (ADR-10 consumers see a
             # consistent status when the event lands).
@@ -1286,12 +1349,6 @@ class RelayCore:
             )
 
             run_dir = project_data_dir(project_root) / "runs" / run_id
-            phase_file = run_dir / "phase"
-            phase = (
-                phase_file.read_text().strip()
-                if phase_file.exists()
-                else None
-            )
             self._runs[run_id] = _RunState()
             await self._queue.put(
                 RunContext(
@@ -1303,15 +1360,18 @@ class RelayCore:
                     run_dir=run_dir,
                     max_iters=run.max_iters,
                     iter_timeout=run.iter_timeout,
-                    start_seq=paused.seq,
+                    start_seq=start_seq,
                     phase=phase,
                     body=body,
-                    # 14e: the resumed loop's first iter carries
-                    # `relay.pause.artifacts_edited_count` on its OTel
-                    # iter span; the count is scoped to this paused
-                    # iter's id (events appended via the 14a write
-                    # endpoint while the run was paused).
-                    paused_predecessor_iter_id=paused.id,
+                    # 14e: task-mode resume threads the paused iter's
+                    # id so the resumed loop's first iter carries
+                    # ``relay.pause.artifacts_edited_count`` on its OTel
+                    # iter span. Chat mode leaves this None — there is
+                    # no review surface, so the count is structurally
+                    # zero and the attribute is omitted.
+                    paused_predecessor_iter_id=paused_predecessor_iter_id,
+                    mode=run.mode,
+                    resume_session_id=resume_session_id,
                 )
             )
 
