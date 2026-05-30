@@ -128,6 +128,7 @@ def test_mcp_mounted_handshake_and_tools(tmp_path: Path) -> None:
                 "relay__start_run",
                 "relay__create_chat",
                 "relay__list_chats",
+                "relay__close_chat",
                 "relay__cancel_run",
                 "relay__pause_response",
                 "relay__tail_events",

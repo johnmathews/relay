@@ -55,7 +55,7 @@ router = APIRouter(prefix="/api", tags=["events"])
 # — so both are treated as live. The constant's *value* (the omission of
 # both from the set) is the behaviour; do not add ``awaiting_children``
 # here without re-reading ADR-34.
-_TERMINAL = frozenset({"done", "failed", "cancelled"})
+_TERMINAL = frozenset({"done", "failed", "cancelled", "closed"})
 
 # Page size for the historical replay query (keeps a long run's replay
 # off a single unbounded SELECT; spec.md §9.3 "paginated").

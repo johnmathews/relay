@@ -149,6 +149,22 @@ def create_mcp_server(core: RelayCore) -> FastMCP:
         )
         return [RunOut.model_validate(r) for r in rows]
 
+    @mcp.tool(name="relay__close_chat")
+    async def close_chat(chat_id: str) -> RunOut:
+        """Close a chat-mode run (W3); returns its current state.
+
+        Chat-only sibling of ``relay__cancel_run``. Errors on unknown
+        run or a non-chat-mode target (close is chat-only); a chat that
+        is already terminal returns its current state unchanged
+        (core idempotency)."""
+        if await core.get_run(chat_id) is None:
+            raise ValueError(f"unknown run {chat_id}")
+        await core.close_chat(chat_id)
+        updated = await core.get_run(chat_id)
+        if updated is None:  # pragma: no cover - existed a line above
+            raise ValueError(f"unknown run {chat_id}")
+        return RunOut.model_validate(updated)
+
     @mcp.tool(name="relay__cancel_run")
     async def cancel_run(run_id: str) -> RunOut:
         """Request cancellation of a run; returns its current state.

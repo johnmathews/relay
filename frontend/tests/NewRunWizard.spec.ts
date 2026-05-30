@@ -269,6 +269,7 @@ describe('NewRunWizard', () => {
     expect(state.createMutate).toHaveBeenCalledTimes(1)
     expect(state.createMutate).toHaveBeenCalledWith({
       project_id: 5,
+      mode: 'task',
       prompt_id: 11,
       max_iters: 7,
     })
@@ -366,6 +367,7 @@ describe('NewRunWizard', () => {
 
     expect(state.createMutate).toHaveBeenCalledWith({
       project_id: 5,
+      mode: 'task',
       prompt_id: 11,
       max_iters: 8,
       iter_timeout: 600,

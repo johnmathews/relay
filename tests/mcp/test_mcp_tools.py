@@ -96,6 +96,8 @@ def test_all_tools_registered(tmp_path: Path) -> None:
                 # W1 (chat mode).
                 "relay__create_chat",
                 "relay__list_chats",
+                # W3 (chat mode close).
+                "relay__close_chat",
             ]
         )
 
@@ -492,5 +494,48 @@ def test_list_chats_excludes_task_runs(tmp_path: Path) -> None:
 
         all_chats = await _structured(mcp, "relay__list_chats")
         assert [r["id"] for r in all_chats] == [chat_id]
+
+    _run(scenario, settings)
+
+
+# ── W3: relay__close_chat ──────────────────────────────────────────────
+
+
+def test_relay_close_chat(tmp_path: Path) -> None:
+    """relay__close_chat flips a paused chat to ``closed`` and returns
+    the updated RunOut.  Errors on unknown run or non-chat mode."""
+    settings = _settings(tmp_path)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+
+    async def scenario(core: RelayCore, mcp: FastMCP) -> None:
+        await core.register_project(proj, "demo")
+        project_id = (await core.list_projects())[0].id
+
+        # Happy path: a paused chat closes cleanly.
+        chat_id = await core.start_chat(project_id)
+        await core.wait_for_run(chat_id)
+        closed = await _structured(
+            mcp, "relay__close_chat", chat_id=chat_id
+        )
+        assert closed["id"] == chat_id
+        assert closed["status"] == "closed"
+
+        # Unknown id → ToolError ("unknown run").
+        with pytest.raises(ToolError, match="unknown run"):
+            await mcp.call_tool(
+                "relay__close_chat", {"chat_id": "missing-id"}
+            )
+
+        # Task-mode run → ToolError ("not a chat-mode run").
+        task_id = await core.start_run(project_id, "go", max_iters=1)
+        await core.wait_for_run(task_id)
+        # Force back to a non-terminal status so the mode check is what fires.
+        from relay.orchestrator.lifecycle import set_run_status
+        await set_run_status(core._sm, task_id, "running", ended=False)
+        with pytest.raises(ToolError, match="not a chat-mode run"):
+            await mcp.call_tool(
+                "relay__close_chat", {"chat_id": task_id}
+            )
 
     _run(scenario, settings)

@@ -108,6 +108,14 @@ class _RunState:
     # phase _RunState). None for top-level user-initiated runs, which are
     # trace roots. ADR-38.
     parent_iter_ctx: IterSpanContext | None = None
+    # W3 (chat-mode close): close_chat on a running chat re-uses the
+    # cancel signalling path but the final status must land as ``closed``
+    # rather than ``cancelled``. Flag is set under ``_enqueue_lock``
+    # immediately before signalling; ``_apply_result`` consults it when
+    # the loop returns ``LoopResult("cancelled", ...)`` and swaps the
+    # terminal status + summary. No effect on task-mode runs (which
+    # never call close_chat) or any other code path.
+    closing: bool = False
 
 
 class RelayCore:
@@ -260,7 +268,7 @@ class RelayCore:
         starting parent at the top-level call site so the first recursion
         cannot revisit the root.
         """
-        terminal = ("done", "failed", "cancelled")
+        terminal = ("done", "failed", "cancelled", "closed")
         visited = _visited if _visited is not None else set()
         async with self._sm() as s:
             children = list(
@@ -307,7 +315,7 @@ class RelayCore:
         Depth-first: a grandchild settles before its parent, so the
         intermediate parent observes a fully-cancelled subtree.
         """
-        terminal = ("done", "failed", "cancelled")
+        terminal = ("done", "failed", "cancelled", "closed")
         visited = _visited if _visited is not None else set()
         async with self._sm() as s:
             children = list(
@@ -569,7 +577,7 @@ class RelayCore:
         two near-simultaneous child terminals can't both resume the
         parent.
         """
-        terminal = ("done", "failed", "cancelled")
+        terminal = ("done", "failed", "cancelled", "closed")
         async with self._enqueue_lock:
             async with self._sm() as s:
                 parent = await s.get(Run, parent_run_id)
@@ -763,7 +771,7 @@ class RelayCore:
         # watcher would observe a non-awaiting parent and no-op anyway.
         run_row = await load_run(self._sm, ctx.run_id)
         if run_row is not None and run_row.status in (
-            "done", "failed", "cancelled"
+            "done", "failed", "cancelled", "closed"
         ):
             state.result = LoopResult(
                 run_row.status,
@@ -901,14 +909,26 @@ class RelayCore:
                 parent_iter_ctx=result.fanout_parent_ctx,
             )
             return
+        # W3 (chat-mode close): if close_chat signalled this loop, the
+        # loop returns ``cancelled`` (the cancel-event path is shared with
+        # cancel_run). Swap to ``closed`` here so the terminal event the
+        # rest of the system observes — DB row, run_ended payload, SSE —
+        # matches the operator's intent. Only consulted when the live
+        # ``_RunState`` exists and ``closing`` was set.
+        final_status = result.status
+        final_summary = result.summary or result.reason
+        if result.status == "cancelled":
+            state = self._runs.get(ctx.run_id)
+            if state is not None and state.closing:
+                final_status = "closed"
+                final_summary = "user closed chat"
         await set_run_status(
-            self._sm, ctx.run_id, result.status, ended=True
+            self._sm, ctx.run_id, final_status, ended=True
         )
         await self._store.append(
             ctx.run_id,
             "run_ended",
-            {"status": result.status,
-             "summary": result.summary or result.reason},
+            {"status": final_status, "summary": final_summary},
         )
 
     # ── public API (write path; ADR-07/ADR-15) ─────────────────────────
@@ -1244,7 +1264,7 @@ class RelayCore:
                     summary="parent cancelled by user",
                 )
                 return
-            if run.status in ("done", "failed", "cancelled"):
+            if run.status in ("done", "failed", "cancelled", "closed"):
                 # Already terminal — idempotent no-op.
                 return
 
@@ -1266,6 +1286,93 @@ class RelayCore:
                  "summary": "orphaned: process state lost"},
             )
             return
+        state.cancel_event.set()
+        session = state.session_handle.session
+        if session is not None:
+            await session.cancel()
+
+    async def close_chat(self, run_id: str) -> None:
+        """Close a chat-mode run (W3).
+
+        Chat-only sibling of :meth:`cancel_run`: a chat that the operator
+        explicitly ended via the dashboard's Close button (or the
+        ``relay__close_chat`` MCP tool) flips to a dedicated ``closed``
+        terminal status — distinct from ``cancelled`` (operator gave up
+        on an in-flight task) and ``done`` (the agent emitted the
+        terminating sentinel) so the dashboard can render a neutral
+        "ended" pill and not mix human-ended chats into the task-failure
+        list.
+
+        Three branches mirror :meth:`cancel_run`:
+
+        1. **Paused** (the common case for chat: user is between turns):
+           no loop is alive. Write ``set_run_status(closed, ended=True)``
+           + ``run_ended`` directly under ``_enqueue_lock``.
+        2. **Running** (user closed while pi was mid-response): set
+           ``state.closing = True`` under the lock, then signal the loop
+           (``cancel_event`` + ``session.cancel()``) outside the lock.
+           The loop returns ``LoopResult("cancelled", ...)`` and
+           :meth:`_apply_result` consults ``state.closing`` to swap the
+           terminal status from ``cancelled`` to ``closed``.
+        3. **Running but no in-memory state** (ADR-31 orphan safety net):
+           write the DB row directly with an orphan summary.
+
+        Raises ``ValueError`` for unknown run or non-chat mode. Already-
+        terminal runs (including a prior ``closed``) are idempotent
+        no-ops — the REST layer pre-checks and returns 409 for them so
+        the operator gets feedback; the MCP layer is permissive.
+        """
+        async with self._enqueue_lock:
+            run = await load_run(self._sm, run_id)
+            if run is None:
+                raise ValueError(f"unknown run {run_id}")
+            if run.mode != "chat":
+                raise ValueError(
+                    f"run {run_id} is not a chat-mode run "
+                    f"(mode={run.mode!r})"
+                )
+            if run.status in ("done", "failed", "cancelled", "closed"):
+                # Already terminal — idempotent no-op (mirrors cancel_run).
+                return
+            if run.status == "paused":
+                # No active loop — write directly.
+                await set_run_status(
+                    self._sm, run_id, "closed", ended=True
+                )
+                await self._store.append(
+                    run_id,
+                    "run_ended",
+                    {"status": "closed", "summary": "user closed chat"},
+                )
+                return
+            # Anything other than running here would be a chat-mode run
+            # in an unexpected state (chats don't fan out, so
+            # ``awaiting_children`` is not reachable for them). Treat as
+            # state conflict.
+            if run.status != "running":
+                raise ValueError(
+                    f"run {run_id} is not in a closable state "
+                    f"(status={run.status!r})"
+                )
+            state = self._runs.get(run_id)
+            if state is None:
+                # Orphan safety net (ADR-31): row says running but no
+                # in-process task owns it.
+                await set_run_status(
+                    self._sm, run_id, "closed", ended=True
+                )
+                await self._store.append(
+                    run_id,
+                    "run_ended",
+                    {"status": "closed",
+                     "summary": "orphaned: process state lost"},
+                )
+                return
+            # Mark the state under the lock so _apply_result observes the
+            # flag when the loop returns. The actual signalling happens
+            # outside the lock (session.cancel() may await pi I/O).
+            state.closing = True
+
         state.cancel_event.set()
         session = state.session_handle.session
         if session is not None:

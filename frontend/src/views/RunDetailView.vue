@@ -369,7 +369,7 @@ onMounted(() => {
 // `running`. Adding either here would `markTerminal()` an in-flight stream
 // and stop live updates while the parent waits for child completion. See
 // ADR-34 / `docs/spec.md` §3.1.
-const TERMINAL = new Set(['done', 'failed', 'cancelled'])
+const TERMINAL = new Set(['done', 'failed', 'cancelled', 'closed'])
 
 // 9e — Children query for cascade-aware cancel label.
 const childrenQuery = useRunChildrenQuery(() => props.id)

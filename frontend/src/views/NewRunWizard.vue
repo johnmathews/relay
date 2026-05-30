@@ -132,7 +132,11 @@ const canStart = computed(
 
 async function start(): Promise<void> {
   if (!canStart.value || promptSource.value == null) return
-  const body: RunCreate = { project_id: projectId.value }
+  // The wizard creates task-mode runs only; chats land via the new
+  // chat surface (W4). The OpenAPI schema gives ``mode`` a default of
+  // "task", but the regenerated TypeScript treats fields-with-defaults
+  // as required (openapi-typescript v7) — so spell it out here.
+  const body: RunCreate = { project_id: projectId.value, mode: 'task' }
   if ('promptId' in promptSource.value) {
     body.prompt_id = promptSource.value.promptId
   } else {

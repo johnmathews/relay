@@ -108,6 +108,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Close Chat
+         * @description Close a chat-mode run (W3).
+         *
+         *     Chat-only sibling of POST ``/runs/{id}/cancel``. Returns 404 if the
+         *     run is unknown, 409 if it is not chat-mode, 409 if it is already
+         *     terminal. Successful close flips ``status → closed`` and appends a
+         *     ``run_ended`` event with ``summary="user closed chat"``.
+         */
+        post: operations["close_chat_api_runs__run_id__close_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/resume": {
         parameters: {
             query?: never;
@@ -601,6 +626,12 @@ export interface components {
             max_iters?: number | null;
             /** Iter Timeout */
             iter_timeout?: number | null;
+            /**
+             * Mode
+             * @default task
+             * @enum {string}
+             */
+            mode: "task" | "chat";
         };
         /** RunDetailOut */
         RunDetailOut: {
@@ -616,6 +647,8 @@ export interface components {
             user_id: number;
             /** Status */
             status: string;
+            /** Mode */
+            mode: string;
             /** Started At */
             started_at: string;
             /** Ended At */
@@ -647,6 +680,8 @@ export interface components {
             user_id: number;
             /** Status */
             status: string;
+            /** Mode */
+            mode: string;
             /** Started At */
             started_at: string;
             /** Ended At */
@@ -726,6 +761,7 @@ export interface operations {
             query?: {
                 project_id?: number | null;
                 status?: string | null;
+                mode?: string | null;
                 limit?: number;
                 offset?: number;
                 include_children?: boolean;
@@ -881,6 +917,37 @@ export interface operations {
         };
     };
     cancel_run_api_runs__run_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    close_chat_api_runs__run_id__close_post: {
         parameters: {
             query?: never;
             header?: never;
