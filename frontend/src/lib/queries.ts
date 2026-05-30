@@ -803,6 +803,36 @@ export function useDeleteRunMutation(): UseMutationReturn<
   })
 }
 
+/**
+ * `useMutation` to close a chat-mode run
+ * (`POST /api/runs/{id}/close`; W3). The endpoint returns 409 if the
+ * run is task-mode (chat-only close) or already terminal, and 404 if
+ * unknown — both surface as an `ApiError` carrying `status`. On success
+ * the run transitions to the `closed` terminal status; invalidate
+ * `keys.runDetail(id)` (the chat view re-fetches and goes terminal)
+ * and `keys.runs()` (every chat list / project view picks up the new
+ * status).
+ */
+export function useCloseChatMutation(): UseMutationReturn<
+  Run,
+  string,
+  ApiError
+> {
+  const cache = useQueryCache()
+  return useMutation({
+    mutation: async (runId: string) =>
+      unwrap(
+        await api.POST('/api/runs/{run_id}/close', {
+          params: { path: { run_id: runId } },
+        }),
+      ),
+    onSuccess: (data: Run) => {
+      void cache.invalidateQueries({ key: keys.runDetail(data.id) })
+      void cache.invalidateQueries({ key: keys.runs() })
+    },
+  })
+}
+
 /** Arguments for the resume mutation: which run + the answer text. */
 export interface ResumeRunArgs {
   runId: string

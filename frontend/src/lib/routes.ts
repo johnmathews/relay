@@ -34,6 +34,16 @@ export const routes: RouteRecordRaw[] = [
     component: () => import('../views/RunDetailView.vue'),
     props: true,
   },
+  // Chat-mode runs render through a dedicated conversational view
+  // (W4). Task-mode runs continue to use `/runs/:id`; a chat-mode run
+  // opened via `/runs/:id` redirects to `/chats/:id` (RunDetailView's
+  // setup watcher). See docs/proposals/chat-mode.md.
+  {
+    path: '/chats/:id',
+    name: 'chat-detail',
+    component: () => import('../views/ChatView.vue'),
+    props: true,
+  },
 ]
 
 export const router = createRouter({

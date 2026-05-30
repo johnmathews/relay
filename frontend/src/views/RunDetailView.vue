@@ -49,6 +49,7 @@ const detail = computed<RunDetail | null>(
 )
 const { isLoading, error } = asAsyncState(detailQuery)
 
+
 const eventsStore = useEventsStore()
 const currentRun = useCurrentRunStore()
 const invalidate = useInvalidate()
@@ -56,6 +57,23 @@ const cancelRun = useCancelRunMutation()
 
 const route = useRoute()
 const router = useRouter()
+
+// W4: a chat-mode run rendered through /runs/:id is a wrong-view
+// link — the conversational shell lives at /chats/:id. Redirect once,
+// as soon as detail lands, so deep links from elsewhere in the app
+// (and any stale history entries) land on the right surface. Uses
+// `replace` so the back button skips the wrong-view entry instead of
+// trapping the user in a redirect loop. `immediate` so a hydrated
+// Colada cache entry redirects on mount, not just on a status change.
+watch(
+  () => detail.value?.mode,
+  (mode) => {
+    if (mode === 'chat') {
+      void router.replace({ name: 'chat-detail', params: { id: props.id } })
+    }
+  },
+  { immediate: true },
+)
 
 /**
  * URL-derived view selection. Returns null while the URL has no
