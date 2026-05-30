@@ -25,12 +25,11 @@ import ToolCallCard from './ToolCallCard.vue'
 import SignalCard from './SignalCard.vue'
 import UsageRow from './UsageRow.vue'
 import TimelineMinimap from './TimelineMinimap.vue'
+import EventPayloadView from './EventPayloadView.vue'
 import type { PendingTurn, StreamEvent } from '@/stores/events'
 import { useBrowserUiStore } from '@/stores/files'
-import {
-  useTimelinePrefsStore,
-  type TimelineRowType,
-} from '@/stores/timelinePrefs'
+import { useTimelinePrefsStore } from '@/stores/timelinePrefs'
+import { classifyEvent } from '@/lib/eventKinds'
 import { serializeView } from '@/lib/runView'
 
 /**
@@ -181,6 +180,13 @@ const rows = computed<Row[]>(() => {
   const out: Row[] = []
   const toolIndex = new Map<string, number>()
   for (const ev of filteredEvents.value) {
+    // Chip-row visibility filter (see EventKindFilter + timelinePrefs).
+    // A hidden chip drops every row of that category from the
+    // timeline. Counts shown on the chip are computed off the
+    // pre-filter `filteredEvents` so the chip still reads as "N
+    // available, hidden by you" (see counts in OverviewPanel /
+    // IterTimelinePanel).
+    if (prefs.isHidden(classifyEvent(ev))) continue
     const p = ev.payload
     if (ev.kind === 'tool_use_start') {
       const idx = out.length
@@ -477,10 +483,13 @@ function jumpToLatest(): void {
 
 /**
  * Per-row expand override (keyed by `row.key`, which is unique per
- * event seq). Wins over the type default when set; a `null` slot
- * means "follow the type default". Lives in component state and
- * resets on remount — overrides shouldn't outlive the tab the way
- * type defaults do.
+ * event seq). Collapsible rows default to collapsed; the user opts in
+ * to an expanded row by clicking its header. Lives in component
+ * state and resets on remount — overrides shouldn't outlive the tab.
+ *
+ * The EventKindFilter chip row above the timeline drives **visibility**
+ * (`prefs.isHidden(category)`), NOT expand-by-default. Visibility
+ * filtering lands in `rows` below.
  */
 const rowOverrides = ref<Record<string, boolean>>({})
 const prefs = useTimelinePrefsStore()
@@ -493,7 +502,7 @@ function isRowExpanded(row: Row): boolean {
   if (!isCollapsible(row.type)) return true
   const ov = rowOverrides.value[row.key]
   if (typeof ov === 'boolean') return ov
-  return prefs.isExpandedByDefault(row.type as TimelineRowType)
+  return false
 }
 
 function toggleRow(row: Row): void {
@@ -571,13 +580,13 @@ watch(
 )
 
 /**
- * Row-expansion changes (per-row override, group expand/collapse,
- * type-default toggle) mutate real DOM heights, which shifts the
+ * Row-expansion changes (per-row override, group expand/collapse) +
+ * chip-row visibility flips mutate real DOM heights, which shifts the
  * mapping from scrollTop → display-row index. Re-measure on the next
  * tick so the minimap overlay tracks the new layout.
  */
 watch(
-  [rowOverrides, groupExpanded, () => prefs.expanded],
+  [rowOverrides, groupExpanded, () => prefs.hidden],
   async () => {
     await nextTick()
     measureViewportRange()
@@ -762,18 +771,6 @@ function generic(ev: StreamEvent): string {
   }
 }
 
-/**
- * Pretty-printed JSON for the expanded body of boundary / generic
- * rows. Single-line `generic()` is still used in the row header
- * preview where vertical space is at a premium.
- */
-function prettyJson(ev: StreamEvent): string {
-  try {
-    return JSON.stringify(ev.payload, null, 2)
-  } catch {
-    return ''
-  }
-}
 
 /** Narrow an unknown payload field to a number (or undefined). */
 function asNum(v: unknown): number | undefined {
@@ -1230,10 +1227,11 @@ function onArtifactEditedClick(path: string): void {
                     >
                       {{ text(row.event) }}
                     </p>
-                    <pre
+                    <EventPayloadView
                       v-else
-                      class="timeline__bmeta timeline__bmeta--pretty"
-                    ><code>{{ prettyJson(row.event) }}</code></pre>
+                      class="timeline__payload-view"
+                      :payload="row.event.payload"
+                    />
                   </div>
                 </template>
 

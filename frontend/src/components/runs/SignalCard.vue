@@ -5,10 +5,12 @@
 // are visually distinctive (banner color) and carry a stable anchor id
 // (`#signal-<seq>`) so they are directly linkable.
 //
-// Rendering is intentionally minimal (text + <pre> for args) — the real
-// markdown pipeline is W6.
+// Args render via EventPayloadView — multi-line fields (e.g. a pause
+// `question`) become readable instead of a single escaped `\n`-laden
+// JSON line.
 
 import { computed } from 'vue'
+import EventPayloadView from './EventPayloadView.vue'
 
 const props = defineProps<{
   /** The event seq — used for the linkable anchor id. */
@@ -29,13 +31,12 @@ const props = defineProps<{
 
 const anchorId = computed(() => `signal-${props.seq}`)
 
-const argsText = computed(() => {
-  if (props.args == null) return ''
-  try {
-    return JSON.stringify(props.args, null, 2)
-  } catch {
-    return String(props.args)
+const hasArgs = computed(() => {
+  if (props.args == null) return false
+  if (typeof props.args === 'object') {
+    return Object.keys(props.args as Record<string, unknown>).length > 0
   }
+  return true
 })
 </script>
 
@@ -61,10 +62,11 @@ const argsText = computed(() => {
         aria-label="Link to this signal"
       >#</a>
     </div>
-    <pre
-      v-if="argsText !== ''"
+    <EventPayloadView
+      v-if="hasArgs"
       class="signal-card__args"
-    >{{ argsText }}</pre>
+      :payload="args"
+    />
   </div>
 </template>
 
@@ -120,13 +122,6 @@ const argsText = computed(() => {
 }
 
 .signal-card__args {
-  margin: 0.4rem 0 0;
-  padding: 0.5rem;
-  border-radius: 4px;
-  background: var(--color-bg);
-  font-family: var(--font-mono);
-  font-size: 0.82em;
-  white-space: pre-wrap;
-  word-break: break-word;
+  margin-top: 0.4rem;
 }
 </style>

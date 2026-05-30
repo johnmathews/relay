@@ -2,8 +2,9 @@ import { describe, it, expect } from 'vitest'
 import {
   classifyEvent,
   classifyPending,
-  categoryToRowType,
   KIND_CATEGORIES,
+  KIND_LABEL,
+  KIND_MEMBERS,
 } from '../src/lib/eventKinds'
 import type { PendingTurn, StreamEvent } from '../src/stores/events'
 
@@ -27,26 +28,39 @@ describe('classifyEvent', () => {
     expect(classifyEvent(ev('tool_use_end'))).toBe('tool')
   })
 
-  it('routes structural / boundary kinds to signal', () => {
+  it('routes signal_emit to signal (signals chip is now sentinel-only)', () => {
+    expect(classifyEvent(ev('signal_emit'))).toBe('signal')
+  })
+
+  it('routes iter/run/harness lifecycle kinds to boundary', () => {
     for (const k of [
-      'signal_emit',
       'iter_started',
       'iter_ended',
       'run_started',
       'run_ended',
-      'subagent_dispatch',
-      'subagent_return',
-      'child_runs_resolved',
       'harness_session_ended',
-      'pause_requested',
-      'pause_resolved',
     ]) {
-      expect(classifyEvent(ev(k))).toBe('signal')
+      expect(classifyEvent(ev(k))).toBe('boundary')
     }
   })
 
-  it('falls back to other for everything else', () => {
-    expect(classifyEvent(ev('artifact_edited'))).toBe('other')
+  it('routes pause + fanout/child coordination kinds to pause', () => {
+    for (const k of [
+      'pause_requested',
+      'pause_resolved',
+      'subagent_dispatch',
+      'subagent_return',
+      'child_runs_resolved',
+    ]) {
+      expect(classifyEvent(ev(k))).toBe('pause')
+    }
+  })
+
+  it('routes artifact_edited to artifact (extracted from the old `other`)', () => {
+    expect(classifyEvent(ev('artifact_edited'))).toBe('artifact')
+  })
+
+  it('falls back to other only for truly unknown / future kinds', () => {
     expect(classifyEvent(ev('a_future_kind_we_have_not_invented'))).toBe('other')
   })
 })
@@ -65,20 +79,25 @@ describe('classifyPending', () => {
   })
 })
 
-describe('categoryToRowType', () => {
-  it('maps every chip category 1:1 except other → generic', () => {
-    expect(categoryToRowType('assistant')).toBe('assistant')
-    expect(categoryToRowType('thinking')).toBe('thinking')
-    expect(categoryToRowType('tool')).toBe('tool')
-    expect(categoryToRowType('signal')).toBe('signal')
-    expect(categoryToRowType('other')).toBe('generic')
+describe('category metadata', () => {
+  it('every chip category has a label and a non-empty member list', () => {
+    for (const c of KIND_CATEGORIES) {
+      expect(typeof KIND_LABEL[c]).toBe('string')
+      expect(KIND_LABEL[c].length).toBeGreaterThan(0)
+      expect(KIND_MEMBERS[c].length).toBeGreaterThan(0)
+    }
   })
 
-  it('covers the full KIND_CATEGORIES vocabulary (no orphans)', () => {
-    // If a future chip category is added without a matching prefs row
-    // type, this assertion catches the gap.
-    for (const c of KIND_CATEGORIES) {
-      expect(typeof categoryToRowType(c)).toBe('string')
-    }
+  it('exposes 8 chip categories in canonical display order', () => {
+    expect([...KIND_CATEGORIES]).toEqual([
+      'assistant',
+      'thinking',
+      'tool',
+      'signal',
+      'boundary',
+      'pause',
+      'artifact',
+      'other',
+    ])
   })
 })

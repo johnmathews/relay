@@ -52,7 +52,7 @@ describe('TimelinePane', () => {
     // expand defaults (2026-05-25). Every mount needs an active
     // Pinia or the store factory throws "no active Pinia".
     setActivePinia(createPinia())
-    localStorage.removeItem('relay.timeline.expanded')
+    localStorage.removeItem('relay.timeline.hiddenKinds')
     // TimelinePane calls useRouter() + useRoute() (Phase 1 fix —
     // onArtifactEditedClick pushes ?view=artifact:<path>). Every mount
     // needs a router plugin or vue-router throws "No active router".
@@ -345,31 +345,38 @@ describe('TimelinePane', () => {
     )
   })
 
-  it('reflects timelinePrefs type-default flips into row collapsed state', async () => {
-    // The Display popover was retired (260528); per-type expand
-    // defaults are now driven by the EventKindFilter chip row
-    // (covered separately). TimelinePane consumes the same
-    // timelinePrefs store either way.
-    // What we still verify here is the contract: when the prefs store
-    // flips a type default to expanded, matching rows un-collapse.
+  it('hides rows of a category that has been toggled off in timelinePrefs', async () => {
+    // The chip row now drives **visibility**, not expand-by-default.
+    // A category flipped to hidden in timelinePrefs disappears from
+    // the timeline; flipping it back restores the row.
     const events: StreamEvent[] = [
       {
         seq: 1,
         kind: 'tool_use_start',
         payload: { tool_id: 't', name: 'Bash', args: { x: 1 } },
       },
+      {
+        seq: 2,
+        kind: 'iter_started',
+        payload: { seq: 1, phase: null, prompt: '' },
+      },
     ]
     const w = mount(TimelinePane, { props: { events } })
-    const row = w.get('.timeline__row')
-    expect(row.classes()).toContain('timeline__row--collapsed')
+    expect(w.find('[data-row-type="tool"]').exists()).toBe(true)
+    expect(w.find('[data-row-type="boundary"]').exists()).toBe(true)
 
     const { useTimelinePrefsStore } = await import(
       '../src/stores/timelinePrefs'
     )
     const prefs = useTimelinePrefsStore()
-    prefs.toggle('tool')
+    prefs.toggleHidden('tool')
     await w.vm.$nextTick()
-    expect(row.classes()).not.toContain('timeline__row--collapsed')
+    expect(w.find('[data-row-type="tool"]').exists()).toBe(false)
+    expect(w.find('[data-row-type="boundary"]').exists()).toBe(true)
+
+    prefs.toggleHidden('tool')
+    await w.vm.$nextTick()
+    expect(w.find('[data-row-type="tool"]').exists()).toBe(true)
   })
 
   it('renders a smart per-tool preview in the row header', async () => {
@@ -514,12 +521,15 @@ describe('TimelinePane', () => {
     expect(header.text()).toContain('phase=wrap-up')
     // Body is hidden when collapsed.
     expect(row.find('.timeline__card-body').exists()).toBe(false)
-    // Click toggles to expanded; body shows pretty-printed JSON.
+    // Click toggles to expanded; body renders via EventPayloadView
+    // (field-aware) so the user sees `phase` + value as a labeled
+    // field instead of a JSON blob.
     await header.trigger('click')
     expect(row.classes()).not.toContain('timeline__row--collapsed')
-    const body = row.find('.timeline__bmeta--pretty')
+    const body = row.find('[data-testid="event-payload-view"]')
     expect(body.exists()).toBe(true)
-    expect(body.text()).toContain('"phase": "wrap-up"')
+    expect(body.text()).toContain('phase')
+    expect(body.text()).toContain('wrap-up')
   })
 
   it('clicking the card header toggles the row body', async () => {

@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import EventKindFilter from '../src/components/runs/EventKindFilter.vue'
 import {
   KIND_CATEGORIES,
+  KIND_MEMBERS,
   type KindCategory,
 } from '../src/lib/eventKinds'
 import { useTimelinePrefsStore } from '../src/stores/timelinePrefs'
@@ -11,21 +12,16 @@ import { useTimelinePrefsStore } from '../src/stores/timelinePrefs'
 function fullCounts(
   over: Partial<Record<KindCategory, number>> = {},
 ): Record<KindCategory, number> {
-  return {
-    assistant: 0,
-    thinking: 0,
-    tool: 0,
-    signal: 0,
-    other: 0,
-    ...over,
-  }
+  return Object.fromEntries(
+    KIND_CATEGORIES.map((c) => [c, over[c] ?? 0]),
+  ) as Record<KindCategory, number>
 }
 
-describe('EventKindFilter — chip row drives expand-by-default', () => {
+describe('EventKindFilter — chip row drives category visibility', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     try {
-      localStorage.removeItem('relay.timeline.expanded')
+      localStorage.removeItem('relay.timeline.hiddenKinds')
     } catch {
       // ignore
     }
@@ -45,63 +41,86 @@ describe('EventKindFilter — chip row drives expand-by-default', () => {
   it('shows per-category counts from props', () => {
     const w = mount(EventKindFilter, {
       props: {
-        counts: fullCounts({ tool: 3, assistant: 7 }),
+        counts: fullCounts({ tool: 3, assistant: 7, boundary: 2, artifact: 1 }),
       },
     })
     expect(w.get('[data-testid="kind-count-tool"]').text()).toBe('3')
     expect(w.get('[data-testid="kind-count-assistant"]').text()).toBe('7')
+    expect(w.get('[data-testid="kind-count-boundary"]').text()).toBe('2')
+    expect(w.get('[data-testid="kind-count-artifact"]').text()).toBe('1')
     expect(w.get('[data-testid="kind-count-signal"]').text()).toBe('0')
   })
 
-  it('starts with every chip off (everything collapsed by default)', () => {
+  it('every chip starts visible (lit) — default is all-visible', () => {
     const w = mount(EventKindFilter, {
       props: { counts: fullCounts() },
     })
     for (const k of KIND_CATEGORIES) {
       const chip = w.get(`[data-testid="kind-chip-${k}"]`)
-      expect(chip.attributes('aria-pressed')).toBe('false')
-      expect(chip.classes()).not.toContain('is-on')
+      expect(chip.attributes('aria-pressed')).toBe('true')
+      expect(chip.classes()).toContain('is-on')
     }
   })
 
-  it('clicking a chip flips that category in the timelinePrefs store', async () => {
+  it('clicking a chip hides that category in the timelinePrefs store', async () => {
     const prefs = useTimelinePrefsStore()
     const w = mount(EventKindFilter, {
       props: { counts: fullCounts() },
     })
-    expect(prefs.isExpandedByDefault('tool')).toBe(false)
+    expect(prefs.isHidden('tool')).toBe(false)
     await w.get('[data-testid="kind-chip-tool"]').trigger('click')
-    expect(prefs.isExpandedByDefault('tool')).toBe(true)
+    expect(prefs.isHidden('tool')).toBe(true)
     const chip = w.get('[data-testid="kind-chip-tool"]')
-    expect(chip.attributes('aria-pressed')).toBe('true')
-    expect(chip.classes()).toContain('is-on')
+    expect(chip.attributes('aria-pressed')).toBe('false')
+    expect(chip.classes()).not.toContain('is-on')
   })
 
-  it('the Other chip bridges to the `generic` row type', async () => {
-    // `other` (KindCategory) ↔ `generic` (TimelineRowType) — the prefs
-    // store predates the chip vocabulary; this bridge is asserted so a
-    // future rename can't break it silently.
+  it('clicking a hidden chip again shows it (independent per-chip toggle)', async () => {
     const prefs = useTimelinePrefsStore()
     const w = mount(EventKindFilter, {
       props: { counts: fullCounts() },
     })
-    expect(prefs.isExpandedByDefault('generic')).toBe(false)
+    await w.get('[data-testid="kind-chip-signal"]').trigger('click')
     await w.get('[data-testid="kind-chip-other"]').trigger('click')
-    expect(prefs.isExpandedByDefault('generic')).toBe(true)
+    expect(prefs.isHidden('signal')).toBe(true)
+    expect(prefs.isHidden('other')).toBe(true)
+    // Re-click signal → only `other` stays hidden.
+    await w.get('[data-testid="kind-chip-signal"]').trigger('click')
+    expect(prefs.isHidden('signal')).toBe(false)
+    expect(prefs.isHidden('other')).toBe(true)
   })
 
-  it('shows a Reset button only when at least one chip is on', async () => {
+  it('shows a Show-all button only when at least one chip is hidden', async () => {
     const prefs = useTimelinePrefsStore()
     const w = mount(EventKindFilter, {
       props: { counts: fullCounts() },
     })
     expect(w.find('[data-testid="kind-filter-reset"]').exists()).toBe(false)
 
-    prefs.toggle('tool')
+    prefs.toggleHidden('tool')
     await w.vm.$nextTick()
     expect(w.find('[data-testid="kind-filter-reset"]').exists()).toBe(true)
     await w.get('[data-testid="kind-filter-reset"]').trigger('click')
-    expect(prefs.isExpandedByDefault('tool')).toBe(false)
+    expect(prefs.isHidden('tool')).toBe(false)
+  })
+
+  it('chip tooltip lists the underlying event kinds in that category', () => {
+    // Hovering "Other" should no longer be a mystery — it lists what
+    // falls into the bucket (here: just "unknown / future" since
+    // artifact_edited is now its own chip).
+    const w = mount(EventKindFilter, {
+      props: { counts: fullCounts() },
+    })
+    const other = w.get('[data-testid="kind-chip-other"]')
+    const title = other.attributes('title') ?? ''
+    for (const member of KIND_MEMBERS.other) {
+      expect(title).toContain(member)
+    }
+    // Spot-check one structural chip too.
+    const bound = w.get('[data-testid="kind-chip-boundary"]')
+    const boundTitle = bound.attributes('title') ?? ''
+    expect(boundTitle).toContain('iter_started')
+    expect(boundTitle).toContain('run_ended')
   })
 
   it('exposes role="toolbar" for assistive tech', () => {

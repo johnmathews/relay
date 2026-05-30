@@ -998,22 +998,22 @@ describe('RunDetailView — keyboard navigation', () => {
   })
 })
 
-describe('RunDetailView — chip-row drives expand-by-default (no URL plumbing)', () => {
+describe('RunDetailView — chip-row drives category visibility (no URL plumbing)', () => {
   beforeEach(() => {
     GET.mockReset()
     POST.mockReset()
     try {
-      localStorage.removeItem('relay.timeline.expanded')
+      localStorage.removeItem('relay.timeline.hiddenKinds')
     } catch {
       // ignore
     }
   })
 
   it('clicking a chip flips the timelinePrefs store, not the URL', async () => {
-    // The pre-merge feature mirrored chip state to `?kinds=`. The new
-    // contract: clicking a chip toggles `timelinePrefs` (persisted in
-    // localStorage), and the URL stays clean. No more visibility
-    // filter — every step is always rendered.
+    // Clicking a chip toggles category visibility in `timelinePrefs`
+    // (persisted in localStorage), and the URL stays clean. Default
+    // = every chip lit (all categories visible); a click on `tool`
+    // hides it, dropping the chip's `is-on` state to false.
     const testRouter = await makeRouter('/runs/run-1?view=overview')
 
     GET.mockImplementation((path: string) => {
@@ -1035,14 +1035,18 @@ describe('RunDetailView — chip-row drives expand-by-default (no URL plumbing)'
     })
     await flushPromises()
 
-    await w.get('[data-testid="kind-chip-tool"]').trigger('click')
-    await flushPromises()
-    // URL stays clean — chip state isn't a query param anymore.
-    expect(testRouter.currentRoute.value.query.kinds).toBeUndefined()
-    // Chip reads as on (the assertion that the store flipped lives
-    // in the per-component EventKindFilter spec).
+    // Default state: chip is lit (visible / pressed true).
     expect(
       w.get('[data-testid="kind-chip-tool"]').attributes('aria-pressed'),
     ).toBe('true')
+
+    await w.get('[data-testid="kind-chip-tool"]').trigger('click')
+    await flushPromises()
+    // URL stays clean — chip state isn't a query param.
+    expect(testRouter.currentRoute.value.query.kinds).toBeUndefined()
+    // After click the chip is dim (hidden / pressed false).
+    expect(
+      w.get('[data-testid="kind-chip-tool"]').attributes('aria-pressed'),
+    ).toBe('false')
   })
 })

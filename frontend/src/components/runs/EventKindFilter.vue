@@ -1,23 +1,28 @@
 <script setup lang="ts">
-// Persistent chip row above the timeline. Five toggles (Assistant /
-// Thinking / Tool calls / Signals / Other) — clicking a chip flips
-// that category's **expand-by-default** state in the timelinePrefs
-// store. A "lit" chip means rows of that type are expanded out-of-the
-// box; a dim chip means they're collapsed and the user has to click a
-// row's header to read it. There is no visibility filter — every step
-// is always rendered. This is the merge of the previous chip-row
-// visibility filter and the Display popover.
+// Persistent chip row above the timeline. Eight toggles (Assistant /
+// Thinking / Tool calls / Signals / Boundaries / Pauses / Artifacts /
+// Other) — clicking a chip flips that category's **visibility** in
+// the timeline (`useTimelinePrefsStore.toggleHidden`). A "lit" chip
+// (default state) means rows of that kind are shown; a dim chip
+// means they are hidden from the timeline.
 //
-// The chip dot keeps the per-category colour (matches the card border
-// hue shipped in 8180ace) and the count badge still shows how many
-// rows of that kind the current scope contains, so the row doubles
-// as a colour legend + live activity readout.
+// Default = every category visible (no chip dim). Per-row
+// expand/collapse is a separate concern handled inside TimelinePane.
+//
+// The chip dot keeps the per-category colour (matches the card
+// border hue), and the count badge still shows how many rows of that
+// kind exist in the current scope so the row doubles as a colour
+// legend + live activity readout.
+//
+// Each chip's tooltip lists the underlying event kinds in that
+// category, so a user hovering "Other" sees that it's true unknown /
+// future kinds, not a mystery bucket.
 
 import { computed } from 'vue'
 import {
   KIND_CATEGORIES,
   KIND_LABEL,
-  categoryToRowType,
+  KIND_MEMBERS,
   type KindCategory,
 } from '@/lib/eventKinds'
 import { useTimelinePrefsStore } from '@/stores/timelinePrefs'
@@ -25,34 +30,35 @@ import { useTimelinePrefsStore } from '@/stores/timelinePrefs'
 defineProps<{
   /**
    * Per-category counts IN THE CURRENT SCOPE (cross-iter for the
-   * Overview body, iter-scoped for an Iter body). Always shown on the
-   * chip so the operator sees "how many rows of this kind exist"
-   * regardless of expand state.
+   * Overview body, iter-scoped for an Iter body). Always shown on
+   * the chip so the operator sees "how many rows of this kind exist"
+   * regardless of visibility.
    */
   counts: Readonly<Record<KindCategory, number>>
 }>()
 
 const prefs = useTimelinePrefsStore()
 
-function isExpanded(k: KindCategory): boolean {
-  return prefs.isExpandedByDefault(categoryToRowType(k))
+function isVisible(k: KindCategory): boolean {
+  return !prefs.isHidden(k)
 }
 
 function onToggle(k: KindCategory): void {
-  prefs.toggle(categoryToRowType(k))
+  prefs.toggleHidden(k)
 }
 
 function chipTitle(k: KindCategory): string {
-  const verb = isExpanded(k) ? 'Collapse' : 'Expand'
-  return `${verb} ${KIND_LABEL[k]} steps by default`
+  const verb = isVisible(k) ? 'Hide' : 'Show'
+  const members = KIND_MEMBERS[k].join(', ')
+  return `${verb} ${KIND_LABEL[k]} steps\n${members}`
 }
 
-const hasAnyExpanded = computed(() =>
-  KIND_CATEGORIES.some((k) => isExpanded(k)),
+const hasAnyHidden = computed(() =>
+  KIND_CATEGORIES.some((k) => prefs.isHidden(k)),
 )
 
-function onResetDefaults(): void {
-  prefs.reset()
+function onShowAll(): void {
+  prefs.showAll()
 }
 </script>
 
@@ -60,7 +66,7 @@ function onResetDefaults(): void {
   <div
     class="kind-filter"
     role="toolbar"
-    aria-label="Toggle expand-by-default per event kind"
+    aria-label="Toggle event-kind visibility"
     data-testid="event-kind-filter"
   >
     <button
@@ -68,10 +74,10 @@ function onResetDefaults(): void {
       :key="k"
       type="button"
       class="kind-filter__chip"
-      :class="{ 'is-on': isExpanded(k) }"
+      :class="{ 'is-on': isVisible(k) }"
       :data-kind="k"
       :data-testid="`kind-chip-${k}`"
-      :aria-pressed="isExpanded(k)"
+      :aria-pressed="isVisible(k)"
       :title="chipTitle(k)"
       @click="onToggle(k)"
     >
@@ -87,14 +93,14 @@ function onResetDefaults(): void {
       >{{ counts[k] }}</span>
     </button>
     <button
-      v-if="hasAnyExpanded"
+      v-if="hasAnyHidden"
       type="button"
       class="kind-filter__reset"
       data-testid="kind-filter-reset"
-      title="Collapse every kind by default"
-      @click="onResetDefaults"
+      title="Show every kind"
+      @click="onShowAll"
     >
-      Reset to collapsed
+      Show all
     </button>
   </div>
 </template>
@@ -125,7 +131,8 @@ function onResetDefaults(): void {
   line-height: 1;
   padding: 0.4em 0.7em;
   min-height: 1.9rem;
-  transition: background-color 0.12s ease, border-color 0.12s ease;
+  transition: background-color 0.12s ease, border-color 0.12s ease,
+    opacity 0.12s ease;
 }
 
 .kind-filter__chip:hover,
@@ -135,10 +142,10 @@ function onResetDefaults(): void {
   outline: none;
 }
 
-/* Lit ("expanded by default") state — chip takes its category's
-   pastel background + border so the operator can read at a glance
-   which kinds will be opened on first render. Matches the card
-   palette tokens shipped in 8180ace. */
+/* Lit ("visible") state — chip takes its category's pastel
+   background + border so the operator can read at a glance which
+   kinds are showing. A dim (default-off-state) chip drops opacity
+   on its dot + label so it reads as "off". */
 .kind-filter__chip.is-on[data-kind='assistant'] {
   background: var(--color-row-assistant-bg);
   border-color: var(--color-row-assistant-border);
@@ -155,6 +162,18 @@ function onResetDefaults(): void {
   background: var(--color-row-signal-bg);
   border-color: var(--color-row-signal-border);
 }
+.kind-filter__chip.is-on[data-kind='boundary'] {
+  background: var(--color-row-signal-bg);
+  border-color: var(--color-row-signal-border);
+}
+.kind-filter__chip.is-on[data-kind='pause'] {
+  background: var(--color-warning-bg);
+  border-color: var(--color-warning);
+}
+.kind-filter__chip.is-on[data-kind='artifact'] {
+  background: var(--color-row-other-bg);
+  border-color: var(--color-row-other-border);
+}
 .kind-filter__chip.is-on[data-kind='other'] {
   background: var(--color-row-other-bg);
   border-color: var(--color-row-other-border);
@@ -162,6 +181,16 @@ function onResetDefaults(): void {
 
 .kind-filter__chip.is-on .kind-filter__label {
   font-weight: 600;
+}
+
+/* Dim a hidden chip — keep it readable so the user can still toggle
+   it back on, but make the off-state visually obvious. */
+.kind-filter__chip:not(.is-on) {
+  opacity: 0.55;
+}
+.kind-filter__chip:not(.is-on):hover,
+.kind-filter__chip:not(.is-on):focus-visible {
+  opacity: 0.85;
 }
 
 .kind-filter__dot {
@@ -173,8 +202,10 @@ function onResetDefaults(): void {
   border: 1px solid transparent;
 }
 
-/* Reuse the per-row palette tokens shipped in 8180ace so the chip
-   dot and the card border match. */
+/* Reuse the per-row palette tokens so the chip dot and the card
+   border match. Boundary borrows the signal hue (they're related);
+   pause borrows the warning hue; artifact + other share the
+   neutral "other" hue. */
 .kind-filter__dot[data-kind='assistant'] {
   background: var(--color-row-assistant-border);
 }
@@ -187,8 +218,19 @@ function onResetDefaults(): void {
 .kind-filter__dot[data-kind='signal'] {
   background: var(--color-row-signal-border);
 }
+.kind-filter__dot[data-kind='boundary'] {
+  background: var(--color-row-signal-border);
+  opacity: 0.65;
+}
+.kind-filter__dot[data-kind='pause'] {
+  background: var(--color-warning);
+}
+.kind-filter__dot[data-kind='artifact'] {
+  background: var(--color-row-other-border);
+}
 .kind-filter__dot[data-kind='other'] {
   background: var(--color-row-other-border);
+  opacity: 0.6;
 }
 
 .kind-filter__label {

@@ -1,113 +1,74 @@
-// Per-type expand/collapse defaults for the run-detail timeline.
+// Per-category visibility for the run-detail timeline.
 //
-// The dashboard's verbose `/engineering-team` runs need to be
-// **scannable** out of the box — every step starts collapsed so a
-// 1000-event iter shows as a wall of headers, not a wall of bodies.
-// The operator flips a type's default via the EventKindFilter chip
-// row above the timeline (clicking the Assistant chip lights it up
-// and every assistant row in the current run expands on next render;
-// click again to collapse). The choice persists across reloads via
-// localStorage.
+// The EventKindFilter chip row above the timeline toggles visibility
+// per chip category (see `lib/eventKinds`): clicking a chip hides
+// every row of that category from the timeline; clicking again shows
+// them. Default = every category visible. Choice persists across
+// reloads via localStorage.
 //
-// Per-row override (a single row the user has expanded against its
-// type default) lives in TimelinePane's component state, not here —
-// it shouldn't outlive a tab refresh and shouldn't compete with
-// the persisted type default for storage space.
+// Per-row expand/collapse (the click target on a row's header) is a
+// separate concern — it lives in TimelinePane's component state, not
+// here. Rows default to collapsed regardless of visibility.
 
 import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
+import { KIND_CATEGORIES, type KindCategory } from '@/lib/eventKinds'
 
-/**
- * The row "types" this store knows about. A subset of TimelinePane's
- * full row-type vocabulary — boundary / pause / usage / artifact_edited
- * are intrinsically small (a line or two) and have no useful
- * collapsed state, so the popover doesn't list them.
- */
-export type TimelineRowType =
-  | 'tool'
-  | 'signal'
-  | 'assistant'
-  | 'thinking'
-  | 'boundary'
-  | 'generic'
+const LS_KEY = 'relay.timeline.hiddenKinds'
 
-const LS_KEY = 'relay.timeline.expanded'
-
-/**
- * Source of truth for the out-of-the-box behaviour. Every row type
- * is collapsed by default — the operator opts into expansion via the
- * chip row, never the other way around. Mirrored in the
- * `isExpandedByDefault` fallback so an unknown row type added in
- * the future does not crash.
- */
-const DEFAULTS: Record<TimelineRowType, boolean> = {
-  tool: false,
-  signal: false,
-  assistant: false,
-  thinking: false,
-  boundary: false,
-  generic: false,
-}
-
-function loadFromLocalStorage(): Record<TimelineRowType, boolean> | null {
+function loadFromLocalStorage(): Set<KindCategory> | null {
   try {
     const raw = localStorage.getItem(LS_KEY)
     if (raw == null || raw === '') return null
     const parsed = JSON.parse(raw)
-    if (parsed == null || typeof parsed !== 'object') return null
-    // Spread over DEFAULTS so a stored payload that's missing a key
-    // (e.g. saved before a new row type was added) is filled in.
-    return { ...DEFAULTS, ...(parsed as Partial<Record<TimelineRowType, boolean>>) }
+    if (!Array.isArray(parsed)) return null
+    const valid = new Set(KIND_CATEGORIES)
+    const out = new Set<KindCategory>()
+    for (const k of parsed) {
+      if (typeof k === 'string' && valid.has(k as KindCategory)) {
+        out.add(k as KindCategory)
+      }
+    }
+    return out
   } catch {
-    // Malformed payload — fall back to defaults. Never throw on a
-    // user-corrupted localStorage entry.
     return null
   }
 }
 
 export const useTimelinePrefsStore = defineStore('timeline-prefs', () => {
-  const expanded = ref<Record<TimelineRowType, boolean>>(
-    loadFromLocalStorage() ?? { ...DEFAULTS },
-  )
+  const hidden = ref<Set<KindCategory>>(loadFromLocalStorage() ?? new Set())
 
-  // Persist on any change. Three details are load-bearing:
-  //   1. deep:true — toggle() mutates a key in place; without
-  //      deep:true the watch fires only on whole-object identity
-  //      changes (e.g. reset()).
-  //   2. flush:'sync' — the persisted state must be visible to a
-  //      subsequent freshly-mounted store *in the same tick* (a
-  //      tab-refresh test does setActivePinia + useStore() back to
-  //      back). The default 'pre' flush would queue the write past
-  //      the test's re-instantiation point.
-  //   3. immediate not set — the initial load came from
-  //      `loadFromLocalStorage()` already; a watch-on-mount would
-  //      pointlessly re-serialise the freshly-loaded value back.
+  // Persist on any change. `flush:'sync'` so a freshly-mounted store
+  // in the same tick (tab-refresh test pattern: setActivePinia + use
+  // back-to-back) reads the just-written value. `deep:true` because
+  // toggle() mutates the Set in place.
   watch(
-    expanded,
+    hidden,
     (v) => {
       try {
-        localStorage.setItem(LS_KEY, JSON.stringify(v))
+        localStorage.setItem(LS_KEY, JSON.stringify([...v]))
       } catch {
-        // Storage quota exceeded / disabled — preferences just
-        // don't persist this session. Not worth surfacing.
+        // Storage quota / disabled — preferences just don't persist
+        // this session. Not worth surfacing.
       }
     },
     { deep: true, flush: 'sync' },
   )
 
-  function toggle(type: TimelineRowType): void {
-    expanded.value[type] = !isExpandedByDefault(type)
+  function isHidden(category: KindCategory): boolean {
+    return hidden.value.has(category)
   }
 
-  function isExpandedByDefault(type: TimelineRowType): boolean {
-    const v = expanded.value[type]
-    if (typeof v === 'boolean') return v
-    return DEFAULTS[type] ?? false
+  function toggleHidden(category: KindCategory): void {
+    const next = new Set(hidden.value)
+    if (next.has(category)) next.delete(category)
+    else next.add(category)
+    hidden.value = next
   }
 
-  function reset(): void {
-    expanded.value = { ...DEFAULTS }
+  function showAll(): void {
+    hidden.value = new Set()
   }
 
-  return { expanded, toggle, isExpandedByDefault, reset }
+  return { hidden, isHidden, toggleHidden, showAll }
 })

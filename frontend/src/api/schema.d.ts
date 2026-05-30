@@ -195,7 +195,12 @@ export interface paths {
         get: operations["get_project_api_projects__project_id__get"];
         put?: never;
         post?: never;
-        /** Delete Project */
+        /**
+         * Delete Project
+         * @description Unregister a project and cascade-delete its runs + prompts.
+         *     DB-only; never touches files on disk. 404 unknown project; 409 if
+         *     any run is currently active (cancel first).
+         */
         delete: operations["delete_project_api_projects__project_id__delete"];
         options?: never;
         head?: never;

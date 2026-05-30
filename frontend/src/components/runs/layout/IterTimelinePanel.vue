@@ -1,15 +1,19 @@
 <script setup lang="ts">
 // Right-pane body when selection.kind === 'iter'. TimelinePane scoped
 // to one iter via its existing selected-iter-seq prop, with the
-// EventKindFilter chip row above it. The chip row controls per-type
-// expand-by-default (NOT visibility — every step is always rendered).
+// EventKindFilter chip row above it. The chip row controls per-category
+// visibility on the timeline.
 
 import { computed } from 'vue'
 import EventKindFilter from '@/components/runs/EventKindFilter.vue'
 import TimelinePane from '@/components/runs/TimelinePane.vue'
 import type { StreamEvent, PendingTurn } from '@/stores/events'
 import type { Iter } from '@/lib/queries'
-import { classifyEvent, type KindCategory } from '@/lib/eventKinds'
+import {
+  classifyEvent,
+  KIND_CATEGORIES,
+  type KindCategory,
+} from '@/lib/eventKinds'
 
 const props = defineProps<{
   runId: string
@@ -26,13 +30,9 @@ const props = defineProps<{
  * each" is the same heuristic as OverviewPanel.
  */
 const counts = computed<Record<KindCategory, number>>(() => {
-  const acc: Record<KindCategory, number> = {
-    assistant: 0,
-    thinking: 0,
-    tool: 0,
-    signal: 0,
-    other: 0,
-  }
+  const acc = Object.fromEntries(
+    KIND_CATEGORIES.map((c) => [c, 0]),
+  ) as Record<KindCategory, number>
   let openIter: number | null = null
   for (const ev of props.events) {
     const evSeq =

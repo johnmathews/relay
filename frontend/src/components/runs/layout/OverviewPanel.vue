@@ -2,14 +2,17 @@
 // Right-pane body when selection.kind === 'overview'. Renders the
 // run's prompt + the cross-iter live timeline (TimelinePane with
 // selectedIterSeq = null = no scope filter) + the EventKindFilter
-// chip row, which controls per-type expand-by-default (NOT
-// visibility — every step is always rendered).
+// chip row, which controls per-category visibility on the timeline.
 
 import { computed } from 'vue'
 import EventKindFilter from '@/components/runs/EventKindFilter.vue'
 import TimelinePane from '@/components/runs/TimelinePane.vue'
 import type { StreamEvent, PendingTurn } from '@/stores/events'
-import { classifyEvent, type KindCategory } from '@/lib/eventKinds'
+import {
+  classifyEvent,
+  KIND_CATEGORIES,
+  type KindCategory,
+} from '@/lib/eventKinds'
 
 const props = defineProps<{
   runId: string
@@ -23,13 +26,9 @@ const props = defineProps<{
  * shows how many rows EACH category contributes to the current scope.
  */
 const counts = computed<Record<KindCategory, number>>(() => {
-  const acc: Record<KindCategory, number> = {
-    assistant: 0,
-    thinking: 0,
-    tool: 0,
-    signal: 0,
-    other: 0,
-  }
+  const acc = Object.fromEntries(
+    KIND_CATEGORIES.map((c) => [c, 0]),
+  ) as Record<KindCategory, number>
   for (const ev of props.events) acc[classifyEvent(ev)] += 1
   // tool_use_start + tool_use_end fold into one card in the timeline.
   // Halve the tool count rounded up so the chip number matches the
