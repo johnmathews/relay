@@ -36,6 +36,8 @@ import PromptVersions from '@/components/prompts/PromptVersions.vue'
 import {
   useProjectQuery,
   useRunsQuery,
+  useProjectChatsQuery,
+  useCreateChatMutation,
   usePromptsQuery,
   useDeletePromptMutation,
   useDeleteProjectMutation,
@@ -62,9 +64,16 @@ const projectState = asAsyncState(projectQuery)
 // runs newest-first. No new query/key was needed.
 // `showChildren` defaults to false so the list shows only top-level
 // runs; toggling it includes child runs in the result (Task 11, 9e).
+//
+// W5 — docs/proposals/chat-mode.md decision 9: chat runs are
+// visually segregated into their own Chats pane. The Runs list
+// explicitly filters `mode: 'task'` so chat-mode runs (which would
+// otherwise appear here unfiltered) don't clutter the engteam-style
+// workflow.
 const showChildren = ref(false)
 const runsQuery = useRunsQuery(() => ({
   projectId: projectId.value,
+  mode: 'task',
   includeChildren: showChildren.value,
 }))
 const runs = computed(() => runsQuery.data.value ?? [])
@@ -72,6 +81,61 @@ const runsState = asAsyncState(runsQuery)
 
 function openRun(runId: string): void {
   void router.push({ name: 'run-detail', params: { id: runId } })
+}
+
+// ── Chats pane (W5 — docs/proposals/chat-mode.md) ─────────────────────
+// A second visually-segregated list scoped to chat-mode runs. Uses the
+// same `/api/runs` endpoint with `mode=chat` (decision 9 — chats share
+// the runs table; the segregation is in the dashboard, not the schema).
+//
+// `useProjectChatsQuery` keys under `keys.runList(...)`, so the Colada
+// cache invalidation that the events store does on every run lifecycle
+// event (`run_started` / `run_ended` / etc → `keys.runs()` drop) also
+// refreshes this list — no manual revalidation logic is needed.
+const chatsQuery = useProjectChatsQuery(projectId)
+const chats = computed(() => chatsQuery.data.value ?? [])
+const chatsState = asAsyncState(chatsQuery)
+
+const createChat = useCreateChatMutation()
+const createChatError = computed<string | null>(() => {
+  const e: unknown = createChat.error.value
+  if (e == null) return null
+  if (e instanceof Error) return e.message
+  return 'Failed to create the chat.'
+})
+
+async function goNewChat(): Promise<void> {
+  try {
+    const run = await createChat.mutateAsync(projectId.value)
+    void router.push({ name: 'chat-detail', params: { id: run.id } })
+  } catch {
+    // Surfaced inline via createChatError on the Chats pane.
+    activeTab.value = 'chats'
+  }
+}
+
+function openChat(runId: string): void {
+  void router.push({ name: 'chat-detail', params: { id: runId } })
+}
+
+/**
+ * Last-message preview — the first 60 chars of the chat's most recent
+ * `prompt_body` substitute. The list endpoint returns RunOut rows that
+ * don't carry events, so the cheapest accurate preview the per-row
+ * data exposes is the run's `prompt_body` (empty for a fresh chat, the
+ * latest resume-answer would be a fairer summary but isn't in the row).
+ * Fresh chats render the "no messages yet" placeholder so the operator
+ * sees the affordance even without a preview.
+ *
+ * Plan §W5 specifies "first 60 chars of the most recent assistant
+ * text" but that requires either a per-row events fetch (N+1 — not
+ * acceptable for a project view) or a backend field. We render the
+ * timestamp + status badge + short-id and leave the message-preview
+ * field intentionally blank rather than fabricate one. W6 or a follow-
+ * on can add a `last_message_preview` field to RunOut.
+ */
+function shortId(id: string): string {
+  return id.length <= 8 ? id : id.slice(0, 8)
 }
 
 // ── Run multi-select + bulk delete ────────────────────────────────────
@@ -235,9 +299,10 @@ function onFileSelect(path: string): void {
 }
 
 // ── Tabs ─────────────────────────────────────────────────────────────
-type Tab = 'runs' | 'prompts' | 'files'
+type Tab = 'runs' | 'chats' | 'prompts' | 'files'
 const TABS: { id: Tab; label: string }[] = [
   { id: 'runs', label: 'Runs' },
+  { id: 'chats', label: 'Chats' },
   { id: 'prompts', label: 'Prompts' },
   { id: 'files', label: 'Files' },
 ]
@@ -303,6 +368,17 @@ async function onConfirmUnregister(): Promise<void> {
               @click="goNewRun"
             >
               New run
+            </button>
+            <button
+              type="button"
+              class="project-view__new-chat"
+              data-testid="new-chat-button"
+              :disabled="createChat.isLoading.value"
+              :aria-busy="createChat.isLoading.value"
+              @click="goNewChat"
+            >
+              <span v-if="createChat.isLoading.value">Starting…</span>
+              <span v-else>New chat</span>
             </button>
             <button
               type="button"
@@ -548,6 +624,61 @@ async function onConfirmUnregister(): Promise<void> {
           </AsyncBoundary>
         </div>
 
+        <!-- Chats pane (W5 — docs/proposals/chat-mode.md) -->
+        <div
+          v-show="activeTab === 'chats'"
+          id="project-panel-chats"
+          role="tabpanel"
+          aria-labelledby="project-tab-chats"
+          data-testid="panel-chats"
+        >
+          <p
+            v-if="createChatError"
+            class="project-view__error"
+            role="alert"
+            data-testid="new-chat-error"
+          >
+            {{ createChatError }}
+          </p>
+          <AsyncBoundary
+            :loading="chatsState.isLoading.value"
+            :error="chatsState.error.value"
+          >
+            <p
+              v-if="chats.length === 0"
+              class="project-view__empty"
+              data-testid="chats-empty"
+            >
+              No chats for this project yet — click “New chat” to start one.
+            </p>
+            <ul
+              v-else
+              class="project-view__chats"
+              data-testid="chats-list"
+            >
+              <li
+                v-for="chat in chats"
+                :key="chat.id"
+              >
+                <button
+                  type="button"
+                  class="project-view__chat"
+                  :data-testid="`chat-row-${chat.id}`"
+                  @click="openChat(chat.id)"
+                >
+                  <StatusBadge :status="chat.status" />
+                  <span class="project-view__chat-id">
+                    {{ shortId(chat.id) }}
+                  </span>
+                  <span class="project-view__chat-meta">
+                    {{ chat.started_at }}
+                  </span>
+                </button>
+              </li>
+            </ul>
+          </AsyncBoundary>
+        </div>
+
         <!-- Prompts pane (VIEW-ONLY; W8 adds CRUD) -->
         <div
           v-show="activeTab === 'prompts'"
@@ -723,6 +854,32 @@ async function onConfirmUnregister(): Promise<void> {
   border-color: var(--color-accent);
 }
 
+/* W5 — slightly stronger accent treatment than New run: chat is the
+   one-click-to-pi affordance, so it earns the filled accent button
+   while New run (which opens the wizard) is the quieter button. */
+.project-view__new-chat {
+  padding: 0.45em 0.9em;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 120ms ease;
+}
+
+.project-view__new-chat:hover,
+.project-view__new-chat:focus-visible {
+  outline: none;
+  filter: brightness(1.08);
+}
+
+.project-view__new-chat:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .project-view__unregister {
   padding: 0.45em 0.9em;
   border-radius: 6px;
@@ -881,6 +1038,51 @@ async function onConfirmUnregister(): Promise<void> {
 
 .project-view__run-id {
   margin-left: auto;
+}
+
+/* W5 — Chats list mirrors the Runs list visual but distinguishes the
+   short-id from the meta (the short-id reads as the chat's title; the
+   timestamp follows). No prompt-id column — chat-mode runs carry no
+   prompt by definition. */
+.project-view__chats {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.project-view__chat {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  text-align: left;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.project-view__chat:hover,
+.project-view__chat:focus-visible {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.project-view__chat-id {
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+.project-view__chat-meta {
+  margin-left: auto;
+  font-size: 0.78em;
+  color: var(--color-text-dim);
 }
 
 .project-view__prompts {
