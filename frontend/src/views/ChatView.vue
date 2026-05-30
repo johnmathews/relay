@@ -30,7 +30,7 @@
 // (deep link from a stale source) redirect back to /runs/:id. Mirrors
 // RunDetailView's symmetric guard.
 
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import AsyncBoundary from '@/components/shared/AsyncBoundary.vue'
 import ChatHeader from '@/components/chat/ChatHeader.vue'
@@ -45,6 +45,10 @@ import {
 } from '@/lib/queries'
 import { useEventsStore } from '@/stores/events'
 import { useCurrentRunStore } from '@/stores/currentRun'
+import {
+  buildPromotionPrompt,
+  promotionStorageKey,
+} from '@/lib/promotion'
 
 const props = defineProps<{ id: string }>()
 
@@ -129,15 +133,37 @@ async function onClosed(): Promise<void> {
   }
 }
 
-const promoteNotice = ref<string | null>(null)
 function onPromote(): void {
-  // W6 will navigate to NewRunWizard with the transcript prefilled.
-  // W4 records the click as a transient notice so the affordance is
-  // wired but the destination is honest.
-  promoteNotice.value = 'Promote-to-task lands in W6 — coming soon.'
-  setTimeout(() => {
-    promoteNotice.value = null
-  }, 3500)
+  // W6: navigate to the New Run wizard with the chat transcript
+  // pre-filled into `prompt_body`. The handoff travels through
+  // sessionStorage rather than a query-string param because long
+  // transcripts can exceed browser URL length caps (~2KB-32KB
+  // depending on stack). The URL still carries a `?promoteFrom=<runId>`
+  // marker so the wizard knows to consult sessionStorage on mount; the
+  // wizard removes the entry after reading it, keeping the prefill
+  // one-shot (a refresh of the wizard URL won't re-populate).
+  //
+  // Promotion is non-destructive: the chat stays in its current
+  // status. The user may want to keep talking and promote again
+  // later, so we do NOT close or cancel it here.
+  const d = detail.value
+  if (d == null || project.value == null) return
+  const body = buildPromotionPrompt({
+    events: eventList.value,
+    projectName: project.value.name,
+  })
+  try {
+    sessionStorage.setItem(promotionStorageKey(d.id), body)
+  } catch {
+    // sessionStorage can be disabled (private mode, quota); the wizard
+    // will fall back to an empty prompt and the user can paste/type.
+    // We still navigate so the affordance isn't silently broken.
+  }
+  void router.push({
+    name: 'new-run',
+    params: { id: String(project.value.id) },
+    query: { promoteFrom: d.id },
+  })
 }
 
 const eventList = computed(() => eventsStore.events)
@@ -163,14 +189,6 @@ onBeforeUnmount(() => {
           @closed="onClosed"
           @promote="onPromote"
         />
-        <div
-          v-if="promoteNotice"
-          class="chat-view__notice"
-          role="status"
-          data-testid="chat-view-promote-notice"
-        >
-          {{ promoteNotice }}
-        </div>
         <ChatTranscript
           :events="eventList"
           :pending-turns="pendingTurns"
@@ -200,13 +218,5 @@ onBeforeUnmount(() => {
   flex-direction: column;
   min-height: 0;
   height: 100%;
-}
-
-.chat-view__notice {
-  padding: 0.5rem 1rem;
-  background: color-mix(in oklab, var(--color-accent) 8%, var(--color-surface));
-  color: var(--color-text);
-  font-size: 0.85rem;
-  border-bottom: 1px solid var(--color-border);
 }
 </style>

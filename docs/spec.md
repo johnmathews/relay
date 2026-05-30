@@ -119,19 +119,30 @@ CREATE TABLE prompts (
   UNIQUE(project_id, name, version)
 );
 
--- Runs (one row per `relay start` invocation).
+-- Runs (one row per `relay start` invocation or chat creation).
 CREATE TABLE runs (
   id            TEXT PRIMARY KEY,        -- "20260519-113054" or "...-abcd"
   project_id    INTEGER NOT NULL REFERENCES projects(id),
   prompt_id     INTEGER REFERENCES prompts(id),  -- nullable: ad-hoc prompts allowed
   prompt_body   TEXT NOT NULL,                   -- snapshot at run start
   user_id       INTEGER NOT NULL DEFAULT 1,
-  status        TEXT NOT NULL,           -- 'running'|'done'|'failed'|'paused'|'cancelled'|'awaiting_children'
+  mode          TEXT NOT NULL DEFAULT 'task',    -- 'task'|'chat' (ADR-49). Constrained at the
+                                                 -- Python boundary to one of the two values.
+                                                 -- 'task' runs follow the chained-iter loop
+                                                 -- (fresh context per iter, ADR-20); 'chat' runs
+                                                 -- thread pi's `--session` across iters and
+                                                 -- terminate via the operator's "Close chat"
+                                                 -- (status='closed', ADR-50).
+  status        TEXT NOT NULL,           -- 'running'|'done'|'failed'|'paused'|'cancelled'|'awaiting_children'|'closed'
                                          -- ``awaiting_children`` — parent run is suspended pending
                                          -- completion of child runs dispatched via fanout. Not
                                          -- terminal; transitions back to ``running`` when all
                                          -- children settle (9c). Set under the S1 cancel-with-cascade
                                          -- convention on server restart (ADR-34, 9a).
+                                         -- ``closed`` — chat-mode voluntary-end terminal status,
+                                         -- written by POST /api/runs/{id}/close (ADR-50).
+                                         -- Distinct from `cancelled` (user gave up) and `done`
+                                         -- (agent emitted terminating sentinel).
   started_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   ended_at      TIMESTAMP,
   max_iters     INTEGER NOT NULL DEFAULT 12,
@@ -490,6 +501,36 @@ Pi's resume preserves context; relay's value proposition is *fresh*
 contexts per iter, with the lead engineer's compressed handoff carrying
 state forward. Pi's session resume is reserved for crash recovery, not
 inter-iter chaining.
+
+**Chat mode (ADR-49) is the deliberate opposite — task mode's invariant
+is unchanged.** When `run.mode == 'chat'`, the loop branches:
+
+- `start_run(mode='chat')` direct-writes `run_started` + a synthetic
+  `pause_requested` and settles without spawning a first iter; the
+  first `resume_run` answer becomes iter 1's prompt body.
+- `resume_run` threads the prior iter's `pi_session_id` as pi's
+  `--session` argument, so each iter carries forward the model's
+  conversation memory. The operator's answer is used verbatim as the
+  next iter's body — no preamble, no compressed handoff.
+- `run_loop` skips `RELAY_*` preamble assembly (chat has no run-dir or
+  phase) and skips sentinel enforcement (no `done` / `handoff` /
+  `pause-for-input` parsing — pi's `agent_end` is the natural turn
+  boundary). On `session_end`, it writes a synthetic `pause_requested`
+  so the run lands in `paused` waiting for the next message.
+- Skill injection (ADR-44) is omitted from the spawn — chat is
+  free-form, not a phased engteam build. Pi's own auto-discovery of
+  `<cwd>/.pi/skills/` and `~/.pi/agent/skills/` still applies, so
+  project-local skills carry over (`docs/proposals/chat-mode.md`
+  OQ-6).
+- Operator terminates the chat via `POST /api/runs/{id}/close` →
+  status `closed` (ADR-50, a terminal status distinct from `done` /
+  `cancelled` / `failed`). The dashboard's "Promote to task" affordance
+  (W6) navigates to the New Run wizard with the chat transcript
+  prefilled into `prompt_body`; the chat itself stays alive.
+
+Two modes coexist with opposite invariants. The fresh-context-per-iter
+guarantee in ADR-20 applies to task mode only; chat mode is the
+deliberate opposite, never a relaxation.
 
 **Subagent dispatch / fanout (9a–9f, shipped post-MVP).** The agent's
 `fanout` sentinel (closing verb paired with a `[[engteam:fanout-start]]
@@ -878,6 +919,25 @@ artifacts, managing prompts, and registering projects.
     awaiting_children}`. When `awaiting_children` with N children, the
     label reads "Cancel run and N children"; cancellation cascades
     through descendants (ADR-37, 9d).
+- **Chat detail view** (`/chats/:id`, ADR-49): the conversational
+  counterpart to the run-detail view. Same backend resources (the same
+  `runs` row with `mode='chat'`, the same `events` table, the same SSE
+  stream) folded into an alternating user/assistant transcript:
+  - `pause_resolved.payload.answer` (non-empty) → ONE user turn.
+  - Each `iter_started` … `iter_ended` block → ONE assistant turn,
+    concatenated from `assistant_text` events with `payload.kind !=
+    'thinking'` (the chat surface hides reasoning, mirroring consumer
+    chat products); tool calls render inline as chips.
+  - Live tokens via the ADR-46 `assistant_delta` ephemeral stream —
+    same pipeline TimelinePane uses.
+  Header has a **Close chat** button (`POST /api/runs/{id}/close` → status
+  `closed`, ADR-50) and a **Promote to task** button that navigates to
+  the New Run wizard with the chat transcript prefilled into
+  `prompt_body` (via sessionStorage; promotion is non-destructive — the
+  chat stays open). A task-mode run opened via `/chats/:id`, or a
+  chat-mode run opened via `/runs/:id`, redirects to the right view.
+  The Project view's **Chats tab** lists chat-mode runs separately from
+  task-mode runs.
 
 ### 9.2 State management
 

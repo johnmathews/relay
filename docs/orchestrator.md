@@ -212,6 +212,58 @@ orchestrator-level moving parts:
   can never resume. ADR-34 carry-over: recovering an in-flight
   fanout across a restart is a deliberate V1 non-goal.
 
+## Chat mode (ADR-49)
+
+Chat mode is a parallel run mode that turns relay's runtime into a
+conversational webui for pi. The same `runs` row + `events` table +
+SSE stream + worktree provisioner, with three mode-conditional
+branches in the loop and zero new tables.
+
+- **`runs.mode`** — `'task' | 'chat'`, default `'task'`. Constrained
+  at the Python boundary (Pydantic `Literal["task", "chat"]`); the
+  schema column is `mode TEXT NOT NULL DEFAULT 'task'`.
+- **`RelayCore.start_run(mode='chat', ...)`** — direct-writes
+  `run_started` + a synthetic `pause_requested` event and **settles
+  without spawning a first iter**. The run is "ready to chat" the
+  moment it's created. The first `resume_run` answer becomes iter 1's
+  prompt body — that's why no first iter is needed up front.
+- **`RelayCore.resume_run(run_id, answer)`** — branches on
+  `run.mode`. Chat-mode resumes thread the prior iter's
+  `pi_session_id` as pi's `--session` argument so each iter inherits
+  the model's prior conversation memory. The operator's `answer` is
+  the **verbatim** next-iter body — no preamble assembly, no
+  compressed handoff. Task mode is unchanged (ADR-20: fresh context +
+  recomposed `next_prompt` + delimited answer block).
+- **`run_loop`** — branches on `ctx.mode`. Chat-mode iters skip the
+  `RELAY_*` preamble (chat has no `RELAY_RUN_DIR` or `RELAY_PHASE`),
+  skip sentinel enforcement (no `done` / `handoff` /
+  `pause-for-input` parsing — pi's `agent_end` is the turn boundary),
+  and on `session_end` write a synthetic `pause_requested` so the run
+  lands in `paused` waiting for the operator's next message.
+- **Skill injection (ADR-44) is omitted from chat-mode spawns.** The
+  bundled engineering-team skill is a phased-build harness, wrong for
+  free-form conversation. Pi's own auto-discovery of
+  `<cwd>/.pi/skills/` and `~/.pi/agent/skills/` is preserved, so
+  project-local skills carry over.
+- **Voluntary end via `POST /api/runs/{id}/close`** — flips status to
+  `closed` (ADR-50, a terminal status distinct from `done` /
+  `cancelled` / `failed`). Reachable from `paused` (the natural
+  resting state between turns) and `running` (mid-turn — the close
+  mutation cancels the in-flight session first).
+- **All other infra is shared.** The event store is unchanged; chat
+  emits no new event kinds. SSE replay, OTel `relay.run` /
+  `relay.iter` spans, the ADR-46 streaming-delta pipeline
+  (`assistant_delta` ephemeral frames), the ADR-45 heartbeat — every
+  cross-cutting addition for the timeline view applies to chat mode
+  unchanged.
+
+The frontend folds the same event stream into an alternating
+user/assistant transcript (`ChatView.vue`); see `docs/dashboard.md`
+for the rendering contract. The "Promote to task" affordance in the
+chat header navigates to the New Run wizard with the chat transcript
+prefilled into `prompt_body` (W6, via sessionStorage handoff);
+promotion is non-destructive — the chat stays alive.
+
 ## Pause-for-review write endpoint (14a, ADR-40)
 
 `RelayCore.write_artifact(run_id, rel_path, content, *, editor)` is

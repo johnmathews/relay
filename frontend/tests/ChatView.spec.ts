@@ -149,6 +149,12 @@ function makeRouter(): Router {
         component: { template: '<div />' },
         props: true,
       },
+      {
+        path: '/projects/:id/new-run',
+        name: 'new-run',
+        component: { template: '<div data-testid="new-run-stub" />' },
+        props: true,
+      },
     ],
   })
 }
@@ -306,15 +312,53 @@ describe('ChatView — integration', () => {
     expect(w.find('[data-testid="chat-header-close"]').exists()).toBe(false)
   })
 
-  it('Promote-to-task shows the W6-pending notice', async () => {
+  it('Promote-to-task navigates to the new-run wizard with the transcript in sessionStorage', async () => {
+    // W6 — the click stashes a built prefill body keyed by chat run
+    // id in sessionStorage (URL would risk length limits for long
+    // transcripts), then routes to /projects/:id/new-run with a
+    // marker query param so the wizard knows to consult storage.
     detailData.value = makeChatDetail()
+    projectData.value = { id: 42, name: 'Alpha' }
+    eventsList.value = [
+      { seq: 1, kind: 'pause_resolved', payload: { answer: 'first msg' } },
+      { seq: 2, kind: 'iter_started', payload: { seq: 1, iter_id: 11 } },
+      {
+        seq: 3,
+        kind: 'assistant_text',
+        payload: { kind: 'text', text: 'first reply' },
+      },
+      { seq: 4, kind: 'iter_ended', payload: { seq: 1, iter_id: 11 } },
+    ]
+    sessionStorage.removeItem('relay:promotion:chat-1')
+    const { w, router } = await mountView()
+    await flushPromises()
+    await w.get('[data-testid="chat-header-promote"]').trigger('click')
+    await flushPromises()
+
+    expect(router.currentRoute.value.name).toBe('new-run')
+    expect(router.currentRoute.value.params).toEqual({ id: '42' })
+    expect(router.currentRoute.value.query.promoteFrom).toBe('chat-1')
+
+    const stored = sessionStorage.getItem('relay:promotion:chat-1')
+    expect(stored).not.toBeNull()
+    expect(stored).toContain('User: first msg')
+    expect(stored).toContain('Assistant: first reply')
+    expect(stored).toContain('in project Alpha')
+  })
+
+  it('Promote leaves the chat run in its current state (non-destructive)', async () => {
+    // The plan calls out: promoting a chat does NOT close or cancel
+    // the chat. The user might want to keep talking and promote
+    // again later — verify the close mutation is not called on
+    // promote.
+    detailData.value = makeChatDetail({ status: 'paused' })
     projectData.value = { id: 42, name: 'Alpha' }
     const { w } = await mountView()
     await flushPromises()
+    closeMutate.mockClear()
     await w.get('[data-testid="chat-header-promote"]').trigger('click')
-    await nextTick()
-    expect(
-      w.find('[data-testid="chat-view-promote-notice"]').exists(),
-    ).toBe(true)
+    await flushPromises()
+    expect(closeMutate).not.toHaveBeenCalled()
+    expect(markTerminalSpy).not.toHaveBeenCalled()
   })
 })

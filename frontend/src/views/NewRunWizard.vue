@@ -20,8 +20,8 @@
 // Wizard step/selection state is ephemeral UI state held locally (not
 // in a Pinia store, not in the Colada cache).
 
-import { computed, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import ActionButton from '@/components/shared/ActionButton.vue'
 import StepPromptSelect from '@/components/runs/wizard/StepPromptSelect.vue'
 import StepOptions from '@/components/runs/wizard/StepOptions.vue'
@@ -34,9 +34,11 @@ import {
   type PreviewSelection,
   type RunCreate,
 } from '@/lib/queries'
+import { promotionStorageKey } from '@/lib/promotion'
 
 const props = defineProps<{ id: string }>()
 
+const route = useRoute()
 const router = useRouter()
 const projectId = computed(() => Number(props.id))
 
@@ -49,6 +51,35 @@ const promptMode = ref<'existing' | 'inline'>('inline')
 const promptSource = ref<PromptSource | null>(null)
 const maxIters = ref<number | null>(null)
 const iterTimeout = ref<number | null>(null)
+
+// Promote-to-task prefill (W6 — docs/proposals/chat-mode.md). When the
+// user clicks "Promote to task" in a chat, ChatView writes the folded
+// transcript to sessionStorage under `relay:promotion:<chatRunId>` and
+// navigates here with `?promoteFrom=<chatRunId>`. We read the body
+// once on mount, seed the inline-prompt source, and remove the
+// sessionStorage entry so a refresh of the wizard URL (or a new
+// promotion later) doesn't re-populate stale content. URL-based
+// transport was rejected: long transcripts can exceed browser URL
+// length caps.
+onMounted(() => {
+  const raw = route.query.promoteFrom
+  const fromId = typeof raw === 'string' ? raw : null
+  if (fromId == null || fromId === '') return
+  let body: string | null = null
+  try {
+    body = sessionStorage.getItem(promotionStorageKey(fromId))
+    if (body != null) {
+      sessionStorage.removeItem(promotionStorageKey(fromId))
+    }
+  } catch {
+    // sessionStorage may be unavailable (private mode, sandboxed
+    // iframe); fall through to the empty-prompt default.
+  }
+  if (body != null && body !== '') {
+    promptMode.value = 'inline'
+    promptSource.value = { promptBody: body }
+  }
+})
 
 // Fetch the server-side defaults so the Options step renders concrete
 // numbers ("12", "1800") in the inputs instead of an opaque "server
