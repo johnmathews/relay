@@ -1,25 +1,56 @@
-# relay — example compose (Phase 8).
+# relay — example compose (Phase 8; pi bundled per ADR-51).
 #
 # Runs the relay backend (which also serves the built dashboard at
-# http://localhost:7800/). Copy to docker-compose.yml and adjust.
+# http://localhost:7800/). The image bundles pi 0.74.0 — but pi's
+# Max-subscription OAuth token must be supplied via a host volume
+# (see the `~/.pi` mount below). Copy to docker-compose.yml and adjust.
 #
-# Observability is OPT-IN. Langfuse is intentionally NOT vendored here:
-# its v3 self-host is a multi-service stack (web + worker + Postgres +
-# ClickHouse + Redis + S3) that would silently rot against upstream
-# releases. Run Langfuse from its officially-maintained compose, then
-# point relay at it with the three RELAY_LANGFUSE_* vars below. See
-# docs/langfuse-compose.example.yml and docs/observability.md.
+# ── Prerequisite: one-time host login ────────────────────────────────
+# Pi's OAuth browser flow can only run interactively. Before the first
+# `docker compose up`, run pi once on the host:
+#
+#   PI_AGENT_SDK=1 pi               # complete the OAuth login in your browser
+#
+# This populates ~/.pi/agent/auth.json (mode 600) and the sibling
+# agent-sdk-* directories. The volume mount below makes that state
+# available to the containerised pi without re-login.
+#
+# ── uid gotcha ───────────────────────────────────────────────────────
+# The image runs as uid 10001 (`relay`). Host ~/.pi is owned by your
+# host uid (typically 501 on macOS / 1000 on Linux); a uid mismatch
+# makes the 600-mode auth.json unreadable to the container. Two fixes:
+#   (a) chown the host dir to 10001: `sudo chown -R 10001 ~/.pi`
+#       (destructive to host pi usage — only do this if you don't
+#       also run pi on the host).
+#   (b) override the container user to the host uid by uncommenting
+#       the `user:` line below.
+#
+# Observability is OPT-IN. Langfuse is intentionally NOT vendored
+# here: its v3 self-host is a multi-service stack (web + worker +
+# Postgres + ClickHouse + Redis + S3) that would silently rot against
+# upstream releases. Run Langfuse from its officially-maintained
+# compose, then point relay at it with the three RELAY_LANGFUSE_*
+# vars below. See docs/langfuse-compose.example.yml and
+# docs/observability.md.
 
 services:
   relay:
     build: .
     # Or pull the published image instead of building:
     # image: ghcr.io/johnmathews/relay:latest
+    # user: "1000:1000"   # uncomment to match your host uid (Linux);
+    #                     # macOS Docker Desktop usually handles this
+    #                     # transparently — try the default first.
     ports:
       - "7800:7800"
     environment:
       RELAY_HOST: 0.0.0.0
       RELAY_PORT: "7800"
+      # PI_AGENT_SDK=1 is baked into the image ENV (ADR-51) — it
+      # routes pi onto the Claude Pro/Max subscription quota via the
+      # @anthropic-ai/claude-agent-sdk bridge and activates pi's MCP
+      # tool bridge. Without it pi falls back to the legacy direct-
+      # HTTP path which 400s under most account states.
       # ── optional: mirror the event store to self-hosted Langfuse ──
       # Uncomment and fill in after starting upstream Langfuse's compose
       # (langfuse-web at http://localhost:3000) and creating a project.
@@ -31,10 +62,11 @@ services:
       # Persist the SQLite event store across container restarts.
       # relay writes <cwd>/.relay; the image's WORKDIR is /app.
       - relay-data:/app/.relay
+      # pi's auth + session state. Read-write is required — pi's
+      # OAuth refresh path writes back to auth.json. See the "uid
+      # gotcha" header above if the container can't read the dir.
+      - ${HOME}/.pi:/home/relay/.pi
     restart: unless-stopped
-    # pi (the inference harness) is NOT bundled in the image — relay
-    # spawns it as a subprocess. A real run additionally requires pi
-    # 0.74.0 on PATH and PI_AGENT_SDK=1; see README "pi version".
 
 volumes:
   relay-data:

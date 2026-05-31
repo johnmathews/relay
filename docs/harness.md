@@ -96,6 +96,32 @@ value proposition is a *fresh* context per iter, so `resume_from` is
 normally `None`). Spawned via `asyncio.create_subprocess_exec` (argv
 list, no shell).
 
+**What `PI_AGENT_SDK=1` actually flips** (ADR-09 verified provisional,
+mechanism documented in ADR-51; grounded in pi v0.74.0 source —
+`core/sdk.ts:170` and `modes/interactive/interactive-mode.ts:3974`):
+
+1. **Anthropic API routing.** With the flag set, OAuth requests go
+   through the `@anthropic-ai/claude-agent-sdk` bridge against
+   **Claude Pro/Max subscription quota**. Unset, pi falls back to a
+   legacy direct-HTTP path that "draws from extra usage" and (per
+   pi's own source comment) "is currently 400ing under most account
+   states." This is what makes the Max path work at all.
+2. **MCP tool bridge.** `buildPiMcpServerForBridge` wraps pi's tool
+   catalogue as an MCP server for the agent-sdk — gated on the flag
+   + an Anthropic OAuth token (`sk-ant-oat…`) + a tool runner. Unset,
+   the bridge stays in chat-only fallback and tool calls don't fire.
+3. Suppresses an "extra usage" warning that's factually wrong on the
+   subscription path.
+
+So: **no flag → wrong billing route + 400s + no tool calls.** It is
+load-bearing; `PiHarness.spawn` always injects it
+(`src/relay/harness/pi.py`) and the production image sets it as an
+`ENV` (Dockerfile, ADR-51) as belt-and-braces for operators running
+`docker exec … pi` directly. Auth state (`~/.pi/agent/auth.json` plus
+the sibling `agent-sdk-*` dirs) is per-user OAuth and must be
+provisioned on the host then bind-mounted into the container — see
+[`../docker-compose.example.yml`](../docker-compose.example.yml).
+
 ## Signaling (spec.md §5, ADR-05)
 
 `SignalConfig.strategy` selects the detector; the orchestrator gets a

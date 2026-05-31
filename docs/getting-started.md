@@ -202,11 +202,19 @@ The shape:
 
 ## 8. (Optional) Docker / GHCR
 
-Build and run locally:
+The image bundles pi 0.74.0 (Node 22 runtime + the pinned
+`@earendil-works/pi-coding-agent` package) per ADR-51, but pi's
+Max-subscription OAuth token cannot be baked in — the browser-based
+login is per-user. One-time host setup, then build/run:
 
 ```bash
+# One-time: complete the pi OAuth login on the host
+PI_AGENT_SDK=1 pi                       # populates ~/.pi/agent/auth.json
+
+# Build and run locally — the ~/.pi mount makes the auth available
+# to the containerised pi.
 docker build -t relay .
-docker run -p 7800:7800 relay          # dashboard at :7800
+docker run -p 7800:7800 -v ~/.pi:/home/relay/.pi relay
 # or with the example compose:
 docker compose -f docker-compose.example.yml up
 ```
@@ -218,8 +226,13 @@ until you flip it at <https://github.com/users/johnmathews/packages/container/re
 docker pull ghcr.io/johnmathews/relay:latest
 ```
 
-The image runs as a non-root user and serves both the REST/MCP API and
-the built Vue SPA from one process at `:7800` (spec §11.2, ADR-30).
+The image runs as a non-root user (uid 10001) and serves the REST/MCP
+API and the built Vue SPA from one process at `:7800` (spec §11.2,
+ADR-30, ADR-51). **Uid gotcha:** host `~/.pi/agent/auth.json` is
+mode 600 owned by your host uid; the container needs to read it.
+Either `chown -R 10001 ~/.pi` on the host (only if you don't also use
+pi on the host) or override `user:` in compose to match your host uid
+— see [`docker-compose.example.yml`](../docker-compose.example.yml).
 
 ## Troubleshooting
 

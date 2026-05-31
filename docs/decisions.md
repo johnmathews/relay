@@ -3189,3 +3189,46 @@ The plan (`docs/archive/2026-05-30-chat-mode-arc.md`, W1–W6) added chat mode a
 
 **Related ADRs:** ADR-49 (chat mode — the only writer of this status); ADR-34 (`awaiting_children` is non-terminal — explicitly excluded from the `_TERMINAL` constants); ADR-10 (event store is the source of truth — the status transition is observable through the paired `run_ended` event).
 
+## ADR-51 — Bundle pi into the production image; mount host `~/.pi` for auth
+
+**Status:** active.
+
+**Date:** 2026-05-31.
+
+**Context.** Phase 8 (ADR-30) shipped a production image at `ghcr.io/johnmathews/relay` that serves the FastAPI backend, the MCP endpoint, and the built Vue SPA — but deliberately omitted pi, requiring the operator to install `@earendil-works/pi-coding-agent@0.74.0` on the host and accept that the container could only run if pi happened to be on PATH inside it. In practice that left the image non-functional without an additional manual step that the compose file flagged but didn't solve. The 2026-05-31 review of the deployment story (this conversation's transcript) asked the obvious question: can we just bundle pi?
+
+A parallel question — also raised in the same review — was whether to run pi in a sidecar container. That option dies on first contact with the harness contract: `src/relay/harness/pi.py` spawns pi as a **child process** via `asyncio.create_subprocess_exec` and reads its NDJSON event stream over stdout (ADR-04 — the harness layer is the only code that knows pi exists). A network sidecar would require either a remote-exec shim, shared-volume IPC, or replumbing the harness to speak a network protocol. All three violate the ADR-04 boundary by definition and represent vastly more change than `npm install -g`. The harness contract assumes co-located process spawn; honour it.
+
+**The mechanism behind `PI_AGENT_SDK=1`** (read from pi v0.74.0 source — `packages/coding-agent/src/core/sdk.ts:170` and `packages/coding-agent/src/modes/interactive/interactive-mode.ts:3974`). ADR-09 accepted the flag provisionally and findings.md confirmed it works empirically; this ADR records what the flag does so future maintainers don't have to re-derive it from pi's source:
+
+1. **Anthropic API routing path.** With the flag set, OAuth requests route through the `@anthropic-ai/claude-agent-sdk` bridge against Claude Pro/Max subscription quota. Without it, pi falls back to a legacy direct-HTTP path that "draws from extra usage" and (per pi's own source comment) is "currently 400ing under most account states." This is what makes the Max-subscription path work at all.
+2. **MCP tool bridge.** `buildPiMcpServerForBridge` wraps pi's tool catalogue as an MCP server for the agent-sdk to consume — gated on the flag + an Anthropic OAuth token (`sk-ant-oat…`) + a tool runner. Without the flag the bridge stays in chat-only fallback and tool calls don't fire at all.
+3. Suppresses an "extra usage" warning that's factually wrong on the subscription path.
+
+So the flag is load-bearing: no flag → wrong billing route + 400s + no tool calls. `PiHarness.spawn` already injects it per-iter; the production image now sets it as `ENV` as belt-and-braces.
+
+**Decision.**
+
+1. **Bundle pi (Node 22 runtime + the pinned `@earendil-works/pi-coding-agent@0.74.0` package) into the production image** as a new Dockerfile stage. The image now ships a working harness out of the box — no host pi install required.
+2. **Set `ENV PI_AGENT_SDK=1`** at the Dockerfile runtime layer. The harness already injects it per-spawn, but the image-level ENV makes ad-hoc `docker exec … pi` invocations (debugging, smoke tests) take the right path.
+3. **Auth state is NOT baked in.** `~/.pi/agent/auth.json` is a per-user OAuth token (mode 600) and the OAuth login flow needs a browser, which a headless container does not have. The compose example bind-mounts the host `~/.pi` into `/home/relay/.pi` read-write (pi's OAuth refresh path writes back). One-time host prereq: run `PI_AGENT_SDK=1 pi` on the host to complete the login before the first `docker compose up`.
+4. **Pin the bundled pi version via Dockerfile `ARG PI_VERSION=0.74.0`** matching `.tool-versions` and `Settings.pi_expected_version`. Upgrading pi means bumping all three together (the harness's version-mismatch warning already enforces the alignment at runtime, but the image build needs the explicit pin so a re-build doesn't silently float forward).
+
+**Alternatives considered.**
+
+- **Pi in a sidecar container talking to relay over a network protocol.** Rejected — see Context. Violates ADR-04 by forcing the harness layer to learn a network transport, requires either a remote-exec shim or shared-volume IPC, and adds operational complexity (orchestration, networking, two containers to monitor) for no architectural gain.
+- **Leave pi out and rely on host install** (status quo before this ADR). Rejected — leaves the image non-functional without an undocumented host-side action, defeating the point of shipping a container at all.
+- **Bake auth credentials into a custom image during CI.** Rejected — credentials are per-user OAuth tokens and would leak into the published GHCR image, violating the localhost-single-user MVP threat model and creating a credential rotation nightmare. The volume mount is the only sane choice for OAuth state.
+- **Install node via `apt-get install nodejs`** instead of copying from the `node:22-slim` build stage. Rejected — debian-slim's nodejs is too old for pi (pi targets modern Node). Copying the `node` binary from the dedicated `pi` stage keeps the version aligned with what pi was npm-installed against.
+
+**Consequences.**
+
+- Image size increases by Node 22 (~50 MB) + the pi package (~10-15 MB unpacked) — modest relative to the existing Python + frontend layers; the multi-stage build keeps npm itself out of the runtime image.
+- The Dockerfile gains a build-time sanity check: `RUN pi --version` after the `USER relay` switch fails the build if the node binary or binstub is misplaced, catching pathing bugs at CI time instead of first-run.
+- **Uid mismatch is a real operational gotcha.** The image runs as `relay` (uid 10001); the host `~/.pi/agent/auth.json` is owned by the host uid (typically 501 on macOS / 1000 on Linux). 600-mode files are unreadable across the boundary. `docker-compose.example.yml` documents two fixes: chown the host dir to 10001 (destructive if you also use pi on the host) or override `user:` in compose to the host uid. macOS Docker Desktop usually masks this transparently; native Linux compose needs the override.
+- The `docker-compose.example.yml` "pi is NOT bundled" caveat is removed and replaced with the one-time-login prereq + the uid note.
+- `README.md` (Docker section) and `docs/getting-started.md` §8 mirror the same prereq + volume mount, with cross-links to the compose file.
+- `docs/harness.md` "Invocation" gains the mechanism explanation so future debugging doesn't require re-reading pi's source.
+
+**Related ADRs:** ADR-04 (harness layer is the only code that knows pi exists — sidecar-container option dies here); ADR-09 (Max-subscription auth path provisional; this ADR documents the *mechanism* but does not supersede ADR-09 — the verification status it tracks is unchanged); ADR-16 (pinned to pi 0.74.0); ADR-30 (Phase 8 packaging — this ADR is an iteration on that decision); ADR-44 (bundled engineering-team skill injection — the skill already ships in the image; bundling pi extends the same self-contained-image philosophy).
+

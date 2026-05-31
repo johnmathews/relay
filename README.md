@@ -136,21 +136,30 @@ the full procedure and the manual trace-tree acceptance check.
 
 ## Docker
 
-A multi-stage image builds the Vue frontend and serves it from the
-FastAPI backend (spec §11.2). Published to
-`ghcr.io/johnmathews/relay` by CI on push to `main`.
+A multi-stage image builds the Vue frontend, bundles the pinned pi
+harness (Node 22 runtime + `@earendil-works/pi-coding-agent@0.74.0`),
+and serves the dashboard from the FastAPI backend (spec §11.2,
+ADR-51). Published to `ghcr.io/johnmathews/relay` by CI on push to
+`main`.
 
 ```bash
 docker build -t relay .
-docker run -p 7800:7800 relay          # dashboard at :7800
+docker run -p 7800:7800 -v ~/.pi:/home/relay/.pi relay   # dashboard at :7800
 # or, with the example compose (optionally wiring Langfuse):
 docker compose -f docker-compose.example.yml up
 ```
 
-`docker-compose.example.yml` documents the `RELAY_*` env surface and
-points at [`docs/langfuse-compose.example.yml`](docs/langfuse-compose.example.yml)
-for the Langfuse stack (run upstream's compose; relay only needs the
-three `RELAY_LANGFUSE_*` vars).
+**One-time host prereq:** pi's Max-subscription OAuth flow needs a
+browser, so the auth token cannot be created inside a headless
+container. Run `PI_AGENT_SDK=1 pi` once on the host to complete the
+login (populates `~/.pi/agent/auth.json`); the compose example
+bind-mounts that directory into the container so the bundled pi can
+read it. See [`docker-compose.example.yml`](docker-compose.example.yml)
+for the `RELAY_*` env surface, the `~/.pi` mount, and the uid-mismatch
+note. Langfuse wiring stays in
+[`docs/langfuse-compose.example.yml`](docs/langfuse-compose.example.yml)
+(run upstream's compose; relay only needs the three
+`RELAY_LANGFUSE_*` vars).
 
 ## De-risking evidence
 

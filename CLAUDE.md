@@ -715,16 +715,39 @@ implementation:
   against a scripted `Harness` double (no pi). Tests stay under
   `tests/` (`testpaths=["tests"]`), not the per-package `tests/` dirs
   plan.md sketches.
-- Packaging (Phase 8, ADR-30): a multi-stage `Dockerfile` (Node stage
-  builds `frontend/dist/`; `python:3.13-slim` runtime runs the
+- Packaging (Phase 8, ADR-30; pi bundled per ADR-51): a multi-stage
+  `Dockerfile` (Node stage builds `frontend/dist/`; a second Node
+  stage `npm install -g @earendil-works/pi-coding-agent@0.74.0` —
+  `ARG PI_VERSION=0.74.0` matches `.tool-versions`; `python:3.13-slim`
+  runtime copies in the Node binary + pi's node_modules and runs the
   `uv`-synced backend from `/app/.venv/bin/relay` — not `uv run`, no
-  runtime cache write; healthcheck uses `urllib`, not curl) +
-  `.dockerignore` + `docker-compose.example.yml` (un-vendored Langfuse
-  — points at `docs/langfuse-compose.example.yml`).
-  `.github/workflows/ci.yml` runs the **full** gate (Python
-  `ruff`/`mypy`/`pytest` **and** `frontend/ npm run check`) and
-  publishes to `ghcr.io/johnmathews/relay` on push to `main` via
-  `${{ github.token }}` (`workflow_dispatch` present). The prod
-  frontend is served by FastAPI via the additive conditional
-  `relay.api.static.mount_frontend` (no-op without a build) — spec
-  §11.2.
+  runtime cache write; healthcheck uses `urllib`, not curl; `RUN pi
+  --version` as `USER relay` is a build-time sanity check;
+  `ENV PI_AGENT_SDK=1` is belt-and-braces for `docker exec … pi`)
+  + `.dockerignore` + `docker-compose.example.yml` (bind-mounts
+  `~/.pi` → `/home/relay/.pi` for the per-user OAuth credential;
+  un-vendored Langfuse — points at `docs/langfuse-compose.example.yml`).
+  **Pi auth is per-user OAuth and cannot be baked in** — one-time
+  host `PI_AGENT_SDK=1 pi` login populates `~/.pi/agent/auth.json`
+  before the first `docker compose up`. **Uid gotcha**: image runs as
+  uid 10001 (`relay`); host `~/.pi/agent/auth.json` (mode 600) needs
+  either a host-side chown to 10001 or a compose `user:` override —
+  documented in the compose example. `.github/workflows/ci.yml` runs
+  the **full** gate (Python `ruff`/`mypy`/`pytest` **and** `frontend/
+  npm run check`) and publishes to `ghcr.io/johnmathews/relay` on
+  push to `main` via `${{ github.token }}` (`workflow_dispatch`
+  present). The prod frontend is served by FastAPI via the additive
+  conditional `relay.api.static.mount_frontend` (no-op without a
+  build) — spec §11.2.
+- **`PI_AGENT_SDK=1` is load-bearing, not cosmetic** (ADR-51, grounded
+  in pi v0.74.0 source `core/sdk.ts:170` + `interactive-mode.ts:3974`).
+  Flag set → OAuth requests route through the `@anthropic-ai/claude-
+  agent-sdk` bridge against Claude Pro/Max subscription quota AND
+  `buildPiMcpServerForBridge` wraps pi's tools as an MCP server for
+  the agent-sdk to consume. Flag unset → legacy direct-HTTP path
+  (per pi's source comment: "currently 400ing under most account
+  states") AND the MCP tool bridge stays in chat-only fallback so
+  tool calls don't fire. `PiHarness.spawn` injects it per-iter
+  (`harness/pi.py:469`); the production image sets `ENV
+  PI_AGENT_SDK=1` as defense-in-depth for ad-hoc `docker exec`
+  invocations.
