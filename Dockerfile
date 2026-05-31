@@ -48,6 +48,14 @@ COPY --from=pi /usr/local/bin/node /usr/local/bin/node
 COPY --from=pi /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s ../lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js /usr/local/bin/pi
 
+# git is needed by orchestrator/lifecycle.py:provision_workspace (per-run
+# git worktrees — ADR-13) and by pi's tool calls (the agent routinely
+# runs git commands on behalf of the user). ca-certificates lets git
+# talk to HTTPS remotes from inside the container.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     PATH="/app/.venv/bin:$PATH" \
