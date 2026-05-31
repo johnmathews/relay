@@ -37,7 +37,7 @@ The four docs under `docs/` are the canonical source. Read in this order:
 | Doc | Purpose |
 |---|---|
 | [`docs/motivation.md`](docs/motivation.md) | Why v2 exists. Goals, non-goals, hard constraints, parked risks. |
-| [`docs/decisions.md`](docs/decisions.md) | 46 ADRs with context, alternatives, rationale, consequences. **Append-only.** |
+| [`docs/decisions.md`](docs/decisions.md) | 47 ADRs with context, alternatives, rationale, consequences. **Append-only.** |
 | [`docs/spec.md`](docs/spec.md) | Canonical design — architecture, data model, harness protocol, signaling, REST + MCP surface, Vue dashboard, observability, packaging. |
 | [`docs/plan.md`](docs/plan.md) | 9 MVP phases (0–8, all complete) + post-MVP arcs (9a–9g fanout-join + 14a–14f pause-for-review, both shipped) + remaining sketch. |
 | [`docs/acceptance-testing.md`](docs/acceptance-testing.md) | Live tracker for the current MVP-acceptance phase: gates, exercise sweep, bug log, definition of done. |
