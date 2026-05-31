@@ -49,6 +49,15 @@ RUN npm ci
 RUN npm run build
 # Drop dev deps + git history before the runtime stage copies us in.
 RUN npm prune --omit=dev && rm -rf .git
+# claude-agent-sdk's variant selector (sdk.mjs `F5`) tries the musl
+# binary FIRST on Linux and locks in whichever path require.resolve
+# succeeds for. Both glibc and musl variants get installed by npm; the
+# musl ELF binary then fails to find `/lib/ld-musl-x86_64.so.1` at spawn
+# time on this glibc Debian image, surfacing as "Claude Code native
+# binary not found at …-musl/claude". Delete the musl trees so the
+# selector falls through to the glibc variant we can actually exec.
+RUN rm -rf /opt/pi/node_modules/@anthropic-ai/claude-agent-sdk-*-musl \
+    && rm -rf /opt/pi/packages/*/node_modules/@anthropic-ai/claude-agent-sdk-*-musl
 
 # ── stage 3: python runtime ────────────────────────────────────────────
 FROM python:3.13-slim AS runtime
