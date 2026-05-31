@@ -28,10 +28,19 @@ ahead of the pace of exercise. This document closes that gap.
 
 ## 1. Acceptance gates
 
-These are the named, journal-attested gates carried forward from
-earlier phases per ADR-30 (automated CI for the deterministic half;
-manual journal-attested for the real-pi / live-Langfuse half). Both
-gates must close before the MVP-acceptance phase ends (§4).
+Two flavours below:
+
+- **§1.1 and §1.2** — named, journal-attested gates carried forward
+  from earlier phases per ADR-30 (automated CI for the deterministic
+  half; manual journal-attested for the real-pi / live-Langfuse half).
+  These are *regression checks* on things that already work.
+- **§1.3 and §1.4** — added 2026-05-31 when the image was deployed
+  to the agent LXC (192.168.2.107). These are *deferred decisions*
+  that the MVP localhost envelope (ADR-12) didn't force us to make;
+  the deployment shift does. Each has a "Decision" checklist rather
+  than a regression "Acceptance" checklist.
+
+All four must close before the MVP-acceptance phase ends (§4).
 
 ### 1.1 — 9f live Langfuse trace-tree
 
@@ -164,6 +173,146 @@ context if a step below feels ambiguous.
       attestation date, a per-section pass/fail summary, and any
       observations.
 - [ ] Commit the journal update.
+
+---
+
+### Subscription path verification (ADR-52)
+
+After deploying a new image to the LXC, verify that `PI_AGENT_SDK=1`
+actually routes to the Max subscription rather than extra usage:
+
+- [ ] On the deployed container, run a one-shot pi call:
+
+  ```bash
+  ssh agent 'docker exec relay sh -c "PI_AGENT_SDK=1 pi -p \"reply with OK\" --mode json --provider anthropic --model claude-sonnet-4-5 2>&1 | head -3"'
+  ```
+
+  Expected: first three lines are `session`, `agent_start`, `turn_start`
+  event types. If the first turn instead carries
+  `errorMessage: "400 ... You're out of extra usage"`, the bridge is
+  not active — the image was built from the wrong ref, the bridge
+  artefacts are missing, or PI_AGENT_SDK env was lost.
+
+- [ ] On `claude.ai/settings/usage`, observe a real assistant turn
+  through the dashboard. The "Max" usage bar should advance; the
+  "Extra usage" bar should stay flat for that turn.
+
+---
+
+### 1.3 — Network exposure / auth posture (post-deployment decision)
+
+**What:** ADR-12 scoped the MVP threat model to single-user
+**localhost**: no auth layer, `/api/system/browse` lists arbitrary
+host directories (not sandboxed), `/api/runs/*` is full run management
+with no caller identity, SSE streams have no rate limit, and the
+MCP `/mcp` mount has only DNS-rebinding protection (not auth). The
+2026-05-31 deployment to the agent LXC put port 7800 on
+`192.168.2.107` bound to all interfaces — every device on
+`192.168.2.0/24` has full access. The startup warning fires correctly
+(`relay is binding to a non-localhost host (RELAY_HOST=0.0.0.0)`)
+but `RELAY_HOST=127.0.0.1` is not viable inside a container.
+
+This isn't a regression to verify — it's a deferred decision the
+deployment shift forces. Pick one posture explicitly and record it,
+either as an ADR (accept) or as the change that lands the new
+boundary.
+
+**Status: PENDING decision.**
+
+**Postures to choose between:**
+- **(a) Accept the LAN exposure.** Premise: home LAN is trusted
+  infrastructure; no untrusted devices share the subnet. Cost: zero.
+  Risk: any compromised device on the home LAN (printer, IoT, guest)
+  inherits full filesystem-read + arbitrary-run-start authority on
+  the LXC. Worth an ADR if chosen, so the next person understands
+  this is a considered decision, not an oversight.
+- **(b) Bind to LXC localhost; reach via SSH tunnel from the
+  workstation.** Compose change: `"127.0.0.1:7800:7800"`. Connection
+  pattern: `ssh -L 7800:localhost:7800 john@192.168.2.107`. Single
+  user; mildly inconvenient (per-session tunnel); no new components.
+- **(c) Reverse-proxy with auth on the LXC.** Front `:7800` with
+  caddy/nginx/traefik on the same LXC; add basic auth (or OIDC if
+  you want fancier later). Compose change: `"127.0.0.1:7800:7800"`
+  on relay, reverse-proxy publishes the LAN-reachable port. Best
+  balance if you want multiple devices to reach the dashboard
+  without per-device SSH setup. Cost: one new container + a config
+  file.
+
+**Decision checklist:**
+- [ ] Pick a posture (a / b / c, or a hybrid).
+- [ ] If (a): record an ADR in `docs/decisions.md` ("home-LAN trusted;
+      deploy-as-MVP threat model retained; revisit when an untrusted
+      device shares the subnet OR data on the LXC becomes sensitive").
+      Add a one-line note under CLAUDE.md "Current state" so future
+      sessions know the warning is expected, not an open bug.
+- [ ] If (b) or (c): land the compose / proxy change; verify the
+      dashboard is reachable from your workstation via the chosen
+      path; verify it is *not* reachable from another device on the
+      LAN (or, for (c), requires the auth challenge). Update
+      `docker-compose.example.yml` if the deploy-time mount pattern
+      changes for other operators.
+- [ ] Either way: cross-link the chosen ADR (or the change commit)
+      from this section so the audit trail is one click away.
+
+---
+
+### 1.4 — Event-store backup strategy (post-deployment decision)
+
+**What:** `/srv/apps/relay/data/relay.db` is the source of truth per
+ADR-10 — runs, iters, events (the append-only event log itself),
+prompt versions, registered projects, OTel mirroring state. On the
+deployed LXC it's a single SQLite file. The named docker volume
+preserves it across container restarts; nothing protects against
+disk failure on the LXC, accidental deletion, in-place corruption,
+or a bad schema bump (schema is hand-rolled `create_all` per
+CLAUDE.md "Alembic deferred" — a future schema change is a forward
+migration with no rollback).
+
+For a localhost MVP this was fine (losing the DB meant re-registering
+projects; no in-flight work disrupted). Moving "into anger" with run
+history you want to keep (good engteam runs to replay, prompt
+versions you've iterated on, the OTel-mirrored trace for past work)
+makes some level of backup warranted.
+
+**Status: PENDING decision.**
+
+**Options:**
+- **(a) Accept: don't back up.** Treat the LXC's DB as ephemeral;
+  rely on git history of project repos for the work itself. Premise:
+  run history isn't valuable enough to protect; re-registering
+  projects after a loss is fine. Cost: zero. Reasonable if you treat
+  relay as a "throw it away and rebuild" tool.
+- **(b) Cron `sqlite3 .backup` to a sibling file, retain N days
+  locally.** `sqlite3 /srv/apps/relay/data/relay.db ".backup
+  /srv/apps/relay/data/backups/$(date +%F).db"` from a daily systemd
+  timer or cron; rotate with `find ... -mtime +14 -delete`. SQLite's
+  online `.backup` is safe against a live writer (no need to stop
+  the service). Cost: a timer unit. Local-only — protects against
+  accidental delete / corruption, not disk failure.
+- **(c) Snapshot into the syncthing folder.** Same `.backup` as (b),
+  but written under `/srv/apps/syncthing/relay-backups/` — syncthing
+  already runs on this LXC, so backups replicate to the workstation
+  automatically. Cheapest off-host option; piggy-backs on
+  infrastructure that already exists. Watch for unbounded growth.
+- **(d) Add to an existing backup pipeline.** If this LXC is already
+  backed up by PBS / restic / borg / similar, include
+  `/srv/apps/relay/data/` (and either pre-stop the service or use
+  sqlite's `VACUUM INTO` to snapshot the live DB first).
+
+**Decision checklist:**
+- [ ] Pick a strategy (a–d, or a hybrid).
+- [ ] If not (a): implement; verify a snapshot exists; **run a
+      restore test** (copy the snapshot to a fresh location, point
+      a relay instance at it via `RELAY_DATA_DIR`, confirm a known
+      run replays and SSE/REST surfaces work). A backup that hasn't
+      been tested as a restore is a wish, not a backup.
+- [ ] Document the chosen cadence + retention in
+      `docs/getting-started.md` (or a new `docs/operations.md` if
+      the operational surface grows enough to warrant its own page).
+- [ ] Note the schema-migration gap as a separate, named follow-up:
+      "Alembic / numbered upgrade scripts" — currently deferred per
+      CLAUDE.md, becomes load-bearing the first time we change the
+      schema in a way that needs more than `create_all`.
 
 ---
 
@@ -310,6 +459,11 @@ are true:
       the original 2026-05-22 PASS still holds, or any new
       regression has been fixed and re-confirmed.
 - [ ] §1.2 (14d engteam) gate journal-attested for the first time.
+- [ ] §1.3 (network exposure) posture chosen, recorded (ADR or
+      change commit), and reachability verified to match.
+- [ ] §1.4 (event-store backup) strategy chosen, implemented (or
+      explicitly accepted as "no backup"), and — if implemented —
+      a restore test passed.
 - [ ] §2 exercise-sweep complete; every checkbox ticked.
 - [ ] §3 bugs of severity **High** all closed (fixed and merged).
 - [ ] §3 bugs of severity **Medium** triaged — either closed or
