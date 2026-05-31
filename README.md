@@ -37,7 +37,7 @@ The four docs under `docs/` are the canonical source. Read in this order:
 | Doc | Purpose |
 |---|---|
 | [`docs/motivation.md`](docs/motivation.md) | Why v2 exists. Goals, non-goals, hard constraints, parked risks. |
-| [`docs/decisions.md`](docs/decisions.md) | 46 ADRs with context, alternatives, rationale, consequences. **Append-only.** |
+| [`docs/decisions.md`](docs/decisions.md) | 47 ADRs with context, alternatives, rationale, consequences. **Append-only.** |
 | [`docs/spec.md`](docs/spec.md) | Canonical design — architecture, data model, harness protocol, signaling, REST + MCP surface, Vue dashboard, observability, packaging. |
 | [`docs/plan.md`](docs/plan.md) | 9 MVP phases (0–8, all complete) + post-MVP arcs (9a–9g fanout-join + 14a–14f pause-for-review, both shipped) + remaining sketch. |
 | [`docs/acceptance-testing.md`](docs/acceptance-testing.md) | Live tracker for the current MVP-acceptance phase: gates, exercise sweep, bug log, definition of done. |
@@ -92,12 +92,13 @@ CLI (that, plus `status`/`cancel`, is a post-MVP convenience; spec
 
 ### pi version
 
-relay v2 is pinned to **pi 0.74.0** — the version exercised by the
-de-risking fixtures (OQ-5). The pin lives in
-[`.tool-versions`](.tool-versions); install that exact version (`pi` is
-not a Python dependency, so `uv sync` does not manage it). On a mismatch
-`relay` logs a non-fatal warning at the first run; bumping the pin is a
-deliberate maintenance step (re-run the de-risking fixtures first).
+relay v2 is pinned to a pi version tracked by [`.tool-versions`](.tool-versions)
+(currently **pi 0.78.0**, the upstream base of the `relay-bridge-vN` fork tag
+the production image builds from — see ADR-52). The de-risking fixtures (OQ-5)
+were captured against pi 0.74.0. Install the pinned version (`pi` is not a
+Python dependency, so `uv sync` does not manage it). On a mismatch `relay`
+logs a non-fatal warning at the first run; bumping the pin is a deliberate
+maintenance step (re-run the de-risking fixtures first).
 
 ## MCP server
 
@@ -137,9 +138,11 @@ the full procedure and the manual trace-tree acceptance check.
 ## Docker
 
 A multi-stage image builds the Vue frontend, bundles the pinned pi
-harness (Node 22 runtime + `@earendil-works/pi-coding-agent@0.74.0`),
+harness (built from `johnmathews/pi` at the `relay-bridge-vN` tag —
+NOT the npm-published pi, which strips the agent-SDK bridge needed
+for Max-subscription routing; see ADR-52),
 and serves the dashboard from the FastAPI backend (spec §11.2,
-ADR-51). Published to `ghcr.io/johnmathews/relay` by CI on push to
+ADR-51, ADR-52). Published to `ghcr.io/johnmathews/relay` by CI on push to
 `main`.
 
 ```bash

@@ -594,9 +594,11 @@ behavior (run 2026-05-19). Treat it as authoritative over assumptions:
   use them for harness unit tests (Phase 1).
 - pi has **no subagents at the protocol level** — relay manages
   subagents at the orchestrator layer (ADR-06).
-- Confirmed pi version is **v0.74.0**; pin to it (`docs/plan.md`
-  pre-phase). Note `motivation.md` mentions a newer release exists —
-  pinning below current is intentional.
+- Confirmed pi version is **v0.78.0** (per ADR-52 — built from the
+  `johnmathews/pi:relay-bridge-v1` tag; was v0.74.0 under the
+  npm-install delivery ADR-51 documented). Pin to it (`.tool-versions`
+  + `Settings.pi_expected_version`). Note `motivation.md` mentions a
+  newer release exists — pinning below current is intentional.
 
 ## Load-bearing design invariants
 
@@ -717,8 +719,11 @@ implementation:
   plan.md sketches.
 - Packaging (Phase 8, ADR-30; pi bundled per ADR-51): a multi-stage
   `Dockerfile` (Node stage builds `frontend/dist/`; a second Node
-  stage `npm install -g @earendil-works/pi-coding-agent@0.74.0` —
-  `ARG PI_VERSION=0.74.0` matches `.tool-versions`; `python:3.13-slim`
+  stage builds pi from `johnmathews/pi:relay-bridge-v1` (ADR-52 —
+  npm-published pi strips the agent-SDK bridge); the resulting
+  image carries pi 0.78.0 with the bridge intact;
+  `ARG PI_REF=relay-bridge-v1` is the Dockerfile pin; `.tool-versions`
+  agrees; `python:3.13-slim`
   runtime copies in the Node binary + pi's node_modules and runs the
   `uv`-synced backend from `/app/.venv/bin/relay` — not `uv run`, no
   runtime cache write; healthcheck uses `urllib`, not curl; `RUN pi
@@ -740,7 +745,9 @@ implementation:
   conditional `relay.api.static.mount_frontend` (no-op without a
   build) — spec §11.2.
 - **`PI_AGENT_SDK=1` is load-bearing, not cosmetic** (ADR-51, grounded
-  in pi v0.74.0 source `core/sdk.ts:170` + `interactive-mode.ts:3974`).
+  in pi v0.78.0 source via the fork at `johnmathews/pi:relay-bridge`
+  (`packages/ai/src/providers/anthropic-agent-sdk.ts`,
+  `packages/ai/src/providers/agent-sdk-mcp-tools.ts`)).
   Flag set → OAuth requests route through the `@anthropic-ai/claude-
   agent-sdk` bridge against Claude Pro/Max subscription quota AND
   `buildPiMcpServerForBridge` wraps pi's tools as an MCP server for

@@ -3191,7 +3191,7 @@ The plan (`docs/archive/2026-05-30-chat-mode-arc.md`, W1–W6) added chat mode a
 
 ## ADR-51 — Bundle pi into the production image; mount host `~/.pi` for auth
 
-**Status:** active.
+**Status:** active for the bundling + ENV + auth-volume decisions. Delivery method (`npm install -g @earendil-works/pi-coding-agent`) is superseded by ADR-52 — the npm-published package strips the agent-SDK bridge. See ADR-52 for current delivery.
 
 **Date:** 2026-05-31.
 
@@ -3232,3 +3232,43 @@ So the flag is load-bearing: no flag → wrong billing route + 400s + no tool ca
 
 **Related ADRs:** ADR-04 (harness layer is the only code that knows pi exists — sidecar-container option dies here); ADR-09 (Max-subscription auth path provisional; this ADR documents the *mechanism* but does not supersede ADR-09 — the verification status it tracks is unchanged); ADR-16 (pinned to pi 0.74.0); ADR-30 (Phase 8 packaging — this ADR is an iteration on that decision); ADR-44 (bundled engineering-team skill injection — the skill already ships in the image; bundling pi extends the same self-contained-image philosophy).
 
+## ADR-52 — Build pi from `johnmathews/pi` fork to ship the agent-SDK bridge
+
+**Status:** active. Supersedes the npm-install mechanism in ADR-51 (delivery method only — the bundling + ENV decisions in ADR-51 remain in force).
+
+**Date:** 2026-05-31.
+
+**Context.** ADR-51 (2026-05-31, same day) bundled pi into the production image via `npm install -g @earendil-works/pi-coding-agent@0.74.0` and documented the mechanism behind `PI_AGENT_SDK=1` by reading pi's source. The 2026-05-31 LXC deployment exposed a gap between source and npm artefact: a smoke `pi -p` call inside the deployed container returned `400 invalid_request_error: "You're out of extra usage..."` even though `PI_AGENT_SDK=1` was set, valid OAuth tokens were mounted, and `pi --version` reported the pinned 0.74.0.
+
+Investigation (`journal/260531-pi-bridge-fork-build.md`) found that the npm-published `@earendil-works/pi-ai@0.74.0` package omits the bridge file (`dist/providers/anthropic-agent-sdk.js`), omits the `@anthropic-ai/claude-agent-sdk` dependency, and ships a stripped `anthropic.js` that contains no `PI_AGENT_SDK` references. The bridge exists only in the operator's own fork (`johnmathews/pi`), implemented across the W1→W14 commit series — it is *unreleased upstream code*. Upstream `badlogic/pi-mono` has no concept of the bridge at any version (0.74.0 through 0.78.0 inclusive verified by downloading the npm tarballs directly).
+
+So ADR-51's mechanism description (steps 1–2) is correct as a reading of pi *source* but does not match pi as published on npm. The image built per ADR-51 has pi present and `PI_AGENT_SDK=1` set but no bridge code to take effect — the dynamic `import("@anthropic-ai/claude-agent-sdk")` is inside a file that doesn't exist in the published artefact.
+
+**Decision.**
+
+1. **Build pi from `johnmathews/pi` at the annotated tag `relay-bridge-v1`**, currently a clean cherry-pick of W1→W14 + post-W14 fixes on top of upstream `badlogic/pi-mono` v0.78.0, plus a structural-type fix to avoid an undici-types `Response`-shadowing collision in `pi-agent-core` (the bridge's public `piMcpServer` type is structural rather than importing from `@anthropic-ai/claude-agent-sdk`; the bridge file casts at its `sdk.query()` boundary). The tag is annotated and pushed; the Dockerfile pins to the tag name and resolves it once at build time via `git fetch --depth 1 origin <tag>`.
+2. **Dockerfile build stage**: clone the fork, `npm ci && npm run build && npm prune --omit=dev`, copy the resulting `/opt/pi` tree into the runtime image, create `/usr/local/bin/pi` as a symlink to the built `cli.js`.
+3. **Runtime stage gains a bridge-artefact sanity check** (`RUN test -f /opt/pi/packages/ai/dist/providers/anthropic-agent-sdk.js && test -d /opt/pi/packages/ai/node_modules/@anthropic-ai/claude-agent-sdk && ls /opt/pi/node_modules/@anthropic-ai/ | grep -q '^claude-agent-sdk-linux-'`) — fails the image build if a future change accidentally reverts to npm-published pi or if the platform-specific native binary fails to install.
+4. **Repo gains `tests/test_dockerfile_invariants.py`** to assert the Dockerfile mentions the fork URL, pins an immutable ref, and copies `/opt/pi`. CI catches drift before image build runs.
+5. **Bumping pi**: rebuild the relay-bridge branch on a newer upstream tag (Phase 1 of `docs/plans/2026-05-31-pi-bridge-fork-rebuild.md`), push as `relay-bridge-vN`, update `PI_REF` in Dockerfile + `Settings.pi_expected_version` + `.tool-versions` together.
+
+**Alternatives considered.**
+
+- **Vendor pre-built pi tarballs in the relay repo.** Rejected — adds ~10 MB of binary blobs to the relay git history per pi bump, requires a manual `npm pack` step on the operator's laptop (not reproducible from source), and the rebuild ritual becomes "build locally, repack, commit" instead of "push a fork tag." Reproducibility loss outweighs the saved 1-3 minutes of CI build time.
+- **Pin to an older upstream base** so the bridge cherry-picks apply without the `Response`-shadowing collision. Investigated and rejected — npm's modern resolution of `@types/node` to 24.x (carrying `undici-types@~7.16.0`) is the actual cause, not a per-pi-version code regression. Every upstream tag from v0.74.0 onwards installs the bad types-node today; v0.74.0 also fails because W3 references session-affinity fields that landed only in v0.74.1. There is no upstream base older than the type collision.
+- **Publish the fork as `@johnmathews/pi-coding-agent` on a personal npm scope.** Rejected — adds an npm publishing pipeline for a single consumer (this relay image). The fork is a single-tenant artefact; npm is overkill.
+- **Open a PR to `badlogic/pi-mono` upstreaming the bridge.** Worth pursuing in parallel, but does not unblock today's deployment — upstream merge timeline is uncontrollable and the bridge as currently designed may not match what upstream wants. Tracked as a long-term task, not a blocker for ADR-52.
+- **Switch the production harness to `@anthropic-ai/claude-agent-sdk` directly.** Rejected — ADR-09 chose pi because claude-agent-sdk has tool-call timeout constraints that don't fit relay's longer-running tool calls. Re-evaluation is its own project, not a hotfix for the billing path.
+- **Run a host-side credential proxy** that injects `Authorization: Bearer <oauth-token>` for the container's outbound `api.anthropic.com` traffic. Rejected — this is a defence-in-depth security pattern (keep secrets off the container), not a routing mechanism. The container would still fall back to extra-usage because the missing bridge files, not the credential location, are the root cause.
+
+**Consequences.**
+
+- **Image build now depends on `johnmathews/pi` being reachable.** Hard requirement for CI. Fork is public; tag pin makes the artefact effectively immutable (force-push of the tag would change it). Backup: mirror the repo to a second remote if the bus factor matters.
+- **Image build time grows by ~1-3 minutes** for the pi-mono build (clone + `npm ci` + sequential per-package build). Layer-cached by `ARG PI_REF`, so most rebuilds skip it. Local dev build measured at ~60s on Apple Silicon; cold CI on amd64 is expected to be 3-5 minutes due to npm registry roundtrip.
+- **Image size grows substantially** for the bundled pi tree (built dist + production node_modules + the platform-matched `claude` native binary). Measured at ~1.95 GB on the rebuilt image; the previous image was ~400 MB. The bloat is mostly in pi's vendored deps and the bundled `claude` binary — not optimisable without restructuring pi.
+- **Pi bumps become a 2-step ritual**: rebuild the fork branch + bump the relay tag/SHA. Less ergonomic than a single npm pin, but the only path that produces a working subscription image.
+- **The fork dependency is structural and bus-factor sensitive.** ADR-52 is honest about this — the bridge is not in upstream; if `johnmathews/pi` becomes unmaintained, the relay image's subscription path goes with it. The mitigation is the open-source path (upstream the bridge or publish the fork formally), tracked separately.
+- **The structural type fix in the bridge weakens one public type.** `BridgePiMcpServer.instance` is `unknown` on the public `@earendil-works/pi-ai` re-export (was the concrete `McpServer` type from claude-agent-sdk before the fix); the bridge casts internally. Two test files in pi acquired `as McpServer` casts; no production code consumer is affected. The change is recorded in the rebuild-log; future bridge-version bumps should preserve the structural shape.
+- **ADR-51's other decisions stay in force**: bundle pi into the image (yes — just from a different source), set `ENV PI_AGENT_SDK=1` (yes), bind-mount `~/.pi` for OAuth (yes), keep credentials per-user (yes), pin the version (yes, via `relay-bridge-vN` tag instead of an npm version string).
+
+**Related ADRs:** ADR-04 (harness layer is the only code that knows pi exists — fork choice doesn't change that); ADR-09 (Max-subscription auth path; the bridge is now its actual delivery mechanism); ADR-16 (pi version pin — now tracked via the fork tag); ADR-30 (Phase 8 packaging); ADR-51 (this ADR supersedes the *delivery method* — bundling pi via npm — while preserving every other ADR-51 decision; ADR-51's mechanism description is correct for pi source but not for the npm artefact, see Context).

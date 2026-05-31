@@ -19,13 +19,36 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build          # -> /build/frontend/dist
 
-# ── stage 2: pi install ────────────────────────────────────────────────
-# Pin matches .tool-versions and `Settings.pi_expected_version`. Bump
-# both together when upgrading pi (ADR-16 / OQ-5: pi is pinned, not
-# floating).
+# ── stage 2: build pi from fork (ADR-52) ───────────────────────────────
+# The npm-published pi packages strip the @anthropic-ai/claude-agent-sdk
+# bridge — without it PI_AGENT_SDK=1 silently falls back to the legacy
+# direct-HTTP path that 400s with "out of extra usage" (verified on the
+# LXC 2026-05-31, journal/260531-pi-bridge-fork-build.md). The bridge
+# lives only in johnmathews/pi. Build from source to get a working
+# subscription path.
+#
+# Bumping pi: re-cherry-pick onto a newer upstream tag (see Phase 1 of
+# docs/plans/2026-05-31-pi-bridge-fork-rebuild.md), push as
+# relay-bridge-vN, update PI_REF below + Settings.pi_expected_version +
+# .tool-versions.
 FROM node:22-slim AS pi
-ARG PI_VERSION=0.74.0
-RUN npm install -g "@earendil-works/pi-coding-agent@${PI_VERSION}"
+ARG PI_REPO=https://github.com/johnmathews/pi.git
+ARG PI_REF=relay-bridge-v1
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /opt/pi
+RUN git init -q \
+    && git remote add origin "${PI_REPO}" \
+    && git fetch --depth 1 origin "${PI_REF}" \
+    && git checkout -q FETCH_HEAD
+# `npm ci` installs the lockfile — including @anthropic-ai/claude-agent-sdk
+# and its platform-matched native `claude` binary (linux-x64 for amd64 LXCs).
+RUN npm ci
+# Sequential per-package build per the root package.json scripts.build.
+RUN npm run build
+# Drop dev deps + git history before the runtime stage copies us in.
+RUN npm prune --omit=dev && rm -rf .git
 
 # ── stage 3: python runtime ────────────────────────────────────────────
 FROM python:3.13-slim AS runtime
@@ -33,20 +56,14 @@ FROM python:3.13-slim AS runtime
 # Python dep so uv.lock does not manage it).
 COPY --from=ghcr.io/astral-sh/uv:0.5 /uv /uvx /bin/
 
-# Node 22 runtime + pi binary copied from the pi stage. We copy the
-# node binary directly (debian's apt nodejs is too old for pi). The
-# entire node_modules tree is copied because npm hoists pi's
-# transitive deps (undici etc.) to the top of the global modules dir
-# rather than nesting them under the @earendil-works scope.
-#
-# The `pi` binstub is recreated as a symlink rather than COPY'd from
-# the pi stage: Docker COPY dereferences symlinks, which would land
-# pi's cli.js as a flat file under /usr/local/bin/ — Node would then
-# search for `undici` from /usr/local/bin/ instead of from the
-# node_modules tree, breaking ESM module resolution.
+# Node 22 runtime + the built pi monorepo from the build stage.
+# /opt/pi/packages/coding-agent/dist/cli.js is the entry; module
+# resolution starts from its realpath and walks up to /opt/pi/
+# node_modules/, which holds @anthropic-ai/claude-agent-sdk and its
+# bundled native `claude` binary.
 COPY --from=pi /usr/local/bin/node /usr/local/bin/node
-COPY --from=pi /usr/local/lib/node_modules /usr/local/lib/node_modules
-RUN ln -s ../lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js /usr/local/bin/pi
+COPY --from=pi /opt/pi /opt/pi
+RUN ln -s /opt/pi/packages/coding-agent/dist/cli.js /usr/local/bin/pi
 
 # git is needed by orchestrator/lifecycle.py:provision_workspace (per-run
 # git worktrees — ADR-13) and by pi's tool calls (the agent routinely
@@ -86,13 +103,25 @@ COPY --from=frontend /build/frontend/dist ./frontend/dist
 # ~/.pi (auth volume) is accessible when the host directory is chowned
 # to uid 10001, OR when compose overrides `user:` to the host uid.
 RUN useradd --create-home --uid 10001 relay \
-    && chown -R relay:relay /app /home/relay
+    && chown -R relay:relay /app /home/relay /opt/pi
 USER relay
 
 # Sanity-check pi is reachable as the relay user at build time. Fails
 # the build if either the node binary or the binstub is misplaced —
 # easier to catch here than at first run.
 RUN pi --version
+
+# Verify the agent-SDK bridge is actually shipped — guards against
+# accidental reverts to npm-published pi which strips the bridge. The
+# claude-agent-sdk JS lives in pi-ai's nested node_modules (workspace
+# layout, not hoisted to root); the platform-specific native `claude`
+# binary is installed by npm's optionalDependencies — at least one
+# `linux-*` variant must be present (linux-x64 in CI/prod amd64,
+# linux-arm64 on dev arm64).
+RUN test -f /opt/pi/packages/ai/dist/providers/anthropic-agent-sdk.js \
+    && test -d /opt/pi/packages/ai/node_modules/@anthropic-ai/claude-agent-sdk \
+    && ls /opt/pi/node_modules/@anthropic-ai/ | grep -q '^claude-agent-sdk-linux-' \
+    || (echo "FATAL: bridge artefacts missing — check Phase 1 of docs/plans/2026-05-31-pi-bridge-fork-rebuild.md" && exit 1)
 
 EXPOSE 7800
 

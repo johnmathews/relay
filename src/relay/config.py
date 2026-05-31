@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     pi_skills: str | None = None
     # Known-good pi pin (OQ-5). Mirrors `.tool-versions`; a mismatch is
     # logged (non-fatal) at first spawn, never enforced.
-    pi_expected_version: str = "0.74.0"
+    pi_expected_version: str = "0.78.0"
     # asyncio StreamReader buffer size for pi's stdout. Pi emits one JSON
     # object per line; large tool results (file reads, verbose Bash,
     # agent_end.messages with long content) can exceed asyncio's 64 KiB

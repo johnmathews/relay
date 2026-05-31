@@ -11,7 +11,7 @@
 
 1. **Python 3.13** and [`uv`](https://docs.astral.sh/uv/) (`uv --version`
    should print something).
-2. **`pi` 0.74.0** on `PATH` — the harness binary. relay pins this
+2. **`pi` 0.78.0** on `PATH` — the harness binary. relay pins this
    version (`.tool-versions`); a mismatch logs a non-fatal warning at
    first run. `pi` is **not** a Python dependency, so `uv sync` does
    not install it; install it separately and confirm with `pi
@@ -202,10 +202,21 @@ The shape:
 
 ## 8. (Optional) Docker / GHCR
 
-The image bundles pi 0.74.0 (Node 22 runtime + the pinned
-`@earendil-works/pi-coding-agent` package) per ADR-51, but pi's
-Max-subscription OAuth token cannot be baked in — the browser-based
-login is per-user. One-time host setup, then build/run:
+The image builds pi from `johnmathews/pi` at the `relay-bridge-v1` tag
+(ADR-52 — the npm-published `@earendil-works/pi-coding-agent` strips
+the agent-SDK bridge that `PI_AGENT_SDK=1` needs) and bundles it
+alongside the FastAPI backend. Pi's Max-subscription OAuth token
+cannot be baked in — the browser-based login is per-user. One-time
+host setup, then build/run:
+
+> **Why the image is large and the build is slow.** The production
+> image builds pi from `johnmathews/pi` at the pinned `relay-bridge-vN`
+> tag rather than from npm. The npm-published pi packages strip the
+> `@anthropic-ai/claude-agent-sdk` bridge — without it, `PI_AGENT_SDK=1`
+> silently falls back to extra-usage billing instead of the Max
+> subscription. See ADR-52 for the full rationale and
+> `docs/plans/2026-05-31-pi-bridge-fork-rebuild.md` for the bump
+> procedure if you want to track a newer upstream.
 
 ```bash
 # One-time: complete the pi OAuth login on the host
@@ -237,7 +248,7 @@ pi on the host) or override `user:` in compose to match your host uid
 ## Troubleshooting
 
 1. **`pi` not on PATH / "harness binary not found"** — install pi
-   0.74.0 (`.tool-versions`); confirm with `pi --version`.
+   0.78.0 (`.tool-versions`); confirm with `pi --version`.
 2. **Run starts but the assistant never speaks / hangs forever** —
    almost always pi auth. Re-check `PI_AGENT_SDK=1` is set in the
    process that runs `relay serve` (not just your shell), and that
