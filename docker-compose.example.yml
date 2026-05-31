@@ -1,9 +1,12 @@
 # relay — example compose (Phase 8; pi bundled per ADR-51).
 #
 # Runs the relay backend (which also serves the built dashboard at
-# http://localhost:7800/). The image bundles pi 0.74.0 — but pi's
-# Max-subscription OAuth token must be supplied via a host volume
-# (see the `~/.pi` mount below). Copy to docker-compose.yml and adjust.
+# http://localhost:7800/). The image bundles pi built from
+# johnmathews/pi:relay-bridge-vN — NOT the npm-published pi, which
+# strips the agent-SDK bridge needed for Max-subscription routing
+# (see ADR-52). Pi's Max-subscription OAuth token must be supplied
+# via a host volume (see the `~/.pi` mount below). Copy to
+# docker-compose.yml and adjust.
 #
 # ── Prerequisite: one-time host login ────────────────────────────────
 # Pi's OAuth browser flow can only run interactively. Before the first
