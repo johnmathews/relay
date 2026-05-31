@@ -454,7 +454,7 @@ describe('ProjectView', () => {
     expect(viewer.attributes('data-store')).toBe('project:7')
   })
 
-  it('Runs multi-select: enter mode, select rows, bulk delete invokes mutation per id', async () => {
+  it('Runs multi-select: checkboxes are always visible, bulk delete invokes mutation per id', async () => {
     runsData.value = [
       {
         id: 'r-done',
@@ -480,9 +480,7 @@ describe('ProjectView', () => {
     const w = mountView()
     await flushPromises()
 
-    // No checkboxes until select mode is entered.
-    expect(w.find('[data-testid="run-check-r-done"]').exists()).toBe(false)
-    await w.get('[data-testid="runs-select-mode"]').trigger('click')
+    // Checkboxes are rendered on every row by default (no select-mode).
     expect(w.find('[data-testid="run-check-r-done"]').exists()).toBe(true)
 
     // Running rows render a disabled checkbox.
@@ -509,11 +507,15 @@ describe('ProjectView', () => {
       (args: unknown[]) => args[0] as string,
     )
     expect(new Set(calledWith)).toEqual(new Set(['r-done', 'r-failed']))
-    // Select mode auto-exits on a clean success.
-    expect(w.find('[data-testid="run-check-r-done"]').exists()).toBe(false)
+    // Selection clears on clean success; checkboxes stay visible.
+    expect(w.find('[data-testid="run-check-r-done"]').exists()).toBe(true)
+    expect(
+      (w.get('[data-testid="run-check-r-done"]').element as HTMLInputElement)
+        .checked,
+    ).toBe(false)
   })
 
-  it('Runs multi-select: row click toggles checkbox in select mode (no nav)', async () => {
+  it('Runs row click navigates to the run; checkbox click toggles selection without nav', async () => {
     runsData.value = [
       {
         id: 'r-done',
@@ -525,13 +527,19 @@ describe('ProjectView', () => {
     const w = mountView()
     await flushPromises()
 
-    await w.get('[data-testid="runs-select-mode"]').trigger('click')
-    // Click the row (the inner button). Should toggle selection, not navigate.
-    await w.get('[data-testid="run-row-r-done"]').trigger('click')
+    // Checkbox toggles selection without navigating.
+    await w.get('[data-testid="run-check-r-done"]').trigger('click')
     expect(push).not.toHaveBeenCalled()
     const check = w.get('[data-testid="run-check-r-done"]')
       .element as HTMLInputElement
     expect(check.checked).toBe(true)
+
+    // Row click still navigates to the run detail.
+    await w.get('[data-testid="run-row-r-done"]').trigger('click')
+    expect(push).toHaveBeenCalledWith({
+      name: 'run-detail',
+      params: { id: 'r-done' },
+    })
   })
 
   it('tab switching shows exactly one panel at a time (Runs default)', async () => {
@@ -619,6 +627,77 @@ describe('ProjectView', () => {
       name: 'chat-detail',
       params: { id: 'chat-1' },
     })
+  })
+
+  it('Chats multi-select: bulk delete invokes mutation per id', async () => {
+    chatsData.value = [
+      {
+        id: 'chat-a',
+        status: 'paused',
+        mode: 'chat',
+        started_at: '2026-05-30T12:00:00Z',
+      } as unknown as Run,
+      {
+        id: 'chat-b',
+        status: 'closed',
+        mode: 'chat',
+        started_at: '2026-05-29T11:00:00Z',
+      } as unknown as Run,
+      {
+        id: 'chat-running',
+        status: 'running',
+        mode: 'chat',
+        started_at: '2026-05-28T10:00:00Z',
+      } as unknown as Run,
+    ]
+    deleteRunMutate.mockResolvedValue(undefined)
+
+    const w = mountView()
+    await flushPromises()
+    await w.get('[data-testid="tab-chats"]').trigger('click')
+
+    // Running rows render a disabled checkbox (must cancel before delete).
+    const runningCheck = w.get('[data-testid="chat-check-chat-running"]')
+    expect((runningCheck.element as HTMLInputElement).disabled).toBe(true)
+
+    // Select two terminal chats.
+    await w.get('[data-testid="chat-check-chat-a"]').trigger('click')
+    await w.get('[data-testid="chat-check-chat-b"]').trigger('click')
+    const btn = w.get('[data-testid="chats-delete-selected"]')
+    expect(btn.text()).toContain('Delete selected (2)')
+
+    await btn.trigger('click')
+    await w
+      .get('[data-testid="chats-delete-confirm-button"]')
+      .trigger('click')
+    await flushPromises()
+
+    expect(deleteRunMutate).toHaveBeenCalledTimes(2)
+    const calledWith = deleteRunMutate.mock.calls.map(
+      (args: unknown[]) => args[0] as string,
+    )
+    expect(new Set(calledWith)).toEqual(new Set(['chat-a', 'chat-b']))
+  })
+
+  it('Chat checkbox click toggles selection without navigating', async () => {
+    chatsData.value = [
+      {
+        id: 'chat-1',
+        status: 'paused',
+        mode: 'chat',
+        started_at: '2026-05-30T12:00:00Z',
+      } as unknown as Run,
+    ]
+    const w = mountView()
+    await flushPromises()
+    await w.get('[data-testid="tab-chats"]').trigger('click')
+
+    await w.get('[data-testid="chat-check-chat-1"]').trigger('click')
+    expect(push).not.toHaveBeenCalled()
+    expect(
+      (w.get('[data-testid="chat-check-chat-1"]').element as HTMLInputElement)
+        .checked,
+    ).toBe(true)
   })
 
   it('New chat creates a chat-mode run and navigates to it', async () => {

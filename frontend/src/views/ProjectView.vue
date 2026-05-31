@@ -138,19 +138,19 @@ function shortId(id: string): string {
   return id.length <= 8 ? id : id.slice(0, 8)
 }
 
-// ── Run multi-select + bulk delete ────────────────────────────────────
-// Select mode swaps row-click behaviour from "open run" to "toggle
-// selection"; a confirm step + bulk DELETE then runs in parallel via
-// Promise.allSettled so one refused row (still-active 409) doesn't
-// block the rest. Active runs (`running` / `awaiting_children`) are
-// not selectable — they have an in-memory task and must be cancelled
-// first; the checkbox is rendered disabled with a tooltip.
+// ── Multi-select + bulk delete (runs + chats) ─────────────────────────
+// Checkboxes are always visible next to each row; the row click still
+// navigates to the run / chat detail (selection is checkbox-only). A
+// confirm step + bulk DELETE runs in parallel via Promise.allSettled so
+// one refused row (still-active 409) doesn't block the rest. Active
+// runs (`running` / `awaiting_children`) are not selectable — they have
+// an in-memory task and must be cancelled first; the checkbox is
+// rendered disabled with a tooltip.
 const ACTIVE_STATUSES = new Set(['running', 'awaiting_children'])
-const selectMode = ref(false)
+const deleteRun = useDeleteRunMutation()
+
 const selectedRunIds = ref<Set<string>>(new Set())
 const confirmDeleteRuns = ref(false)
-const deleteRun = useDeleteRunMutation()
-/** Last bulk-delete summary: `{deleted, failed}` so the UI can report. */
 const lastDeleteSummary = ref<{ deleted: number; failed: string[] } | null>(
   null,
 )
@@ -158,43 +158,24 @@ const lastDeleteSummary = ref<{ deleted: number; failed: string[] } | null>(
 const selectableRuns = computed(() =>
   runs.value.filter((r) => !ACTIVE_STATUSES.has(r.status)),
 )
-const allSelectableSelected = computed(
+const allSelectableRunsSelected = computed(
   () =>
     selectableRuns.value.length > 0 &&
     selectableRuns.value.every((r) => selectedRunIds.value.has(r.id)),
 )
 
-function enterSelectMode(): void {
-  selectMode.value = true
-  selectedRunIds.value = new Set()
-  confirmDeleteRuns.value = false
-  lastDeleteSummary.value = null
-}
-function exitSelectMode(): void {
-  selectMode.value = false
-  selectedRunIds.value = new Set()
-  confirmDeleteRuns.value = false
-}
 function toggleRunSelection(runId: string): void {
   const next = new Set(selectedRunIds.value)
   if (next.has(runId)) next.delete(runId)
   else next.add(runId)
   selectedRunIds.value = next
 }
-function toggleSelectAll(): void {
-  if (allSelectableSelected.value) {
+function toggleSelectAllRuns(): void {
+  if (allSelectableRunsSelected.value) {
     selectedRunIds.value = new Set()
   } else {
     selectedRunIds.value = new Set(selectableRuns.value.map((r) => r.id))
   }
-}
-function onRunRowClick(runId: string, status: string): void {
-  if (!selectMode.value) {
-    openRun(runId)
-    return
-  }
-  if (ACTIVE_STATUSES.has(status)) return  // not selectable
-  toggleRunSelection(runId)
 }
 async function onConfirmDeleteRuns(): Promise<void> {
   const ids = Array.from(selectedRunIds.value)
@@ -218,10 +199,72 @@ async function onConfirmDeleteRuns(): Promise<void> {
   lastDeleteSummary.value = { deleted, failed }
   confirmDeleteRuns.value = false
   if (failed.length === 0) {
-    exitSelectMode()
+    selectedRunIds.value = new Set()
   } else {
-    // Keep failed rows selected so the user sees what's still there.
     selectedRunIds.value = new Set(
+      ids.filter((_, i) => results[i]!.status === 'rejected'),
+    )
+  }
+}
+
+// ── Chat multi-select + bulk delete ──────────────────────────────────
+// Chats are runs (mode='chat'), so the same `useDeleteRunMutation` and
+// `ACTIVE_STATUSES` rules apply. Kept as a parallel state set so the
+// two lists don't interfere with each other's selection / confirm UI.
+const selectedChatIds = ref<Set<string>>(new Set())
+const confirmDeleteChats = ref(false)
+const lastChatDeleteSummary = ref<{
+  deleted: number
+  failed: string[]
+} | null>(null)
+
+const selectableChats = computed(() =>
+  chats.value.filter((c) => !ACTIVE_STATUSES.has(c.status)),
+)
+const allSelectableChatsSelected = computed(
+  () =>
+    selectableChats.value.length > 0 &&
+    selectableChats.value.every((c) => selectedChatIds.value.has(c.id)),
+)
+
+function toggleChatSelection(chatId: string): void {
+  const next = new Set(selectedChatIds.value)
+  if (next.has(chatId)) next.delete(chatId)
+  else next.add(chatId)
+  selectedChatIds.value = next
+}
+function toggleSelectAllChats(): void {
+  if (allSelectableChatsSelected.value) {
+    selectedChatIds.value = new Set()
+  } else {
+    selectedChatIds.value = new Set(selectableChats.value.map((c) => c.id))
+  }
+}
+async function onConfirmDeleteChats(): Promise<void> {
+  const ids = Array.from(selectedChatIds.value)
+  if (ids.length === 0) return
+  const results = await Promise.allSettled(
+    ids.map((id) => deleteRun.mutateAsync(id)),
+  )
+  const failed: string[] = []
+  let deleted = 0
+  results.forEach((r, i) => {
+    if (r.status === 'fulfilled') {
+      deleted += 1
+    } else {
+      const id = ids[i]!
+      const reason = r.reason
+      const detail =
+        reason instanceof ApiError ? `${id} (${reason.message})` : id
+      failed.push(detail)
+    }
+  })
+  lastChatDeleteSummary.value = { deleted, failed }
+  confirmDeleteChats.value = false
+  if (failed.length === 0) {
+    selectedChatIds.value = new Set()
+  } else {
+    selectedChatIds.value = new Set(
       ids.filter((_, i) => results[i]!.status === 'rejected'),
     )
   }
@@ -473,44 +516,28 @@ async function onConfirmUnregister(): Promise<void> {
               >
               Show child runs
             </label>
-            <div class="project-view__runs-actions">
+            <div
+              v-if="runs.length > 0"
+              class="project-view__runs-actions"
+            >
               <button
-                v-if="!selectMode && runs.length > 0"
                 type="button"
                 class="project-view__select-button"
-                data-testid="runs-select-mode"
-                @click="enterSelectMode"
+                data-testid="runs-select-all"
+                :disabled="selectableRuns.length === 0"
+                @click="toggleSelectAllRuns"
               >
-                Select runs
+                {{ allSelectableRunsSelected ? 'Clear' : 'Select all' }}
               </button>
-              <template v-if="selectMode">
-                <button
-                  type="button"
-                  class="project-view__select-button"
-                  data-testid="runs-select-all"
-                  :disabled="selectableRuns.length === 0"
-                  @click="toggleSelectAll"
-                >
-                  {{ allSelectableSelected ? 'Clear' : 'Select all' }}
-                </button>
-                <button
-                  type="button"
-                  class="project-view__select-button project-view__select-button--danger"
-                  data-testid="runs-delete-selected"
-                  :disabled="selectedRunIds.size === 0"
-                  @click="confirmDeleteRuns = true"
-                >
-                  Delete selected ({{ selectedRunIds.size }})
-                </button>
-                <button
-                  type="button"
-                  class="project-view__select-button"
-                  data-testid="runs-select-cancel"
-                  @click="exitSelectMode"
-                >
-                  Cancel
-                </button>
-              </template>
+              <button
+                type="button"
+                class="project-view__select-button project-view__select-button--danger"
+                data-testid="runs-delete-selected"
+                :disabled="selectedRunIds.size === 0"
+                @click="confirmDeleteRuns = true"
+              >
+                Delete selected ({{ selectedRunIds.size }})
+              </button>
             </div>
           </div>
           <div
@@ -581,11 +608,10 @@ async function onConfirmUnregister(): Promise<void> {
                   class="project-view__run-wrap"
                   :class="{
                     'project-view__run-wrap--selected':
-                      selectMode && selectedRunIds.has(run.id),
+                      selectedRunIds.has(run.id),
                   }"
                 >
                   <input
-                    v-if="selectMode"
                     type="checkbox"
                     class="project-view__run-check"
                     :checked="selectedRunIds.has(run.id)"
@@ -603,7 +629,7 @@ async function onConfirmUnregister(): Promise<void> {
                     type="button"
                     class="project-view__run"
                     :data-testid="`run-row-${run.id}`"
-                    @click="onRunRowClick(run.id, run.status)"
+                    @click="openRun(run.id)"
                   >
                     <StatusBadge :status="run.status" />
                     <span class="project-view__run-prompt">
@@ -640,6 +666,80 @@ async function onConfirmUnregister(): Promise<void> {
           >
             {{ createChatError }}
           </p>
+          <div
+            v-if="chats.length > 0"
+            class="project-view__runs-bar"
+          >
+            <span />
+            <div class="project-view__runs-actions">
+              <button
+                type="button"
+                class="project-view__select-button"
+                data-testid="chats-select-all"
+                :disabled="selectableChats.length === 0"
+                @click="toggleSelectAllChats"
+              >
+                {{ allSelectableChatsSelected ? 'Clear' : 'Select all' }}
+              </button>
+              <button
+                type="button"
+                class="project-view__select-button project-view__select-button--danger"
+                data-testid="chats-delete-selected"
+                :disabled="selectedChatIds.size === 0"
+                @click="confirmDeleteChats = true"
+              >
+                Delete selected ({{ selectedChatIds.size }})
+              </button>
+            </div>
+          </div>
+          <div
+            v-if="confirmDeleteChats"
+            class="project-view__confirm"
+            role="alertdialog"
+            aria-label="Confirm delete chats"
+            data-testid="chats-delete-confirm"
+          >
+            <p class="project-view__confirm-text">
+              Delete {{ selectedChatIds.size }}
+              {{ selectedChatIds.size === 1 ? 'chat' : 'chats' }} and all of
+              their events / iters? This removes the entries from the
+              dashboard — it does NOT delete files on disk (worktrees and
+              artifacts remain). Cannot be undone.
+            </p>
+            <div class="project-view__confirm-actions">
+              <ActionButton
+                :loading="deleteRun.isLoading.value"
+                data-testid="chats-delete-confirm-button"
+                @click="onConfirmDeleteChats"
+              >
+                Delete
+                {{
+                  selectedChatIds.size === 1
+                    ? '1 chat'
+                    : `${selectedChatIds.size} chats`
+                }}
+              </ActionButton>
+              <button
+                type="button"
+                class="project-view__confirm-cancel"
+                data-testid="chats-delete-cancel-button"
+                @click="confirmDeleteChats = false"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+          <p
+            v-if="
+              lastChatDeleteSummary && lastChatDeleteSummary.failed.length > 0
+            "
+            class="project-view__error"
+            role="alert"
+            data-testid="chats-delete-errors"
+          >
+            Deleted {{ lastChatDeleteSummary.deleted }}; failed to delete:
+            {{ lastChatDeleteSummary.failed.join(', ') }}
+          </p>
           <AsyncBoundary
             :loading="chatsState.isLoading.value"
             :error="chatsState.error.value"
@@ -660,20 +760,42 @@ async function onConfirmUnregister(): Promise<void> {
                 v-for="chat in chats"
                 :key="chat.id"
               >
-                <button
-                  type="button"
-                  class="project-view__chat"
-                  :data-testid="`chat-row-${chat.id}`"
-                  @click="openChat(chat.id)"
+                <div
+                  class="project-view__run-wrap"
+                  :class="{
+                    'project-view__run-wrap--selected':
+                      selectedChatIds.has(chat.id),
+                  }"
                 >
-                  <StatusBadge :status="chat.status" />
-                  <span class="project-view__chat-id">
-                    {{ shortId(chat.id) }}
-                  </span>
-                  <span class="project-view__chat-meta">
-                    {{ chat.started_at }}
-                  </span>
-                </button>
+                  <input
+                    type="checkbox"
+                    class="project-view__run-check"
+                    :checked="selectedChatIds.has(chat.id)"
+                    :disabled="ACTIVE_STATUSES.has(chat.status)"
+                    :title="
+                      ACTIVE_STATUSES.has(chat.status)
+                        ? 'Cancel this chat before deleting'
+                        : ''
+                    "
+                    :aria-label="`Select chat ${chat.id}`"
+                    :data-testid="`chat-check-${chat.id}`"
+                    @click.stop="toggleChatSelection(chat.id)"
+                  >
+                  <button
+                    type="button"
+                    class="project-view__chat"
+                    :data-testid="`chat-row-${chat.id}`"
+                    @click="openChat(chat.id)"
+                  >
+                    <StatusBadge :status="chat.status" />
+                    <span class="project-view__chat-id">
+                      {{ shortId(chat.id) }}
+                    </span>
+                    <span class="project-view__chat-meta">
+                      {{ chat.started_at }}
+                    </span>
+                  </button>
+                </div>
               </li>
             </ul>
           </AsyncBoundary>
@@ -1161,7 +1283,8 @@ async function onConfirmUnregister(): Promise<void> {
   gap: 0.55rem;
 }
 
-.project-view__run-wrap--selected .project-view__run {
+.project-view__run-wrap--selected .project-view__run,
+.project-view__run-wrap--selected .project-view__chat {
   border-color: var(--color-accent);
   background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface));
 }

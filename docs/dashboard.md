@@ -156,15 +156,17 @@ scrolling:
   brand-new run. This is a peek, not a replacement for the Timeline:
   the full event stream still renders below.
 
-## Runs pane — multi-select delete
+## Runs and Chats panes — multi-select delete
 
-`ProjectView`'s Runs pane has a **Select runs** toggle. In select mode
-each terminal run grows a checkbox; rows in `running` or
-`awaiting_children` render a disabled checkbox with a tooltip
-("Cancel this run before deleting") because the backend refuses to
-delete a row with in-memory state. A toolbar exposes **Select all**,
-**Delete selected (N)**, and **Cancel**; row click toggles selection
-instead of navigating while the mode is on.
+`ProjectView`'s **Runs** and **Chats** panes both render a checkbox
+next to every row by default — no select-mode toggle to enter first.
+Rows in `running` or `awaiting_children` render a disabled checkbox
+with a tooltip ("Cancel this run / chat before deleting") because the
+backend refuses to delete a row with in-memory state. A toolbar above
+each list exposes **Select all** (which becomes **Clear** once every
+selectable row is checked) and **Delete selected (N)**. Clicking a
+row's body still navigates to the run / chat detail; only the
+checkbox toggles selection, so the two affordances don't collide.
 
 The confirm dialog explicitly states that files on disk (worktrees,
 run artifacts) are NOT removed — only the DB rows (mirrors the
@@ -174,10 +176,16 @@ Deletes fire in parallel via `Promise.allSettled`, so a single 409
 and the inline summary lists them by id so the operator can cancel
 them first.
 
+Chats are runs with `mode='chat'`, so the Chats pane reuses
+`useDeleteRunMutation` against the same `DELETE /api/runs/{id}`
+endpoint. The two panes keep separate selection state
+(`selectedRunIds` / `selectedChatIds`) so a selection in one doesn't
+bleed into the other.
+
 Cache invalidation: `useDeleteRunMutation` invalidates `keys.runs()`
 on success, which drops the deleted row from every project run list,
-hub status, and detail/children queries (all nested under `['runs',
-…]`).
+hub status, chats list, and detail/children queries (all nested under
+`['runs', …]`).
 
 ## Theme system (light + dark)
 
