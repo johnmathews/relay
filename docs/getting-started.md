@@ -207,6 +207,15 @@ The image bundles pi 0.74.0 (Node 22 runtime + the pinned
 Max-subscription OAuth token cannot be baked in — the browser-based
 login is per-user. One-time host setup, then build/run:
 
+> **Why the image is large and the build is slow.** The production
+> image builds pi from `johnmathews/pi` at the pinned `relay-bridge-vN`
+> tag rather than from npm. The npm-published pi packages strip the
+> `@anthropic-ai/claude-agent-sdk` bridge — without it, `PI_AGENT_SDK=1`
+> silently falls back to extra-usage billing instead of the Max
+> subscription. See ADR-52 for the full rationale and
+> `docs/plans/2026-05-31-pi-bridge-fork-rebuild.md` for the bump
+> procedure if you want to track a newer upstream.
+
 ```bash
 # One-time: complete the pi OAuth login on the host
 PI_AGENT_SDK=1 pi                       # populates ~/.pi/agent/auth.json
