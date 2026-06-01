@@ -181,7 +181,7 @@ context if a step below feels ambiguous.
 After deploying a new image to the LXC, verify that `PI_AGENT_SDK=1`
 actually routes to the Max subscription rather than extra usage:
 
-- [ ] On the deployed container, run a one-shot pi call:
+- [x] On the deployed container, run a one-shot pi call:
 
   ```bash
   ssh agent 'docker exec relay sh -c "PI_AGENT_SDK=1 pi -p \"reply with OK\" --mode json --provider anthropic --model claude-sonnet-4-5 2>&1 | head -3"'
@@ -193,9 +193,18 @@ actually routes to the Max subscription rather than extra usage:
   not active — the image was built from the wrong ref, the bridge
   artefacts are missing, or PI_AGENT_SDK env was lost.
 
-- [ ] On `claude.ai/settings/usage`, observe a real assistant turn
+  Verified 2026-06-01: smoke call inside container `relay` at image SHA
+  `51b89fe42ace...` returned full streamed response — `turn_start`,
+  thinking deltas, text `"OK"`, `agent_end` — with `thinkingSignature`
+  (the agent-SDK-only attestation) and zero-error usage block.
+
+- [x] On `claude.ai/settings/usage`, observe a real assistant turn
   through the dashboard. The "Max" usage bar should advance; the
   "Extra usage" bar should stay flat for that turn.
+
+  Verified 2026-06-01: dashboard at `192.168.2.107:7800` confirmed
+  via a chat-mode session (`meeting-assistant`) — Max bar advancing,
+  extra usage flat.
 
 ---
 

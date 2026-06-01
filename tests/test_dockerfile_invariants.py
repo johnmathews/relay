@@ -5,6 +5,14 @@ The Dockerfile stage that produces pi for the runtime image must:
 2. Pin to an immutable ref (SHA or annotated tag).
 3. Run `npm ci && npm run build` so the bridge files are produced.
 4. Result in /opt/pi being copied into the runtime image.
+5. Remove the musl claude-agent-sdk variants post-install — the SDK's
+   variant selector (`sdk.mjs` `F5`) tries `linux-*-musl` FIRST on
+   Linux and locks in whichever path `require.resolve` succeeds for.
+   On a glibc Debian image the musl ELF fails ENOENT at spawn
+   (missing `/lib/ld-musl-x86_64.so.1` interpreter); the SDK reports
+   the misleading "Claude Code native binary not found at …-musl/
+   claude". Deleting the musl tree forces the fallback to the glibc
+   variant.
 
 If any of these invariants is broken, the published image will silently
 fall back to npm-published pi which strips the @anthropic-ai/
@@ -46,4 +54,14 @@ def test_runtime_stage_copies_built_tree() -> None:
     assert "/opt/pi" in text, (
         "runtime stage must place the built pi tree at /opt/pi "
         "(matches the symlink target)"
+    )
+
+
+def test_pi_stage_removes_musl_variants() -> None:
+    text = DOCKERFILE.read_text()
+    assert "claude-agent-sdk-*-musl" in text, (
+        "Dockerfile must `rm -rf` the musl claude-agent-sdk variants "
+        "after npm install — the SDK selector tries musl first on Linux "
+        "and the musl ELF fails ENOENT at spawn on glibc images. See the "
+        "module docstring for the failure mode."
     )

@@ -23,3 +23,15 @@ ADR-52 records the decision; the Dockerfile fork-build stage replaces the npm in
 The mechanism behind `PI_AGENT_SDK=1` is not a routing trick — it's that `claude-agent-sdk` spawns the bundled `claude` binary as a subprocess and Anthropic's backend identifies that subprocess as Max-eligible by its client signature. The OAuth token is the same; only the *client identity* differs. The pi commit message that documents this is `7844b1ba experiment(b.5): SDK package identity is the lever — official claude-agent-sdk routes to Max`.
 
 Second surprise: an attempt to "rebase the bridge picks onto an older upstream base" (so the type fix wouldn't be needed) is fundamentally blocked by `npm`'s modern resolution of `@types/node` to 24.x. Every upstream pi tag from v0.74.0 onwards installs `undici-types@~7.16.0` today, which shadows the global `Response` type. The user's working local pi at SHA `7ad4e38` only builds because it was npm-installed back when caret resolution landed `@types/node@22.x`. There is no upstream base older than the type collision; the structural-type fix is the only way forward.
+
+Third surprise (post-deploy): `claude-agent-sdk`'s native-binary variant selector (`sdk.mjs` `F5`) tries `linux-x64-musl` FIRST on Linux, and locks in whichever path `require.resolve` succeeds for. Both glibc and musl variants get installed by `npm ci` (no `libc` discriminator in their package.json `os`/`cpu` fields). On a glibc Debian image the musl ELF binary fails to find `/lib/ld-musl-x86_64.so.1`; Linux returns `ENOENT` for the missing interpreter; the SDK reports the misleading "Claude Code native binary not found at .../claude-agent-sdk-linux-x64-musl/claude" (the file IS at the path — it's the interpreter that's missing). Fix landed as a one-line `RUN rm -rf /opt/pi/node_modules/@anthropic-ai/claude-agent-sdk-*-musl` in the Dockerfile so the selector's fallback finds the glibc variant.
+
+## Verified
+
+- **2026-06-01**: live container smoke test on the LXC returned a real
+  `turn_start` → thinking deltas → text `"OK"` → `agent_end`, with the
+  agent-SDK-only `thinkingSignature` blob present. No extra-usage 400.
+  Image SHA `51b89fe42ace...`.
+- **2026-06-01**: `claude.ai/settings/usage` confirmed Max bar
+  advancing on a chat-mode session via the deployed dashboard at
+  `192.168.2.107:7800`; extra-usage bar flat.
