@@ -35,3 +35,18 @@ Third surprise (post-deploy): `claude-agent-sdk`'s native-binary variant selecto
 - **2026-06-01**: `claude.ai/settings/usage` confirmed Max bar
   advancing on a chat-mode session via the deployed dashboard at
   `192.168.2.107:7800`; extra-usage bar flat.
+
+## Followups landed in the wrap-up
+
+- Plan moved from `docs/plans/` to `docs/archive/` with a closed
+  lifecycle header pointing at the deployed image SHA and the
+  hotfix commit. Inbound links in `docs/getting-started.md` and
+  `docs/harness.md` updated; ADR-52's path reference left stale
+  per the append-only convention (the file is still findable by
+  name in archive).
+- Memory entries written under `~/.claude/projects/.../memory/`
+  capturing the load-bearing context for future sessions: the
+  fork-build delivery, the musl trap, the npm-artefact-vs-source
+  trap, the undici-types collision, and three feedback patterns
+  validated during the work (investigate-before-decide, confirm
+  before destructive pushes, amend corrupted commits in place).

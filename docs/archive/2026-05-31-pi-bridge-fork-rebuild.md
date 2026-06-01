@@ -1,5 +1,9 @@
 # Pi-bridge fork rebuild + relay image switch — Implementation Plan
 
+**Status:** closed 2026-06-01. **Last updated:** 2026-06-01. **Supersedes:** none.
+
+All six phases executed; image `ghcr.io/johnmathews/relay:latest` (SHA `51b89fe42ace...`) deployed on the LXC, live OAuth smoke check returned a streamed response with the agent-SDK-only `thinkingSignature` and zero "out of extra usage" errors; `claude.ai/settings/usage` confirmed Max bar advancing on a chat-mode turn. Outcome recorded in ADR-52 (`../decisions.md`) and `../../journal/260531-pi-bridge-fork-build.md`. One post-deploy hotfix (`build(docker): drop claude-agent-sdk musl variants`, commit `48398ba`) addressed a third surprise discovered during the LXC smoke — see the journal's "Surprising thing learned" section for the variant-selector trap.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make `PI_AGENT_SDK=1` actually route to the Claude Max subscription in the deployed relay container by (a) producing a clean `johnmathews/pi` branch that re-applies only the bridge-essential commits on top of fresh upstream `badlogic/pi-mono`, and (b) updating the relay Docker image to build pi from that branch instead of `npm install`ing the published package, which strips the bridge.

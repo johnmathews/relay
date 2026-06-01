@@ -122,7 +122,7 @@ the sibling `agent-sdk-*` dirs) is per-user OAuth and must be
 provisioned on the host then bind-mounted into the container — see
 [`../docker-compose.example.yml`](../docker-compose.example.yml).
 
-**Where the bridge ships from** (ADR-52): the npm-published `@earendil-works/pi-ai` package excludes the bridge file (`anthropic-agent-sdk.js`) and the `@anthropic-ai/claude-agent-sdk` dependency. Relay's production image therefore builds pi from `johnmathews/pi` at the `relay-bridge-vN` tag instead of `npm install`-ing it. The bridge code, the dependency, and the platform-matched `claude` native binary all ship via the build stage. See ADR-52 and `docs/plans/2026-05-31-pi-bridge-fork-rebuild.md` for the rebuild procedure.
+**Where the bridge ships from** (ADR-52): the npm-published `@earendil-works/pi-ai` package excludes the bridge file (`anthropic-agent-sdk.js`) and the `@anthropic-ai/claude-agent-sdk` dependency. Relay's production image therefore builds pi from `johnmathews/pi` at the `relay-bridge-vN` tag instead of `npm install`-ing it. The bridge code, the dependency, and the platform-matched `claude` native binary all ship via the build stage. See ADR-52 and `docs/archive/2026-05-31-pi-bridge-fork-rebuild.md` for the rebuild procedure.
 
 ## Signaling (spec.md §5, ADR-05)
 

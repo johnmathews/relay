@@ -215,7 +215,7 @@ host setup, then build/run:
 > `@anthropic-ai/claude-agent-sdk` bridge — without it, `PI_AGENT_SDK=1`
 > silently falls back to extra-usage billing instead of the Max
 > subscription. See ADR-52 for the full rationale and
-> `docs/plans/2026-05-31-pi-bridge-fork-rebuild.md` for the bump
+> `docs/archive/2026-05-31-pi-bridge-fork-rebuild.md` for the bump
 > procedure if you want to track a newer upstream.
 
 ```bash
