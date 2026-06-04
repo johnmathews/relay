@@ -526,7 +526,9 @@ async def run_loop(
                 #       issue ONE corrective recovery iter (+1 budget,
                 #       NOT a max_iters consumption).
                 #   (2) clean stop, no marker headline, recovery used:
-                #       WU4 will auto-pause here (lands in next WU).
+                #       WU4 auto-pause (ADR-53) — synth pause row +
+                #       LoopResult("paused", reason=
+                #       "agent_end_no_signal_autopause", ...).
                 #   (3) marker-contract violation OR non-clean stop
                 #       (crash): existing failed behaviour stands —
                 #       pi tried to emit a sentinel and got it wrong,
@@ -574,6 +576,13 @@ async def run_loop(
                         "next_prompt": "",
                         "review_paths": [],
                     }
+                    # NOTE: `set_exit` and `exit_reason` are
+                    # "agent_end_no_signal" even though we synthesise a
+                    # `signal_kind="pause"` row — the iter genuinely ended
+                    # without a sentinel; the synth pause is a relay-side
+                    # decision, not pi's. Chat-mode's auto-pause uses
+                    # "signal" because the distinction is moot there (no
+                    # sentinel grammar to violate).
                     iter_span.set_exit("agent_end_no_signal")
                     await _finish_iter(
                         store, run_id=ctx.run_id, iter_id=iter_id, seq=seq,
@@ -594,10 +603,13 @@ async def run_loop(
                 # (crash). Pi tried to emit a sentinel and got it wrong, or
                 # the harness crashed — a real bug, not an omission to paper
                 # over.
-                if (
-                    outcome.marker_headline
-                    or outcome.stop_reason == "clean"
-                ):
+                # Sub-case (3) is reached only when sub-cases (1) and (2)
+                # declined. (1)/(2) both require `is_recoverable_no_signal
+                # = marker_headline is None AND stop_reason == "clean"`. So
+                # here either marker_headline is set OR stop_reason is
+                # "crash" (the only non-"clean" value the harness emits).
+                # The two reasons map accordingly.
+                if outcome.marker_headline:
                     reason = "agent_end_no_signal"
                 else:
                     reason = outcome.stop_reason  # 'crash'

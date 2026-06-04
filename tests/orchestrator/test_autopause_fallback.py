@@ -93,3 +93,5 @@ def test_autopause_iter_carries_synth_signal_args(tmp_path: Path) -> None:
         args = recovery_iter.signal_args or {}
         assert args["id"].startswith(f"autopause-{run_id}-")
         assert "auto-paused" in args["question"].lower()
+        assert args["next_prompt"] == ""
+        assert args["review_paths"] == []
