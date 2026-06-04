@@ -190,11 +190,7 @@ const reopenError = ref<string | null>(null)
 const canReopen = computed<boolean>(() => {
   if (props.detail.status !== 'failed') return false
   const last = props.detail.iters[props.detail.iters.length - 1] ?? null
-  const reason = last?.exit_reason
-  return (
-    reason === 'agent_end_no_signal' ||
-    reason === 'agent_end_no_signal_autopause'
-  )
+  return last?.exit_reason === 'agent_end_no_signal'
 })
 
 async function onReopen(): Promise<void> {

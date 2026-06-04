@@ -899,8 +899,8 @@ export function useCloseChatMutation(): UseMutationReturn<
 
 /**
  * `useMutation` to reopen a failed+no-signal run as paused (WU5 — ADR-53).
- * Eligible exit_reasons are `agent_end_no_signal` and
- * `agent_end_no_signal_autopause`; the backend rejects others with 409.
+ * Eligibility: the run is `failed` AND the last iter's `exit_reason` is
+ * `agent_end_no_signal`. The backend rejects others with 409.
  * On success the run transitions to `paused` and the dashboard's existing
  * PauseAnswerForm picks it up so the operator can resume with guidance.
  * Invalidates `runDetail` + `runs` so the dashboard picks up the new

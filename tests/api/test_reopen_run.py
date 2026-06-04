@@ -22,7 +22,7 @@ from sqlalchemy import select
 from relay.app import create_app
 from relay.config import Settings
 from relay.core import RelayCore
-from relay.db.models import Event
+from relay.db.models import Event, Iter
 from relay.harness.protocol import Harness
 from tests.orchestrator.scripted_harness import (
     HangScript,
@@ -198,6 +198,25 @@ def test_reopen_then_resume_runs_next_iter(tmp_path: Path) -> None:
             r = await ac.post(f"/api/runs/{run_id}/reopen")
             assert r.status_code == 200, r.text
             assert r.json()["status"] == "paused"
+
+            # ADR-53: the historical close reason must NOT be overwritten on
+            # reopen — only signal_kind/signal_args are mutated, not exit_reason.
+            sm = core._sm
+            async with sm() as s:
+                last_iter = (
+                    await s.scalars(
+                        select(Iter)
+                        .where(Iter.run_id == run_id)
+                        .order_by(Iter.seq.desc())
+                        .limit(1)
+                    )
+                ).one()
+                # Audit trail survives reopen.
+                assert last_iter.exit_reason == "agent_end_no_signal"
+                # Synth-pause columns are written.
+                assert last_iter.signal_kind == "pause"
+                assert last_iter.signal_args is not None
+                assert last_iter.signal_args["id"].startswith(f"reopen-{run_id}-")
 
             # Resume → should run iter 2, lands done.
             r = await ac.post(

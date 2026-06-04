@@ -343,10 +343,12 @@ describe('RunRightPane — reopen affordance (WU5)', () => {
     expect(w.find('[data-testid="reopen-run"]').exists()).toBe(true)
   })
 
-  it('shows Reopen-as-paused button for failed+autopause run', () => {
-    // Defensive: per ADR-53 the autopause variant lands paused (not failed),
-    // so this combination is unreachable in normal operation. The button's
-    // visibility predicate still accepts it as eligible if it ever appears.
+  it('hides Reopen-as-paused button for failed+agent_end_no_signal_autopause iter (unreachable in normal operation; predicate is tight)', () => {
+    // Per ADR-53: WU4 autopause produces LoopResult("paused", …) → run.status =
+    // "paused", so the `status !== 'failed'` guard fires first and this
+    // combination is unreachable. Even if engineered into existence,
+    // iter.exit_reason is never "agent_end_no_signal_autopause" — the suffix
+    // lives on LoopResult.reason only. The predicate is tightened to reject it.
     const w = mountPane({
       detail: {
         ...baseDetail,
@@ -359,7 +361,7 @@ describe('RunRightPane — reopen affordance (WU5)', () => {
         }] as unknown as Iter[],
       },
     })
-    expect(w.find('[data-testid="reopen-run"]').exists()).toBe(true)
+    expect(w.find('[data-testid="reopen-run"]').exists()).toBe(false)
   })
 
   it('hides Reopen button for failed+timeout run', () => {
