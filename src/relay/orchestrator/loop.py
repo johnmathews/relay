@@ -325,6 +325,14 @@ async def run_loop(
     # no-signals falls through to WU4 in the same ``signal is None``
     # branch below.
     recovery_used = False
+    # WU3 (ADR-53): explicit flag set by the recovery-dispatch branch
+    # to tag the *next* iter as the recovery iter. Set to True at
+    # `continue` time below, consumed (read + reset) at the top of
+    # the loop body. Avoids relying on byte-equality between `body`
+    # and `_RECOVERY_BODY` — handoff carry-forward writes
+    # agent-authored text into `body`, which could in principle
+    # collide with the recovery sentinel literal.
+    pending_recovery = False
 
     # 14e: when the first iter of this loop is a resumed iter, count
     # `artifact_edited` events scoped to the paused predecessor iter so
@@ -348,7 +356,8 @@ async def run_loop(
 
     while seq < effective_max:
         seq += 1
-        is_recovery_iter = body == _RECOVERY_BODY
+        is_recovery_iter = pending_recovery
+        pending_recovery = False
         if is_chat:
             # ADR-NN: chat mode sends the user's message verbatim. The
             # RELAY_* preamble is engteam-skill plumbing (RUN_DIR / PHASE);
@@ -530,6 +539,8 @@ async def run_loop(
                 if is_recoverable_no_signal and not recovery_used:
                     recovery_used = True
                     iter_span.set_exit("agent_end_no_signal")
+                    # `pending_recovery` (not body == _RECOVERY_BODY) is the
+                    # canonical way to identify the next iter as a recovery iter.
                     await _finish_iter(
                         store, run_id=ctx.run_id, iter_id=iter_id, seq=seq,
                         signal_kind=None, signal_args=None,
@@ -539,6 +550,7 @@ async def run_loop(
                         recovery_iter=is_recovery_iter,
                     )
                     effective_max += 1
+                    pending_recovery = True
                     body = _RECOVERY_BODY
                     continue
                 # Sub-cases (2) and (3) — (2) is WU4 (placeholder: falls

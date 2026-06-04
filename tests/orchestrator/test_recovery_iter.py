@@ -120,3 +120,5 @@ def test_recovery_iter_does_not_consume_max_iters(tmp_path: Path) -> None:
             )
         )
         assert [it.seq for it in iters] == [1, 2]
+        # Confirm iter 2 IS the recovery iter (not just any second iter).
+        assert "RELAY_RECOVERY_NOTICE" in iters[1].prompt

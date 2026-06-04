@@ -385,7 +385,15 @@ def test_fenced_sentinel_no_real_signal_fails_cleanly(
     with _read(settings) as s:
         run = s.get(Run, run_id)
         assert run is not None and run.status == "failed"
-        iters = list(s.scalars(select(Iter).where(Iter.run_id == run_id)))
+        iters = list(
+            s.scalars(
+                select(Iter).where(Iter.run_id == run_id).order_by(Iter.seq)
+            )
+        )
+        # WU3: iter 1 = clean+no-signal triggers recovery iter (sub-case 1);
+        # recovery iter 2 = no-signal again → sub-case 2 falls through to
+        # failed (WU4 will replace sub-case 2 with auto-pause).
+        assert len(iters) == 2
         assert iters[0].signal_kind is None
         assert iters[0].exit_reason == "agent_end_no_signal"
         last = s.scalars(
