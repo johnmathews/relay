@@ -36,7 +36,12 @@ CoreDep = Annotated[RelayCore, Depends(get_core)]
 # Bad-request cases (preview: neither/both prompt args) are mapped at the
 # call site with ``http_error(exc, default_status=400)`` since the same
 # message class ("must be provided") is unambiguously a 400 there.
-_CONFLICT_MARKERS = ("is already running", "is not paused")
+_CONFLICT_MARKERS = (
+    "is already running",
+    "is not paused",
+    "is not failed",            # reopen_failed_as_paused: wrong status
+    "last iter has exit_reason",  # reopen_failed_as_paused: timeout/crash
+)
 
 
 def http_error(exc: ValueError, *, default_status: int = 404) -> HTTPException:
