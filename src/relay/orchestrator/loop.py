@@ -64,6 +64,18 @@ logger = logging.getLogger(__name__)
 
 _TERMINAL = {"done", "handoff", "pause", "fanout"}
 _SIGNAL_CONFIG = SignalConfig(strategy="text_sentinels")
+_RECOVERY_BODY = (
+    "RELAY_RECOVERY_NOTICE: Your previous turn ended without a terminal\n"
+    "sentinel. Relay needs exactly one of `[[engteam:done]]`,\n"
+    "`[[engteam:handoff]]`, "
+    '`[[engteam:pause-for-input id="..." question="..."]]`,\n'
+    "or `[[engteam:fanout]]` at column 0 to close the iter.\n"
+    "\n"
+    "Re-emit your final state. If you were waiting on operator approval,\n"
+    "the correct closing sentinel is `pause-for-input` — bracket the\n"
+    "question with `[[engteam:prompt-start]]` / `[[engteam:prompt-end]]`\n"
+    "per the engineering-team skill's pause protocol."
+)
 
 
 @dataclass
@@ -224,6 +236,7 @@ async def _finish_iter(
     stop_reason: str,
     messages: list[Any],
     summary: str | None = None,
+    recovery_iter: bool = False,
 ) -> None:
     """Close the iter row + append ``harness_session_ended`` then ``iter_ended``.
 
@@ -265,10 +278,15 @@ async def _finish_iter(
         signal_args=signal_args,
         exit_reason=exit_reason,
     )
+    iter_ended_payload: dict[str, Any] = {
+        "seq": seq, "signal_kind": signal_kind, "exit_reason": exit_reason,
+    }
+    if recovery_iter:
+        iter_ended_payload["recovery_iter"] = True
     await store.append(
         run_id,
         "iter_ended",
-        {"seq": seq, "signal_kind": signal_kind, "exit_reason": exit_reason},
+        iter_ended_payload,
         iter_id=iter_id,
     )
 
@@ -300,6 +318,14 @@ async def run_loop(
     # effective_max == max_iters, so fresh-run behavior is unchanged.
     effective_max = max(ctx.max_iters, seq + 1)
 
+    # WU3 (resilient-iter-close, ADR-53): a clean stop_reason with no
+    # terminal sentinel gets ONE corrective retry — the recovery iter —
+    # before WU4's auto-pause fallback kicks in. ``recovery_used``
+    # ensures the retry is one-shot; a recovery iter that itself
+    # no-signals falls through to WU4 in the same ``signal is None``
+    # branch below.
+    recovery_used = False
+
     # 14e: when the first iter of this loop is a resumed iter, count
     # `artifact_edited` events scoped to the paused predecessor iter so
     # the OTel `relay.iter` span can carry `relay.pause.artifacts_edited_count`.
@@ -322,6 +348,7 @@ async def run_loop(
 
     while seq < effective_max:
         seq += 1
+        is_recovery_iter = body == _RECOVERY_BODY
         if is_chat:
             # ADR-NN: chat mode sends the user's message verbatim. The
             # RELAY_* preamble is engteam-skill plumbing (RUN_DIR / PHASE);
@@ -417,6 +444,7 @@ async def run_loop(
                     exit_reason="cancelled",
                     stop_reason=outcome.stop_reason,
                     messages=outcome.messages,
+                    recovery_iter=is_recovery_iter,
                 )
                 return LoopResult("cancelled", reason="cancelled")
             if outcome.timed_out:
@@ -427,6 +455,7 @@ async def run_loop(
                     exit_reason="timeout",
                     stop_reason=outcome.stop_reason,
                     messages=outcome.messages,
+                    recovery_iter=is_recovery_iter,
                 )
                 return LoopResult("failed", reason="timeout")
 
@@ -471,6 +500,7 @@ async def run_loop(
                     exit_reason="signal",
                     stop_reason=outcome.stop_reason,
                     messages=outcome.messages,
+                    recovery_iter=is_recovery_iter,
                 )
                 return LoopResult(
                     "paused",
@@ -482,12 +512,37 @@ async def run_loop(
 
             signal = outcome.signal
             if signal is None:
-                # No usable closing signal: a clean agent_end with
-                # nothing, a marker-contract violation, or a crash. The
-                # first two are spec.md §3.1's 'agent_end_no_signal'; a
-                # crash keeps its own reason. (A fenced/indented
-                # sentinel never matched at column 0, so it lands here
-                # — the plan.md fenced-block case.)
+                # WU3 (ADR-53): three sub-cases on no terminal signal.
+                #   (1) clean stop, no marker headline, recovery unused:
+                #       issue ONE corrective recovery iter (+1 budget,
+                #       NOT a max_iters consumption).
+                #   (2) clean stop, no marker headline, recovery used:
+                #       WU4 will auto-pause here (lands in next WU).
+                #   (3) marker-contract violation OR non-clean stop
+                #       (crash): existing failed behaviour stands —
+                #       pi tried to emit a sentinel and got it wrong,
+                #       or the harness crashed. Real bug, not an
+                #       omission we should paper over.
+                is_recoverable_no_signal = (
+                    outcome.marker_headline is None
+                    and outcome.stop_reason == "clean"
+                )
+                if is_recoverable_no_signal and not recovery_used:
+                    recovery_used = True
+                    iter_span.set_exit("agent_end_no_signal")
+                    await _finish_iter(
+                        store, run_id=ctx.run_id, iter_id=iter_id, seq=seq,
+                        signal_kind=None, signal_args=None,
+                        exit_reason="agent_end_no_signal",
+                        stop_reason=outcome.stop_reason,
+                        messages=outcome.messages,
+                        recovery_iter=is_recovery_iter,
+                    )
+                    effective_max += 1
+                    body = _RECOVERY_BODY
+                    continue
+                # Sub-cases (2) and (3) — (2) is WU4 (placeholder: falls
+                # through to (3) for now and returns failed).
                 if (
                     outcome.marker_headline
                     or outcome.stop_reason == "clean"
@@ -507,6 +562,7 @@ async def run_loop(
                     exit_reason=reason,
                     stop_reason=outcome.stop_reason,
                     messages=outcome.messages,
+                    recovery_iter=is_recovery_iter,
                 )
                 return LoopResult(
                     "failed", reason=reason,
@@ -524,6 +580,7 @@ async def run_loop(
                 stop_reason=outcome.stop_reason,
                 messages=outcome.messages,
                 summary=summary_val,
+                recovery_iter=is_recovery_iter,
             )
             if signal.kind == "done":
                 return LoopResult(
