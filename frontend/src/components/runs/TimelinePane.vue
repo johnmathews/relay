@@ -1165,6 +1165,7 @@ function onArtifactEditedClick(path: string): void {
                       :result="row.toolEnd?.result"
                       :is-error="row.toolEnd?.is_error === true"
                       :duration-ms="asNum(row.toolEnd?.duration_ms)"
+                      :started-at="row.event.ts"
                     />
                     <SignalCard
                       v-else-if="row.type === 'signal'"

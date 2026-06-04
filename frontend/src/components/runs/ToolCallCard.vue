@@ -10,7 +10,7 @@
 // is W6 (`lib/render.ts` is a stub by mandate); a plain <pre> is the
 // correct minimal contract here.
 
-import { computed, inject, ref } from 'vue'
+import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { ToolCallDrawerPayload } from './ToolCallDetailDrawer.vue'
 
 /**
@@ -43,6 +43,14 @@ const props = defineProps<{
    * inside it produced visible card-in-card nesting.
    */
   embedded?: boolean
+  /**
+   * `tool_use_start.ts` (ISO string from the SSE envelope, or epoch ms).
+   * When set AND `result` is still undefined, the card renders a ticking
+   * "running Ns" chip so a long-lived tool call (test runner, npm install)
+   * shows visible progress instead of looking frozen. Null/omitted disables
+   * the chip — replay rows past their tool_use_end pass null deliberately.
+   */
+  startedAt?: string | number | null
 }>()
 
 // Per the live-stream UX work (2026-05-25): tool args / result are
@@ -66,6 +74,33 @@ const argsText = computed(() => pretty(props.args))
 const resultText = computed(() => pretty(props.result))
 
 const expanded = ref(false)
+
+// Ticking-clock for the "running Ns" chip. We only install the
+// interval while the tool is pending — once `result` lands the chip
+// is gone, so an interval would be busy-work. Mirrors the pattern in
+// RunHealthBadge.vue.
+const nowMs = ref(Date.now())
+let runningTimer: ReturnType<typeof setInterval> | null = null
+const isPending = computed(() => props.result === undefined)
+const hasStartedAt = computed(() => props.startedAt != null)
+
+onMounted(() => {
+  if (!isPending.value || !hasStartedAt.value) return
+  runningTimer = setInterval(() => {
+    nowMs.value = Date.now()
+  }, 1_000)
+})
+onBeforeUnmount(() => {
+  if (runningTimer != null) clearInterval(runningTimer)
+})
+
+const runningSeconds = computed((): number | null => {
+  if (!isPending.value || props.startedAt == null) return null
+  const start = typeof props.startedAt === 'string'
+    ? Date.parse(props.startedAt)
+    : props.startedAt
+  return Math.max(0, Math.floor((nowMs.value - start) / 1_000))
+})
 
 function lineCount(s: string): number {
   return s === '' ? 0 : s.split('\n').length
@@ -108,6 +143,11 @@ function onViewFull(): void {
     >
       <span class="tool-card__name">{{ name }}</span>
       <span
+        v-if="runningSeconds != null"
+        class="tool-card__running"
+        data-testid="tool-card-running"
+      >running {{ runningSeconds }}s</span>
+      <span
         v-if="isError"
         class="tool-card__badge"
       >error</span>
@@ -116,6 +156,12 @@ function onViewFull(): void {
         class="tool-card__meta"
       >{{ durationMs }}ms</span>
     </div>
+
+    <span
+      v-if="embedded && runningSeconds != null"
+      class="tool-card__running tool-card__running--embedded"
+      data-testid="tool-card-running"
+    >running {{ runningSeconds }}s</span>
 
     <div class="tool-card__section">
       <span class="tool-card__label">args</span>
@@ -204,6 +250,20 @@ function onViewFull(): void {
   margin-left: auto;
   font-size: 0.78em;
   color: var(--color-text-dim);
+}
+
+.tool-card__running {
+  font-size: 0.78em;
+  color: var(--color-accent);
+  border: 1px solid currentcolor;
+  border-radius: 999px;
+  padding: 0 0.5em;
+  font-variant-numeric: tabular-nums;
+}
+
+.tool-card__running--embedded {
+  display: inline-block;
+  margin-bottom: 0.35rem;
 }
 
 .tool-card__section {

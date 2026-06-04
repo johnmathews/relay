@@ -97,6 +97,13 @@ export interface StreamEvent {
   kind: string
   /** Parsed JSON payload (best-effort; `{}` if unparseable). */
   payload: Record<string, unknown>
+  /**
+   * ISO wall-clock timestamp from the SSE envelope / REST EventOut.
+   * Propagated for use by timeline rows that need the event's wall-clock
+   * (e.g. ToolCallCard "running Ns" chip uses `tool_use_start.ts`).
+   * Optional — test fixtures and legacy ingestion paths may omit it.
+   */
+  ts?: string
 }
 
 /**
@@ -386,7 +393,8 @@ export const useEventsStore = defineStore('run-events', () => {
       inner != null && typeof inner === 'object' && !Array.isArray(inner)
         ? (inner as Record<string, unknown>)
         : {}
-    ingest([{ seq: seqNum, kind: ev.type, payload }])
+    const ts = typeof envelope.ts === 'string' ? envelope.ts : undefined
+    ingest([{ seq: seqNum, kind: ev.type, payload, ts }])
     // ADR-46 Plan B: prune the pending pseudo-row when its canonical
     // companion arrives, so the in-progress row doesn't render
     // alongside the persisted one.
@@ -426,6 +434,7 @@ export const useEventsStore = defineStore('run-events', () => {
             seq: r.seq,
             kind: r.kind,
             payload: r.payload as Record<string, unknown>,
+            ts: r.ts,
           })),
         )
         if (rows.length < limit) break
