@@ -1,5 +1,9 @@
 # Resilient Iter Close — Implementation Plan
 
+**Status:** closed 2026-06-04. **Last updated:** 2026-06-04. **Supersedes:** none.
+
+All seven work units executed end-to-end and merged to `main` (merge commit `f5881f5`). ADR-53 in `../decisions.md`; spec §6.x in `../spec.md`; journal in `../../journal/260604-resilient-iter-close.md`. Final gate: 413 backend tests + 489 frontend tests, ruff + mypy clean, PI_INTEGRATION smoke green. Triggered by horizons run `20260604-174717-09d7`; the clean+no-signal cliff that fail-closed that run is now layered — WU3 corrective recovery iter → WU4 auto-pause fallback → WU5 dashboard reopen escape hatch — with WU1 skill-template and WU2 preamble nudges as the pre-emptive defences.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Eliminate the "agent finished a turn cleanly but emitted no terminal sentinel → run finalised as `failed`" cliff. Such runs should self-recover when possible, fall back to a paused state when not, and recoverable legacy `failed` runs should be salvageable from the dashboard.
