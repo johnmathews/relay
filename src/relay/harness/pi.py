@@ -361,13 +361,18 @@ class PiSession:
         # fd open forever, _drive_iter never returns, and the run
         # row stays 'running' (the bug from
         # run 20260604-201957-62d5).
+        #
+        # Known escape: a descendant that calls setsid() itself creates a
+        # new session/group and is not reaped here. See
+        # docs/plans/2026-06-04-robust-bash-and-cancel.md §Risks for the
+        # /proc-walk workaround if observed in production.
         pgid = self._proc.pid
-        with contextlib.suppress(ProcessLookupError):
+        with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(pgid, signal.SIGTERM)
         try:
             await asyncio.wait_for(self._proc.wait(), timeout=5)
         except TimeoutError:
-            with contextlib.suppress(ProcessLookupError):
+            with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(pgid, signal.SIGKILL)
             await self._proc.wait()
 
