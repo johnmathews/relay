@@ -100,6 +100,13 @@ describe('RunHealthBadge', () => {
     expect(w.find('[data-testid="run-health-badge"]').exists()).toBe(true)
   })
 
+  it('renders NOTHING for a closed run (ADR-50 terminal)', () => {
+    const w = mount(RunHealthBadge, {
+      props: { status: 'closed', lastHeartbeat: null },
+    })
+    expect(w.find('[data-testid="run-health-badge"]').exists()).toBe(false)
+  })
+
   it('classifies as stalled on a fresh heartbeat with a 75s-old lastEventTs', () => {
     // The live bug: heartbeats kept arriving (5s cadence) so receivedAt
     // stayed fresh, but pi produced no events for 8 minutes. The

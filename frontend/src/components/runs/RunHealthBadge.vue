@@ -27,7 +27,13 @@ const props = defineProps<{
   lastHeartbeat: HeartbeatSnapshot | null
 }>()
 
-const TERMINAL = new Set(['done', 'failed', 'cancelled'])
+// Includes 'closed' (ADR-50 chat-mode terminal). The five-list TERMINAL
+// sync rule in CLAUDE.md covers runtime terminality across api/events.py,
+// core.py, stores/events.ts, RunDetailView.vue, ChatView.vue. This badge
+// independently gates rendering, but the set must agree — a closed run
+// has no live SSE stream, so the health badge would render a spurious
+// "connecting…" state without this entry.
+const TERMINAL = new Set(['done', 'failed', 'cancelled', 'closed'])
 const SLOW_MS = 15_000
 const STALLED_MS = 60_000
 
@@ -47,11 +53,14 @@ onBeforeUnmount(() => {
   if (timer != null) clearInterval(timer)
 })
 
-// SSE-level liveness: heartbeats fire every 5s. >20s since the last
-// arrival means the SSE connection itself is dead — distinct from
-// pi being silent. Pi-level liveness: lastEventTs is the wall-clock
-// of the most recent persisted event; a silent stream stalls this
-// anchor while heartbeats keep flowing.
+// SSE-level liveness: heartbeats fire every _KEEPALIVE_S=5s on the
+// backend (src/relay/api/events.py). 20s = 4× cadence gives 3 missed
+// heartbeats of grace before declaring disconnected — tight enough to
+// surface a dead SSE within ~20s; loose enough to absorb a slow-LAN
+// jitter of ~1.5× cadence without false positives. If the backend
+// cadence changes, update this value. Pi-level liveness: lastEventTs
+// is the wall-clock of the most recent persisted event; a silent
+// stream stalls this anchor while heartbeats keep flowing.
 const HEARTBEAT_GAP_MS = 20_000
 
 const state = computed<
