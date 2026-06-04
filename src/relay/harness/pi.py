@@ -24,10 +24,12 @@ interprets it.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import re
+import signal
 import time
 from collections.abc import AsyncIterator, Iterable, Iterator
 from pathlib import Path
@@ -348,11 +350,30 @@ class PiSession:
         self._cancelled = True
         if self._proc.returncode is not None:
             return
-        self._proc.terminate()
+        # Layer 2: kill the whole process group, not just pi. Pi is
+        # the session leader (Layer 1 / start_new_session), so its
+        # pgid equals its pid. Descendants (claude-agent-sdk, bash,
+        # npm run dev, vite) joined the group unless they did their
+        # own setsid; killpg reaps them together, the stdout pipe
+        # closes, and _drive_iter's `async for raw in
+        # self._proc.stdout` unwinds. Without this cascade an
+        # orphan (e.g. vite from `npm run dev`) holds pi's stdout
+        # fd open forever, _drive_iter never returns, and the run
+        # row stays 'running' (the bug from
+        # run 20260604-201957-62d5).
+        #
+        # Known escape: a descendant that calls setsid() itself creates a
+        # new session/group and is not reaped here. See
+        # docs/plans/2026-06-04-robust-bash-and-cancel.md §Risks for the
+        # /proc-walk workaround if observed in production.
+        pgid = self._proc.pid
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pgid, signal.SIGTERM)
         try:
             await asyncio.wait_for(self._proc.wait(), timeout=5)
         except TimeoutError:
-            self._proc.kill()
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(pgid, signal.SIGKILL)
             await self._proc.wait()
 
     async def wait(self) -> SessionEnded:
@@ -478,5 +499,13 @@ class PiHarness:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             limit=self._settings.pi_stdout_limit,
+            # Layer 1 (robust-bash-and-cancel design): pi becomes
+            # session leader of a new process group with pgid == pid.
+            # Descendants (claude-agent-sdk, bash, npm, vite) join
+            # this group unless they explicitly setsid; PiSession.cancel
+            # killpg's the whole group so a long-lived descendant
+            # (npm run dev) cannot survive as an orphan holding pi's
+            # stdout fd open. See run 20260604-201957-62d5.
+            start_new_session=True,
         )
         return PiSession(proc, session_hint=resume_from or "")

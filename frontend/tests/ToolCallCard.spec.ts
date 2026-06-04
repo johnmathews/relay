@@ -3,7 +3,7 @@
 // TimelinePane.spec.ts (line 321 et seq) and is intentionally NOT
 // re-asserted here.
 
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import ToolCallCard from '../src/components/runs/ToolCallCard.vue'
 
@@ -70,5 +70,88 @@ describe('ToolCallCard — View full trigger', () => {
     // Both affordances coexist.
     expect(w.find('[data-testid="tool-card-toggle"]').exists()).toBe(true)
     expect(w.find('[data-testid="tool-card-view-full"]').exists()).toBe(true)
+  })
+})
+
+describe('ToolCallCard — running chip', () => {
+  const FIXED_NOW = 1_716_000_000_000
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(FIXED_NOW)
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('renders "running Ns" while the tool is pending and ticks every second', async () => {
+    const w = mount(ToolCallCard, {
+      props: {
+        name: 'Bash',
+        args: { command: 'sleep 100' },
+        startedAt: FIXED_NOW - 3_000,
+        // result deliberately omitted → pending
+      },
+    })
+    const chip = w.get('[data-testid="tool-card-running"]')
+    expect(chip.text()).toMatch(/running 3s/)
+
+    vi.setSystemTime(FIXED_NOW + 4_000)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(w.get('[data-testid="tool-card-running"]').text())
+      .toMatch(/running 8s/)
+  })
+
+  it('accepts an ISO string for startedAt and parses it', () => {
+    const startedAtIso = new Date(FIXED_NOW - 7_000).toISOString()
+    const w = mount(ToolCallCard, {
+      props: {
+        name: 'Bash',
+        args: { command: 'sleep 100' },
+        startedAt: startedAtIso,
+      },
+    })
+    expect(w.get('[data-testid="tool-card-running"]').text())
+      .toMatch(/running 7s/)
+  })
+
+  it('renders no running chip once a result is present', () => {
+    const w = mount(ToolCallCard, {
+      props: {
+        name: 'Bash',
+        args: { command: 'echo hi' },
+        result: 'hi',
+        startedAt: FIXED_NOW - 3_000,
+        durationMs: 3000,
+      },
+    })
+    expect(w.find('[data-testid="tool-card-running"]').exists()).toBe(false)
+  })
+
+  it('renders no running chip when startedAt is null', () => {
+    const w = mount(ToolCallCard, {
+      props: {
+        name: 'Bash',
+        args: { command: 'echo hi' },
+        startedAt: null,
+      },
+    })
+    expect(w.find('[data-testid="tool-card-running"]').exists()).toBe(false)
+  })
+
+  it('stops the interval when result arrives after mount', async () => {
+    const w = mount(ToolCallCard, {
+      props: { name: 'Bash', args: { command: 'sleep 10' }, startedAt: FIXED_NOW - 1_000 },
+    })
+    expect(w.find('[data-testid="tool-card-running"]').exists()).toBe(true)
+    // Before result arrives, the ticking interval is active.
+    expect(vi.getTimerCount()).toBeGreaterThan(0)
+
+    await w.setProps({ result: 'done' })
+
+    // Chip is gone.
+    expect(w.find('[data-testid="tool-card-running"]').exists()).toBe(false)
+    // Interval cleared — no pending timers for this component.
+    expect(vi.getTimerCount()).toBe(0)
   })
 })
