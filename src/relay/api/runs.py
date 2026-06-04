@@ -175,6 +175,31 @@ async def close_chat(
     return RunOut.model_validate(updated)
 
 
+@router.post("/runs/{run_id}/reopen", response_model=RunOut)
+async def reopen_run(run_id: str, core: CoreDep) -> RunOut:
+    """Reopen a failed+no-signal run as paused (WU5 — ADR-53).
+
+    Returns 404 if the run is unknown, 409 if the run is not failed,
+    409 if the last iter's exit_reason is not a no-signal variant.
+    On success, status flips to ``paused``, ``ended_at`` is cleared,
+    and a ``pause_requested`` event is appended with a recovery question.
+    """
+    if await core.get_run(run_id) is None:
+        raise HTTPException(
+            status_code=404, detail=f"unknown run {run_id}"
+        )
+    try:
+        await core.reopen_failed_as_paused(run_id)
+    except ValueError as exc:
+        raise http_error(exc) from exc
+    updated = await core.get_run(run_id)
+    if updated is None:  # pragma: no cover
+        raise HTTPException(
+            status_code=404, detail=f"unknown run {run_id}"
+        )
+    return RunOut.model_validate(updated)
+
+
 @router.post("/runs/{run_id}/resume", response_model=RunOut)
 async def resume_run(
     run_id: str,

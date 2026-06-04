@@ -598,6 +598,53 @@ the event store itself never received the close-time row.
 Consumers that derive from the event log alone (SSE replay, future
 analytics, audit) now have a complete record.
 
+### 6.x Resilient iter close (ADR-53)
+
+A task-mode iter that ends with `stop_reason == "clean"` and no
+terminal sentinel triggers a corrective recovery iter:
+
+1. Iter N closes with `exit_reason="agent_end_no_signal"` (no run
+   finalisation).
+2. Iter N+1 (the recovery iter) runs with body
+   `RELAY_RECOVERY_NOTICE: …` asking the agent to re-emit a closing
+   sentinel. Budget extension: +1 over `max_iters`, NOT a
+   consumption. `iter_ended.payload.recovery_iter = true` on its
+   closing event. The recovery iter is identified by a one-shot
+   `pending_recovery` loop-local flag, NOT byte-equality on `body`.
+3. If the recovery iter produces a terminal sentinel (`done` /
+   `handoff` / `pause-for-input` / `fanout`), the run finalises
+   normally.
+4. If the recovery iter ALSO produces no terminal sentinel under a
+   clean stop, the run lands `paused` with a synthesised
+   `pause_requested` (id `autopause-<run_id>-<seq>`) and
+   `LoopResult.reason == "agent_end_no_signal_autopause"`. The
+   dashboard `PauseAnswerForm` picks it up unchanged.
+
+Marker-contract violations (`marker_headline is not None`) and
+non-clean stops (`stop_reason == "crash"`) bypass the recovery iter
+and finalise as `failed` — these represent real bugs we surface, not
+omissions we paper over.
+
+The iter row's `exit_reason` column stays
+`"agent_end_no_signal"` on the recovery iter, on the autopaused
+iter, and on any iter reopened via the dashboard escape hatch. The
+`"agent_end_no_signal_autopause"` value exists only on
+`LoopResult.reason` (telemetry / orchestration), never on
+`iter.exit_reason` (audit).
+
+**Operator escape hatch.** For legacy `failed` runs from before
+this contract landed (and as a safety net), `POST /api/runs/{id}/reopen`
+flips a `failed` run whose last iter has `exit_reason == "agent_end_no_signal"`
+back to `paused`. The route's core method writes
+`run.status = "paused"`, clears `run.ended_at`, AND synthesises a
+paused iter row on the LAST iter (`signal_kind = "pause"`,
+`signal_args = {"id": f"reopen-{run_id}-{seq}", …}`) atomically.
+The synth iter row is load-bearing: `resume_run`'s
+`latest_paused_iter` query matches on `signal_kind == "pause"`. The
+historical `iter.exit_reason` is NOT overwritten. The dashboard's
+`RunRightPane` renders a "Reopen as paused" button on the
+failure-hint card when the predicate matches.
+
 ### 6.1 Runtime model (ADR-19, ADR-21)
 
 The pseudocode above is the *behavioural* contract, illustrative not

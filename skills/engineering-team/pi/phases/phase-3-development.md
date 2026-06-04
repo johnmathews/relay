@@ -56,6 +56,20 @@ The rules in summary:
 - Every `unit-start` must be paired with exactly one of `unit-done` or
   `unit-abandoned` before the iter ends.
 
+## Closing sentinel is mandatory — proposal text alone is not a pause
+
+Every iter MUST end with a terminal sentinel at column 0: `done`,
+`handoff`, `pause-for-input`, or `fanout`. Conversational "OK to
+proceed?" / "Awaiting your sign-off" / "Let me know if..." text in
+the iter's final assistant turn is NOT a substitute. If you have
+introduced a new work-unit proposal (e.g. "Here is the shape for
+WU0.1 — flag anything to amend") inside the same iter as a
+`unit-done`, you are implicitly asking for operator approval and you
+MUST close the iter with `pause-for-input`. Failing to do so causes
+relay to spend a budgeted recovery iter; failing again causes relay
+to auto-pause the run for safety. Both paths are surfaced in the
+dashboard as a soft failure — emit the sentinel the first time.
+
 ## Pausing for user input
 
 If during Phase 3 you encounter a decision that genuinely needs user
@@ -277,7 +291,9 @@ For every work unit you touch in this phase: emit `[[engteam:unit-start id="W<n>
 before the first edit, then `[[engteam:unit-done id="W<n>"
 title="..."]]` after your review confirms the unit is green, or `[[engteam:unit-abandoned
 id="W<n>" reason="..."]]` if you give up on it. Never leave a `unit-start` open at the end
-of a session.
+of a session. **And: if your closing assistant turn proposes a new unit and asks
+for operator approval, the iter MUST end with `pause-for-input`, not freeform
+prose — see "Closing sentinel is mandatory" above.**
 
 ### Journal Entry
 

@@ -13,6 +13,7 @@ vi.mock('@/api/client', () => ({
 
 import RunRightPane from '../src/components/runs/layout/RunRightPane.vue'
 import type { Iter } from '../src/lib/queries'
+import { api } from '@/api/client'
 
 const baseDetail = {
   id: 'run-1',
@@ -323,5 +324,116 @@ describe('RunRightPane — failure banner', () => {
     expect(w2.find('[data-testid="run-failure-banner"]').exists()).toBe(
       false,
     )
+  })
+})
+
+describe('RunRightPane — reopen affordance (WU5)', () => {
+  it('shows Reopen-as-paused button for failed+no-signal run', () => {
+    const w = mountPane({
+      detail: {
+        ...baseDetail,
+        status: 'failed',
+        ended_at: '2026-06-04T15:53:55Z',
+        iters: [{
+          seq: 1, phase: 'development', signal_kind: null,
+          signal_args: null, exit_reason: 'agent_end_no_signal',
+        }] as unknown as Iter[],
+      },
+    })
+    expect(w.find('[data-testid="reopen-run"]').exists()).toBe(true)
+  })
+
+  it('hides Reopen-as-paused button for failed+agent_end_no_signal_autopause iter (unreachable in normal operation; predicate is tight)', () => {
+    // Per ADR-53: WU4 autopause produces LoopResult("paused", …) → run.status =
+    // "paused", so the `status !== 'failed'` guard fires first and this
+    // combination is unreachable. Even if engineered into existence,
+    // iter.exit_reason is never "agent_end_no_signal_autopause" — the suffix
+    // lives on LoopResult.reason only. The predicate is tightened to reject it.
+    const w = mountPane({
+      detail: {
+        ...baseDetail,
+        status: 'failed',
+        ended_at: '2026-06-04T15:53:55Z',
+        iters: [{
+          seq: 1, phase: null, signal_kind: 'pause',
+          signal_args: { id: 'x' },
+          exit_reason: 'agent_end_no_signal_autopause',
+        }] as unknown as Iter[],
+      },
+    })
+    expect(w.find('[data-testid="reopen-run"]').exists()).toBe(false)
+  })
+
+  it('hides Reopen button for failed+timeout run', () => {
+    const w = mountPane({
+      detail: {
+        ...baseDetail,
+        status: 'failed',
+        iters: [{
+          seq: 1, phase: null, signal_kind: null,
+          signal_args: null, exit_reason: 'timeout',
+        }] as unknown as Iter[],
+      },
+    })
+    expect(w.find('[data-testid="reopen-run"]').exists()).toBe(false)
+  })
+
+  it('hides Reopen button for done run', () => {
+    const w = mountPane({ detail: { ...baseDetail, status: 'done' } })
+    expect(w.find('[data-testid="reopen-run"]').exists()).toBe(false)
+  })
+
+  it('hides Reopen button for running run', () => {
+    const w = mountPane({ detail: { ...baseDetail, status: 'running' } })
+    expect(w.find('[data-testid="reopen-run"]').exists()).toBe(false)
+  })
+
+  it('calls POST /api/runs/{id}/reopen on click', async () => {
+    (api.POST as ReturnType<typeof vi.fn>).mockReset()
+    ;(api.POST as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { id: 'run-1', status: 'paused' },
+      error: undefined,
+      response: new Response(null, { status: 200 }),
+    })
+    const w = mountPane({
+      detail: {
+        ...baseDetail,
+        status: 'failed',
+        iters: [{
+          seq: 1, phase: null, signal_kind: null,
+          signal_args: null, exit_reason: 'agent_end_no_signal',
+        }] as unknown as Iter[],
+      },
+    })
+    await w.get('[data-testid="reopen-run"]').trigger('click')
+    await flushPromises()
+    expect(api.POST).toHaveBeenCalledWith(
+      '/api/runs/{run_id}/reopen',
+      expect.objectContaining({
+        params: { path: { run_id: 'run-1' } },
+      }),
+    )
+  })
+
+  it('renders inline error message when reopen mutation rejects', async () => {
+    ;(api.POST as ReturnType<typeof vi.fn>).mockReset()
+    ;(api.POST as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: undefined,
+      error: { detail: 'run run-1 is not failed (status=\'done\')' },
+      response: new Response(null, { status: 409 }),
+    })
+    const w = mountPane({
+      detail: {
+        ...baseDetail,
+        status: 'failed',
+        iters: [{
+          seq: 1, phase: null, signal_kind: null,
+          signal_args: null, exit_reason: 'agent_end_no_signal',
+        }] as unknown as Iter[],
+      },
+    })
+    await w.get('[data-testid="reopen-run"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="reopen-error"]').exists()).toBe(true)
   })
 })

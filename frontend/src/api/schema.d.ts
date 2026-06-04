@@ -133,6 +133,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/reopen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reopen Run
+         * @description Reopen a failed+no-signal run as paused (WU5 — ADR-53).
+         *
+         *     Returns 404 if the run is unknown, 409 if the run is not failed,
+         *     409 if the last iter's exit_reason is not a no-signal variant.
+         *     On success, status flips to ``paused``, ``ended_at`` is cleared,
+         *     and a ``pause_requested`` event is appended with a recovery question.
+         */
+        post: operations["reopen_run_api_runs__run_id__reopen_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/resume": {
         parameters: {
             query?: never;
@@ -948,6 +973,37 @@ export interface operations {
         };
     };
     close_chat_api_runs__run_id__close_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reopen_run_api_runs__run_id__reopen_post: {
         parameters: {
             query?: never;
             header?: never;

@@ -1378,6 +1378,91 @@ class RelayCore:
         if session is not None:
             await session.cancel()
 
+    async def reopen_failed_as_paused(self, run_id: str) -> None:
+        """Convert a ``failed`` run whose last iter ended without a terminal
+        sentinel back into a ``paused`` run so the operator can resume it
+        with guidance (WU5 — ADR-53).
+
+        Precondition: the run exists, ``status == "failed"``, and the most
+        recent iter's ``exit_reason`` is ``"agent_end_no_signal"`` (the
+        only value written to ``iters.exit_reason`` for no-signal closes;
+        WU4 autopause writes the same value — ``"agent_end_no_signal_autopause"``
+        is a ``LoopResult.reason`` value only, never stored on the iter row).
+
+        On success: ``status`` flips to ``"paused"``, ``ended_at`` cleared,
+        the last iter's ``signal_kind``/``signal_args`` columns are set to
+        a synth-pause shape (so ``resume_run``'s ``latest_paused_iter`` query
+        finds it), and one ``pause_requested`` event is appended with a
+        recovery question.
+
+        Raises ``ValueError("unknown run …")`` if the run does not exist.
+        Raises ``ValueError("run … is not failed (status='X')")`` if status
+        is not ``failed``.
+        Raises ``ValueError("run …'s last iter has exit_reason 'X'; only "
+        "no-signal failures can be reopened")`` if the last iter is not a
+        no-signal failure.
+        """
+        recovery_question = (
+            "Agent ended without a terminal sentinel; relay "
+            "auto-paused on reopen. Provide guidance to resume, "
+            "or close the run."
+        )
+        async with self._sm() as s:
+            run = await s.get(Run, run_id)
+            if run is None:
+                raise ValueError(f"unknown run {run_id}")
+            if run.status != "failed":
+                raise ValueError(
+                    f"run {run_id} is not failed (status={run.status!r})"
+                )
+            last_iter = await s.scalar(
+                select(Iter)
+                .where(Iter.run_id == run_id)
+                .order_by(Iter.seq.desc())
+                .limit(1)
+            )
+            if (
+                last_iter is None
+                or last_iter.exit_reason != "agent_end_no_signal"
+            ):
+                actual = (
+                    last_iter.exit_reason
+                    if last_iter is not None
+                    else "(no iter)"
+                )
+                raise ValueError(
+                    f"run {run_id}'s last iter has exit_reason {actual!r}; "
+                    f"only no-signal failures can be reopened"
+                )
+            # Synthesise a pause shape on the last iter so that
+            # resume_run's latest_paused_iter query (which filters on
+            # signal_kind == "pause") finds it.  exit_reason is left
+            # untouched — it records the historical truth that this iter
+            # ended without a sentinel and is load-bearing for the
+            # reopen-eligibility check itself.
+            synth_pause_id = f"reopen-{run_id}-{last_iter.seq}"
+            last_iter.signal_kind = "pause"
+            last_iter.signal_args = {
+                "id": synth_pause_id,
+                "question": recovery_question,
+                "next_prompt": "",
+                "review_paths": [],
+            }
+            # Flip status to paused and explicitly clear ended_at in one
+            # transaction. set_run_status(..., ended=False) only skips
+            # setting ended_at — it does not clear an existing value — so
+            # we write both columns here directly.
+            run.status = "paused"
+            run.ended_at = None
+            await s.commit()
+        await self._store.append(
+            run_id,
+            "pause_requested",
+            {
+                "question": recovery_question,
+            },
+        )
+
     async def resume_run(self, run_id: str, answer: str) -> None:
         async with self._enqueue_lock:
             run = await load_run(self._sm, run_id)
