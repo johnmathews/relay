@@ -1385,10 +1385,15 @@ class RelayCore:
 
         Precondition: the run exists, ``status == "failed"``, and the most
         recent iter's ``exit_reason`` is ``"agent_end_no_signal"`` (the
-        only value written to ``iters.exit_reason`` for no-signal closes).
+        only value written to ``iters.exit_reason`` for no-signal closes;
+        WU4 autopause writes the same value — ``"agent_end_no_signal_autopause"``
+        is a ``LoopResult.reason`` value only, never stored on the iter row).
 
         On success: ``status`` flips to ``"paused"``, ``ended_at`` cleared,
-        one ``pause_requested`` event appended with a recovery question.
+        the last iter's ``signal_kind``/``signal_args`` columns are set to
+        a synth-pause shape (so ``resume_run``'s ``latest_paused_iter`` query
+        finds it), and one ``pause_requested`` event is appended with a
+        recovery question.
 
         Raises ``ValueError("unknown run …")`` if the run does not exist.
         Raises ``ValueError("run … is not failed (status='X')")`` if status
@@ -1397,6 +1402,11 @@ class RelayCore:
         "no-signal failures can be reopened")`` if the last iter is not a
         no-signal failure.
         """
+        recovery_question = (
+            "Agent ended without a terminal sentinel; relay "
+            "auto-paused on reopen. Provide guidance to resume, "
+            "or close the run."
+        )
         async with self._sm() as s:
             run = await s.get(Run, run_id)
             if run is None:
@@ -1411,13 +1421,9 @@ class RelayCore:
                 .order_by(Iter.seq.desc())
                 .limit(1)
             )
-            eligible_reasons = {
-                "agent_end_no_signal",
-                "agent_end_no_signal_autopause",
-            }
             if (
                 last_iter is None
-                or last_iter.exit_reason not in eligible_reasons
+                or last_iter.exit_reason != "agent_end_no_signal"
             ):
                 actual = (
                     last_iter.exit_reason
@@ -1428,6 +1434,20 @@ class RelayCore:
                     f"run {run_id}'s last iter has exit_reason {actual!r}; "
                     f"only no-signal failures can be reopened"
                 )
+            # Synthesise a pause shape on the last iter so that
+            # resume_run's latest_paused_iter query (which filters on
+            # signal_kind == "pause") finds it.  exit_reason is left
+            # untouched — it records the historical truth that this iter
+            # ended without a sentinel and is load-bearing for the
+            # reopen-eligibility check itself.
+            synth_pause_id = f"reopen-{run_id}-{last_iter.seq}"
+            last_iter.signal_kind = "pause"
+            last_iter.signal_args = {
+                "id": synth_pause_id,
+                "question": recovery_question,
+                "next_prompt": "",
+                "review_paths": [],
+            }
             # Flip status to paused and explicitly clear ended_at in one
             # transaction. set_run_status(..., ended=False) only skips
             # setting ended_at — it does not clear an existing value — so
@@ -1439,11 +1459,7 @@ class RelayCore:
             run_id,
             "pause_requested",
             {
-                "question": (
-                    "Agent ended without a terminal sentinel; relay "
-                    "auto-paused on reopen. Provide guidance to resume, "
-                    "or close the run."
-                ),
+                "question": recovery_question,
             },
         )
 

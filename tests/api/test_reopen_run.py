@@ -149,9 +149,7 @@ def test_reopen_done_run_409(tmp_path: Path) -> None:
 
             r = await ac.post(f"/api/runs/{run_id}/reopen")
             assert r.status_code == 409
-            assert (
-                "not failed" in r.text.lower() or "status" in r.text.lower()
-            )
+            assert "not failed" in r.text.lower()
 
     asyncio.run(scenario())
 
@@ -173,9 +171,42 @@ def test_reopen_failed_timeout_run_409(tmp_path: Path) -> None:
 
             r = await ac.post(f"/api/runs/{run_id}/reopen")
             assert r.status_code == 409
-            assert (
-                "no_signal" in r.text.lower()
-                or "exit_reason" in r.text.lower()
+            assert "exit_reason" in r.text.lower()
+
+    asyncio.run(scenario())
+
+
+def test_reopen_then_resume_runs_next_iter(tmp_path: Path) -> None:
+    """A reopened run can be resumed: the operator's answer becomes the
+    next iter's body. Gates the critical fix landed in this commit —
+    without it ``resume_run`` would return 409 because no paused iter
+    exists for ``latest_paused_iter`` to find."""
+
+    async def scenario() -> None:
+        settings = _settings(tmp_path)
+        # Drive a failed-no-signal run (one HANDOFF_NO_MARKERS), then
+        # script a clean DONE_BLOCK for the post-resume iter.
+        harness = ScriptedHarness(
+            [TextScript(HANDOFF_NO_MARKERS), TextScript(DONE_BLOCK)]
+        )
+        async with _client_with_core(settings, harness) as (ac, core):
+            pid = await _register_project(ac, tmp_path)
+            run_id = await _start_run(ac, pid, "Go.")
+            await _wait_terminal(core, run_id)
+
+            # Reopen → paused.
+            r = await ac.post(f"/api/runs/{run_id}/reopen")
+            assert r.status_code == 200, r.text
+            assert r.json()["status"] == "paused"
+
+            # Resume → should run iter 2, lands done.
+            r = await ac.post(
+                f"/api/runs/{run_id}/resume",
+                json={"answer": "please continue, here is guidance"},
             )
+            assert r.status_code == 200, r.text
+            await _wait_terminal(core, run_id)
+            r = await ac.get(f"/api/runs/{run_id}")
+            assert r.json()["status"] == "done"
 
     asyncio.run(scenario())
