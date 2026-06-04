@@ -33,10 +33,20 @@ def build_preamble(run_dir: Path, phase: str | None) -> str:
     the ``RELAY_PHASE`` line is then omitted entirely rather than emitted
     empty, so the skill's "no RELAY_PHASE → infer from disk" path triggers
     cleanly.
+
+    The trailing ``RELAY_SENTINEL_REMINDER`` line (WU2 of the resilient-
+    iter-close arc, ADR-53) nudges the agent toward emitting a closing
+    sentinel every turn — defends the loop's terminal-signal contract
+    pre-emptively so the recovery-iter path (WU3) and auto-pause
+    fallback (WU4) are second and third lines of defence, not first.
     """
     lines = [f"RELAY_RUN_DIR: {run_dir}"]
     if phase:
         lines.append(f"RELAY_PHASE: {phase}")
+    lines.append(
+        "RELAY_SENTINEL_REMINDER: end every turn with a closing sentinel at "
+        "column 0 — done / handoff / pause-for-input / fanout."
+    )
     return "\n".join(lines)
 
 
