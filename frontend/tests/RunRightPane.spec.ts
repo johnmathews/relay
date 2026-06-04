@@ -13,6 +13,7 @@ vi.mock('@/api/client', () => ({
 
 import RunRightPane from '../src/components/runs/layout/RunRightPane.vue'
 import type { Iter } from '../src/lib/queries'
+import { api } from '@/api/client'
 
 const baseDetail = {
   id: 'run-1',
@@ -322,6 +323,93 @@ describe('RunRightPane — failure banner', () => {
     const w2 = mountPane({ detail: failed })
     expect(w2.find('[data-testid="run-failure-banner"]').exists()).toBe(
       false,
+    )
+  })
+})
+
+describe('RunRightPane — reopen affordance (WU5)', () => {
+  it('shows Reopen-as-paused button for failed+no-signal run', () => {
+    const w = mountPane({
+      detail: {
+        ...baseDetail,
+        status: 'failed',
+        ended_at: '2026-06-04T15:53:55Z',
+        iters: [{
+          seq: 1, phase: 'development', signal_kind: null,
+          signal_args: null, exit_reason: 'agent_end_no_signal',
+        }] as unknown as Iter[],
+      },
+    })
+    expect(w.find('[data-testid="reopen-run"]').exists()).toBe(true)
+  })
+
+  it('shows Reopen-as-paused button for failed+autopause run', () => {
+    // Defensive: per ADR-53 the autopause variant lands paused (not failed),
+    // so this combination is unreachable in normal operation. The button's
+    // visibility predicate still accepts it as eligible if it ever appears.
+    const w = mountPane({
+      detail: {
+        ...baseDetail,
+        status: 'failed',
+        ended_at: '2026-06-04T15:53:55Z',
+        iters: [{
+          seq: 1, phase: null, signal_kind: 'pause',
+          signal_args: { id: 'x' },
+          exit_reason: 'agent_end_no_signal_autopause',
+        }] as unknown as Iter[],
+      },
+    })
+    expect(w.find('[data-testid="reopen-run"]').exists()).toBe(true)
+  })
+
+  it('hides Reopen button for failed+timeout run', () => {
+    const w = mountPane({
+      detail: {
+        ...baseDetail,
+        status: 'failed',
+        iters: [{
+          seq: 1, phase: null, signal_kind: null,
+          signal_args: null, exit_reason: 'timeout',
+        }] as unknown as Iter[],
+      },
+    })
+    expect(w.find('[data-testid="reopen-run"]').exists()).toBe(false)
+  })
+
+  it('hides Reopen button for done run', () => {
+    const w = mountPane({ detail: { ...baseDetail, status: 'done' } })
+    expect(w.find('[data-testid="reopen-run"]').exists()).toBe(false)
+  })
+
+  it('hides Reopen button for running run', () => {
+    const w = mountPane({ detail: { ...baseDetail, status: 'running' } })
+    expect(w.find('[data-testid="reopen-run"]').exists()).toBe(false)
+  })
+
+  it('calls POST /api/runs/{id}/reopen on click', async () => {
+    (api.POST as ReturnType<typeof vi.fn>).mockReset()
+    ;(api.POST as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { id: 'run-1', status: 'paused' },
+      error: undefined,
+      response: new Response(null, { status: 200 }),
+    })
+    const w = mountPane({
+      detail: {
+        ...baseDetail,
+        status: 'failed',
+        iters: [{
+          seq: 1, phase: null, signal_kind: null,
+          signal_args: null, exit_reason: 'agent_end_no_signal',
+        }] as unknown as Iter[],
+      },
+    })
+    await w.get('[data-testid="reopen-run"]').trigger('click')
+    await flushPromises()
+    expect(api.POST).toHaveBeenCalledWith(
+      '/api/runs/{run_id}/reopen',
+      expect.objectContaining({
+        params: { path: { run_id: 'run-1' } },
+      }),
     )
   })
 })

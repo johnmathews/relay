@@ -897,6 +897,35 @@ export function useCloseChatMutation(): UseMutationReturn<
   })
 }
 
+/**
+ * `useMutation` to reopen a failed+no-signal run as paused (WU5 — ADR-53).
+ * Eligible exit_reasons are `agent_end_no_signal` and
+ * `agent_end_no_signal_autopause`; the backend rejects others with 409.
+ * On success the run transitions to `paused` and the dashboard's existing
+ * PauseAnswerForm picks it up so the operator can resume with guidance.
+ * Invalidates `runDetail` + `runs` so the dashboard picks up the new
+ * paused state immediately.
+ */
+export function useReopenRunMutation(): UseMutationReturn<
+  Run,
+  string,
+  ApiError
+> {
+  const cache = useQueryCache()
+  return useMutation({
+    mutation: async (runId: string) =>
+      unwrap(
+        await api.POST('/api/runs/{run_id}/reopen', {
+          params: { path: { run_id: runId } },
+        }),
+      ),
+    onSuccess: (data: Run) => {
+      void cache.invalidateQueries({ key: keys.runDetail(data.id) })
+      void cache.invalidateQueries({ key: keys.runs() })
+    },
+  })
+}
+
 /** Arguments for the resume mutation: which run + the answer text. */
 export interface ResumeRunArgs {
   runId: string

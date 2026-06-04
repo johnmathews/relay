@@ -14,6 +14,7 @@ import ToolCallDetailDrawer, {
 import type { RunView } from '@/lib/runView'
 import type { HeartbeatSnapshot, StreamEvent, PendingTurn } from '@/stores/events'
 import type { Iter } from '@/lib/queries'
+import { useReopenRunMutation } from '@/lib/queries'
 
 interface RunDetail {
   id: string
@@ -181,6 +182,26 @@ const showFailure = computed(
   () => failureInfo.value != null && !failureDismissed.value,
 )
 
+// Reopen-as-paused affordance (WU5 — ADR-53). Visible only for failed runs
+// whose last iter exited without a terminal sentinel, so the operator can
+// resume with guidance rather than starting from scratch.
+const reopenMutation = useReopenRunMutation()
+
+const canReopen = computed<boolean>(() => {
+  if (props.detail.status !== 'failed') return false
+  const last = props.detail.iters[props.detail.iters.length - 1] ?? null
+  const reason = last?.exit_reason
+  return (
+    reason === 'agent_end_no_signal' ||
+    reason === 'agent_end_no_signal_autopause'
+  )
+})
+
+async function onReopen(): Promise<void> {
+  await reopenMutation.mutateAsync(props.detail.id)
+  emit('resumed')
+}
+
 // Phase 5 — tool-call detail drawer. State is local + transient (per
 // the proposal's URL contract: not reflected in the URL). A
 // provide/inject pair exposes `openToolDetail` to any descendant
@@ -323,6 +344,16 @@ provide('openToolDetail', openToolDetail)
         >
           {{ failureInfo.hint }}
         </p>
+        <button
+          v-if="canReopen"
+          type="button"
+          class="right-pane__failure-reopen"
+          data-testid="reopen-run"
+          :disabled="reopenMutation.isLoading.value"
+          @click="onReopen"
+        >
+          {{ reopenMutation.isLoading.value ? 'Reopening...' : 'Reopen as paused' }}
+        </button>
       </aside>
     </header>
 
@@ -512,6 +543,33 @@ provide('openToolDetail', openToolDetail)
   letter-spacing: 0.05em;
   color: var(--color-text-dim);
   margin-right: 0.4rem;
+}
+
+.right-pane__failure-reopen {
+  align-self: flex-start;
+  margin-top: 0.25rem;
+  padding: 0.3rem 0.75rem;
+  background: transparent;
+  border: 1px solid var(--color-danger-border);
+  border-radius: 4px;
+  color: var(--color-danger-strong);
+  font: inherit;
+  font-size: 0.85em;
+  cursor: pointer;
+  transition:
+    background 80ms ease-out,
+    border-color 80ms ease-out;
+}
+
+.right-pane__failure-reopen:hover:not(:disabled),
+.right-pane__failure-reopen:focus-visible:not(:disabled) {
+  background: var(--color-surface-hover);
+  border-color: var(--color-danger-strong);
+}
+
+.right-pane__failure-reopen:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .right-pane__body {

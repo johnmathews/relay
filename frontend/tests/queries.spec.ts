@@ -27,6 +27,7 @@ import {
   useRegisterProjectMutation,
   useCreateRunMutation,
   useCancelRunMutation,
+  useReopenRunMutation,
   useResumeRunMutation,
   useCreatePromptMutation,
   useUpdatePromptMutation,
@@ -343,6 +344,43 @@ describe('queries layer', () => {
     await nextTick()
 
     expect(POST).toHaveBeenCalledWith('/api/runs/{run_id}/cancel', {
+      params: { path: { run_id: 'run-9' } },
+    })
+    const calls = (
+      invalidateSpy as unknown as { mock: { calls: unknown[][] } }
+    ).mock.calls.map((c) => c[0])
+    expect(calls).toContainEqual({ key: ['runs', 'detail', 'run-9'] })
+    expect(calls).toContainEqual({ key: ['runs'] })
+  })
+
+  it('reopen mutation invalidates runDetail + runs on success (WU5 — ADR-53)', async () => {
+    GET.mockResolvedValue(ok([]))
+    POST.mockResolvedValue(ok({ id: 'run-9', status: 'paused' }))
+
+    let invalidateSpy: ReturnType<typeof vi.fn> | null = null
+    const Comp = defineComponent({
+      setup() {
+        const reopen = useReopenRunMutation()
+        const cache = useQueryCache()
+        invalidateSpy = vi.fn(cache.invalidateQueries)
+        cache.invalidateQueries = invalidateSpy as typeof cache.invalidateQueries
+        return { reopen }
+      },
+      render: () => h('div'),
+    })
+    const w = mount(Comp, {
+      global: { plugins: [createPinia(), PiniaColada] },
+    })
+    await flushPromises()
+    await (
+      w.vm as unknown as {
+        reopen: { mutateAsync: (v: unknown) => Promise<unknown> }
+      }
+    ).reopen.mutateAsync('run-9')
+    await flushPromises()
+    await nextTick()
+
+    expect(POST).toHaveBeenCalledWith('/api/runs/{run_id}/reopen', {
       params: { path: { run_id: 'run-9' } },
     })
     const calls = (
