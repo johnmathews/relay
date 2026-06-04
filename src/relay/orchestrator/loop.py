@@ -553,8 +553,47 @@ async def run_loop(
                     pending_recovery = True
                     body = _RECOVERY_BODY
                     continue
-                # Sub-cases (2) and (3) — (2) is WU4 (placeholder: falls
-                # through to (3) for now and returns failed).
+                if is_recoverable_no_signal and recovery_used:
+                    # WU4 (ADR-53): the recovery iter (WU3) also produced no
+                    # terminal sentinel under a clean stop. Auto-pause instead
+                    # of failing — the agent is clearly stuck on something the
+                    # operator can unblock. Mirrors the chat-mode synth-pause
+                    # shape above. The dashboard's PauseAnswerForm picks it up
+                    # unchanged; reason='agent_end_no_signal_autopause'
+                    # discriminates from operator-emitted pause-for-input in
+                    # telemetry.
+                    pause_id = f"autopause-{ctx.run_id}-{seq}"
+                    pause_question = (
+                        "Agent ended without a terminal sentinel; relay "
+                        "auto-paused. Provide guidance to resume, or close "
+                        "the run."
+                    )
+                    autopause_args: dict[str, Any] = {
+                        "id": pause_id,
+                        "question": pause_question,
+                        "next_prompt": "",
+                        "review_paths": [],
+                    }
+                    iter_span.set_exit("agent_end_no_signal")
+                    await _finish_iter(
+                        store, run_id=ctx.run_id, iter_id=iter_id, seq=seq,
+                        signal_kind="pause", signal_args=autopause_args,
+                        exit_reason="agent_end_no_signal",
+                        stop_reason=outcome.stop_reason,
+                        messages=outcome.messages,
+                        recovery_iter=is_recovery_iter,
+                    )
+                    return LoopResult(
+                        "paused",
+                        reason="agent_end_no_signal_autopause",
+                        question=pause_question,
+                        next_prompt="",
+                        pause_id=pause_id,
+                    )
+                # Sub-case (3): marker-contract violation OR non-clean stop
+                # (crash). Pi tried to emit a sentinel and got it wrong, or
+                # the harness crashed — a real bug, not an omission to paper
+                # over.
                 if (
                     outcome.marker_headline
                     or outcome.stop_reason == "clean"

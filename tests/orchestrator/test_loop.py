@@ -364,44 +364,37 @@ def test_resume_at_max_iters_boundary(tmp_path: Path) -> None:
         assert iters[1].signal_kind == "done"
 
 
-def test_fenced_sentinel_no_real_signal_fails_cleanly(
+def test_fenced_sentinel_no_real_signal_recovers_or_autopauses(
     tmp_path: Path,
 ) -> None:
     """A handoff sentinel only inside a fenced/indented block — never at
-    column 0 — yields no signal: exit_reason=agent_end_no_signal, run
-    fails cleanly (plan.md Phase 2)."""
+    column 0 — yields no signal. With the WU3 recovery iter, the run
+    gets ONE retry; with WU4, if the retry also no-signals the run
+    lands paused, not failed (plan.md Phase 2; ADR-53)."""
     settings = _settings(tmp_path)
-    harness = ScriptedHarness([TextScript(FENCED_NO_SIGNAL)])
+    harness = ScriptedHarness(
+        [TextScript(FENCED_NO_SIGNAL), TextScript(FENCED_NO_SIGNAL)]
+    )
 
     async def scenario(core: RelayCore) -> str:
         pid = await core.register_project(tmp_path, "p")
         run_id = await core.start_run(pid, "Go.")
         result = await core.wait_for_run(run_id)
-        assert result.status == "failed"
-        assert result.reason == "agent_end_no_signal"
+        assert result.status == "paused"
+        assert result.reason == "agent_end_no_signal_autopause"
         return run_id
 
     run_id = _run(scenario, settings, harness)
     with _read(settings) as s:
         run = s.get(Run, run_id)
-        assert run is not None and run.status == "failed"
+        assert run is not None and run.status == "paused"
         iters = list(
             s.scalars(
                 select(Iter).where(Iter.run_id == run_id).order_by(Iter.seq)
             )
         )
-        # WU3: iter 1 = clean+no-signal triggers recovery iter (sub-case 1);
-        # recovery iter 2 = no-signal again → sub-case 2 falls through to
-        # failed (WU4 will replace sub-case 2 with auto-pause).
         assert len(iters) == 2
-        assert iters[0].signal_kind is None
-        assert iters[0].exit_reason == "agent_end_no_signal"
-        last = s.scalars(
-            select(Event).where(Event.run_id == run_id)
-            .order_by(Event.seq.desc()).limit(1)
-        ).one()
-        assert last.kind == "run_ended"
-        assert last.payload["status"] == "failed"
+        assert all(it.exit_reason == "agent_end_no_signal" for it in iters)
 
 
 def test_marker_violation_fails_cleanly(tmp_path: Path) -> None:
@@ -1233,14 +1226,14 @@ DONE_BLOCK_9F = "All done.\n\n[[engteam:done]]"
             '[[engteam:pause-for-input id="P2" question="Use A or B?"]]',
             "paused",
         ),
-        # failed (no signal) → result.status == "failed"
+        # no-signal → WU3 recovery fires, WU4 auto-pauses → result.status == "paused"
         (
             "Here is the contract:\n\n"
             "```text\n"
             "    [[engteam:handoff]]\n"
             "```\n\n"
             "That was just an example.",
-            "failed",
+            "paused",
         ),
     ],
 )
@@ -1249,9 +1242,14 @@ def test_loop_result_fanout_parent_ctx_default_none(
 ) -> None:
     """ADR-38 / 9f: every non-fanout LoopResult terminal path returns
     a result with fanout_parent_ctx is None. Parameterised over done,
-    paused, and failed (no-signal)."""
+    paused, and no-signal (WU4: auto-pauses after recovery iter)."""
     settings = _settings(tmp_path)
-    harness = ScriptedHarness([TextScript(block)])
+    # Two scripts needed: the first no-signal iter triggers WU3 recovery;
+    # the recovery iter (second script) also no-signals → WU4 auto-pause.
+    # ScriptedHarness fills extra spawns with TextScript("(no script)")
+    # automatically, so a single-element list also works — but two explicit
+    # scripts make the intent clear for the no-signal parametrize case.
+    harness = ScriptedHarness([TextScript(block), TextScript(block)])
 
     async def scenario(core: RelayCore) -> LoopResult:
         pid = await core.register_project(tmp_path, "p")
