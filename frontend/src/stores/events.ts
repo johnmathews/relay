@@ -101,7 +101,9 @@ export interface StreamEvent {
    * ISO wall-clock timestamp from the SSE envelope / REST EventOut.
    * Propagated for use by timeline rows that need the event's wall-clock
    * (e.g. ToolCallCard "running Ns" chip uses `tool_use_start.ts`).
-   * Optional — test fixtures and legacy ingestion paths may omit it.
+   * Optional — the SSE ingest path defensively omits it when the
+   * envelope lacks a `ts` field (should not happen in practice), and
+   * test fixtures that build StreamEvent directly may omit it.
    */
   ts?: string
 }

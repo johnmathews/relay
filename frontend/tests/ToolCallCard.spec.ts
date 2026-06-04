@@ -138,4 +138,20 @@ describe('ToolCallCard — running chip', () => {
     })
     expect(w.find('[data-testid="tool-card-running"]').exists()).toBe(false)
   })
+
+  it('stops the interval when result arrives after mount', async () => {
+    const w = mount(ToolCallCard, {
+      props: { name: 'Bash', args: { command: 'sleep 10' }, startedAt: FIXED_NOW - 1_000 },
+    })
+    expect(w.find('[data-testid="tool-card-running"]').exists()).toBe(true)
+    // Before result arrives, the ticking interval is active.
+    expect(vi.getTimerCount()).toBeGreaterThan(0)
+
+    await w.setProps({ result: 'done' })
+
+    // Chip is gone.
+    expect(w.find('[data-testid="tool-card-running"]').exists()).toBe(false)
+    // Interval cleared — no pending timers for this component.
+    expect(vi.getTimerCount()).toBe(0)
+  })
 })

@@ -10,7 +10,7 @@
 // is W6 (`lib/render.ts` is a stub by mandate); a plain <pre> is the
 // correct minimal contract here.
 
-import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { ToolCallDrawerPayload } from './ToolCallDetailDrawer.vue'
 
 /**
@@ -92,6 +92,17 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   if (runningTimer != null) clearInterval(runningTimer)
+})
+
+// Once the tool's `result` arrives reactively, the chip hides — but the
+// onMounted setInterval keeps firing for the card's lifetime, doing
+// invisible work. Clear it when isPending flips false so the "only while
+// pending" invariant from the comment block above actually holds.
+watch(isPending, (pending) => {
+  if (!pending && runningTimer != null) {
+    clearInterval(runningTimer)
+    runningTimer = null
+  }
 })
 
 const runningSeconds = computed((): number | null => {
