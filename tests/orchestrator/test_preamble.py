@@ -1,4 +1,5 @@
-"""W7: unit coverage for the preamble builder (previously only tested
+"""WU2 (resilient-iter-close): unit coverage for the preamble builder
+including the RELAY_SENTINEL_REMINDER line (previously only tested
 through full loop scenarios)."""
 
 from __future__ import annotations
