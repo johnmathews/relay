@@ -412,4 +412,26 @@ describe('RunRightPane — reopen affordance (WU5)', () => {
       }),
     )
   })
+
+  it('renders inline error message when reopen mutation rejects', async () => {
+    ;(api.POST as ReturnType<typeof vi.fn>).mockReset()
+    ;(api.POST as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: undefined,
+      error: { detail: 'run run-1 is not failed (status=\'done\')' },
+      response: new Response(null, { status: 409 }),
+    })
+    const w = mountPane({
+      detail: {
+        ...baseDetail,
+        status: 'failed',
+        iters: [{
+          seq: 1, phase: null, signal_kind: null,
+          signal_args: null, exit_reason: 'agent_end_no_signal',
+        }] as unknown as Iter[],
+      },
+    })
+    await w.get('[data-testid="reopen-run"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="reopen-error"]').exists()).toBe(true)
+  })
 })

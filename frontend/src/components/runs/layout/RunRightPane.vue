@@ -13,8 +13,7 @@ import ToolCallDetailDrawer, {
 } from '@/components/runs/ToolCallDetailDrawer.vue'
 import type { RunView } from '@/lib/runView'
 import type { HeartbeatSnapshot, StreamEvent, PendingTurn } from '@/stores/events'
-import type { Iter } from '@/lib/queries'
-import { useReopenRunMutation } from '@/lib/queries'
+import { useReopenRunMutation, ApiError, type Iter } from '@/lib/queries'
 
 interface RunDetail {
   id: string
@@ -186,6 +185,7 @@ const showFailure = computed(
 // whose last iter exited without a terminal sentinel, so the operator can
 // resume with guidance rather than starting from scratch.
 const reopenMutation = useReopenRunMutation()
+const reopenError = ref<string | null>(null)
 
 const canReopen = computed<boolean>(() => {
   if (props.detail.status !== 'failed') return false
@@ -198,8 +198,23 @@ const canReopen = computed<boolean>(() => {
 })
 
 async function onReopen(): Promise<void> {
-  await reopenMutation.mutateAsync(props.detail.id)
-  emit('resumed')
+  reopenError.value = null
+  try {
+    await reopenMutation.mutateAsync(props.detail.id)
+    emit('resumed')
+  } catch (err) {
+    // ApiError carries the HTTP status + parsed body (409 race / 404 deleted).
+    if (err instanceof ApiError) {
+      reopenError.value =
+        err.status === 409
+          ? `Cannot reopen: ${err.message}`
+          : err.status === 404
+            ? 'Run not found.'
+            : err.message
+    } else {
+      reopenError.value = 'Failed to reopen the run.'
+    }
+  }
 }
 
 // Phase 5 — tool-call detail drawer. State is local + transient (per
@@ -354,6 +369,13 @@ provide('openToolDetail', openToolDetail)
         >
           {{ reopenMutation.isLoading.value ? 'Reopening...' : 'Reopen as paused' }}
         </button>
+        <p
+          v-if="reopenError"
+          data-testid="reopen-error"
+          class="right-pane__failure-reopen-error"
+        >
+          {{ reopenError }}
+        </p>
       </aside>
     </header>
 
@@ -570,6 +592,12 @@ provide('openToolDetail', openToolDetail)
 .right-pane__failure-reopen:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.right-pane__failure-reopen-error {
+  margin: 0;
+  font-size: 0.88em;
+  color: var(--color-danger);
 }
 
 .right-pane__body {
