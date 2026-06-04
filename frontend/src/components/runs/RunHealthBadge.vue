@@ -47,16 +47,23 @@ onBeforeUnmount(() => {
   if (timer != null) clearInterval(timer)
 })
 
-/** ms since the most recent heartbeat arrived at the client. */
-const ageMs = computed(() => {
-  const hb = props.lastHeartbeat
-  if (hb == null) return Number.POSITIVE_INFINITY
-  return Math.max(0, nowMs.value - hb.receivedAt)
-})
+// SSE-level liveness: heartbeats fire every 5s. >20s since the last
+// arrival means the SSE connection itself is dead — distinct from
+// pi being silent. Pi-level liveness: lastEventTs is the wall-clock
+// of the most recent persisted event; a silent stream stalls this
+// anchor while heartbeats keep flowing.
+const HEARTBEAT_GAP_MS = 20_000
 
-const state = computed<'connecting' | 'live' | 'slow' | 'stalled'>(() => {
-  if (props.lastHeartbeat == null) return 'connecting'
-  const age = ageMs.value
+const state = computed<
+  'connecting' | 'disconnected' | 'live' | 'slow' | 'stalled'
+>(() => {
+  const hb = props.lastHeartbeat
+  if (hb == null) return 'connecting'
+  if (nowMs.value - hb.receivedAt > HEARTBEAT_GAP_MS) return 'disconnected'
+  const anchor = hb.lastEventTs
+    ? Date.parse(hb.lastEventTs)
+    : hb.receivedAt
+  const age = Math.max(0, nowMs.value - anchor)
   if (age > STALLED_MS) return 'stalled'
   if (age > SLOW_MS) return 'slow'
   return 'live'
@@ -83,6 +90,8 @@ const label = computed((): string => {
   switch (state.value) {
     case 'connecting':
       return 'connecting…'
+    case 'disconnected':
+      return 'disconnected'
     case 'live':
       return `live · ${sinceLabel.value}`
     case 'slow':
@@ -120,6 +129,8 @@ const ariaLabel = computed((): string => {
   switch (state.value) {
     case 'connecting':
       return 'Live stream connecting'
+    case 'disconnected':
+      return 'Live stream disconnected'
     case 'live':
       return `Live, last activity ${verboseSinceLabel.value}`
     case 'slow':
@@ -174,6 +185,11 @@ const ariaLabel = computed((): string => {
 
 .health-badge--connecting {
   color: var(--color-text-dim);
+}
+
+.health-badge--disconnected {
+  color: var(--color-text-dim);
+  font-style: italic;
 }
 
 .health-badge--live {
