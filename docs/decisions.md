@@ -3272,3 +3272,192 @@ So ADR-51's mechanism description (steps 1–2) is correct as a reading of pi *s
 - **ADR-51's other decisions stay in force**: bundle pi into the image (yes — just from a different source), set `ENV PI_AGENT_SDK=1` (yes), bind-mount `~/.pi` for OAuth (yes), keep credentials per-user (yes), pin the version (yes, via `relay-bridge-vN` tag instead of an npm version string).
 
 **Related ADRs:** ADR-04 (harness layer is the only code that knows pi exists — fork choice doesn't change that); ADR-09 (Max-subscription auth path; the bridge is now its actual delivery mechanism); ADR-16 (pi version pin — now tracked via the fork tag); ADR-30 (Phase 8 packaging); ADR-51 (this ADR supersedes the *delivery method* — bundling pi via npm — while preserving every other ADR-51 decision; ADR-51's mechanism description is correct for pi source but not for the npm artefact, see Context).
+
+## ADR-53 — Resilient iter close: corrective recovery iter + auto-pause fallback for clean+no-signal
+
+**Status:** active.
+
+**Date:** 2026-06-04.
+
+**Context.**
+
+The loop's terminal-sentinel contract (spec.md §6) requires every iter
+to close with one of `done` / `handoff` / `pause-for-input` /
+`fanout`. When pi's session ends cleanly (`stop_reason == "clean"`)
+without one of those at column 0, the loop classified the iter as
+`agent_end_no_signal` and finalised the run as `failed`.
+
+The 2026-06-04 run `20260604-174717-09d7` on
+`/Users/john/projects/horizons` hit this exact path: pi correctly
+emitted `unit-start` / `unit-done` for W0.0, then introduced a WU0.1
+proposal inline and ended its turn with "OK to proceed, or adjust
+the layout first?" — conversational text expecting a reply but with
+no `pause-for-input` sentinel bracket. The session ended clean; the
+loop saw no terminal signal; the run failed. The operator lost the
+salvageable state (worktree clean, W0.0 committed, WU0.1 designed).
+
+This failure mode is structural: pi has finished speaking and is
+waiting for input. That is *literally* a pause. Failing is the wrong
+outcome both ergonomically (loses work) and semantically (the agent
+is not failed, it is waiting).
+
+**Decision.**
+
+The `if signal is None:` branch in `run_loop` widens into three
+sub-cases, discriminated by `outcome.marker_headline`,
+`outcome.stop_reason`, and a one-shot `recovery_used` flag local to
+the loop call:
+
+1. **Recoverable, recovery unused** — `marker_headline is None AND
+   stop_reason == "clean" AND not recovery_used`. The loop closes
+   the iter with `exit_reason="agent_end_no_signal"` (no `failed`
+   yet), widens `effective_max` by 1 (the recovery shot is NOT a
+   `max_iters` consumption), sets `pending_recovery = True`, sets
+   `body = _RECOVERY_BODY` (a `RELAY_RECOVERY_NOTICE` block asking
+   the agent to re-emit a closing sentinel), and `continue`s. The
+   next iter's `iter_ended` event carries `recovery_iter: true` so
+   the timeline can distinguish it.
+
+2. **Recoverable, recovery already used** — same condition but
+   `recovery_used`. Auto-pause: synthesise
+   `signal_kind="pause"` + `signal_args={"id": f"autopause-{run_id}-{seq}",
+   "question": …, "next_prompt": "", "review_paths": []}`, close
+   the iter, return `LoopResult("paused", reason="agent_end_no_signal_autopause", …)`.
+   The shape mirrors the chat-mode auto-pause that has been in
+   `loop.py` since the chat-mode arc; the dashboard's
+   `PauseAnswerForm` picks it up unchanged.
+
+3. **Marker-contract violation OR non-clean stop** —
+   `marker_headline is not None OR stop_reason != "clean"`. The
+   `failed` behaviour stands. Pi *tried* to emit a sentinel and got
+   it wrong (a real bug to surface), or the harness crashed (real
+   failure, not omission). No recovery iter.
+
+The `pending_recovery` flag is the canonical recovery-iter
+identifier — NOT byte-equality on `body == _RECOVERY_BODY`, which
+would couple to handoff carry-forward (a handoff's `next_prompt` is
+agent-authored text and could in principle collide with the literal).
+
+In parallel:
+
+- **Preamble nudge.** Every task-mode iter's preamble carries a
+  `RELAY_SENTINEL_REMINDER:` line listing the four terminal sentinels
+  — a pre-emptive defence so the recovery iter and auto-pause
+  fallback are second and third lines, not first.
+
+- **Skill-template nudge.** `skills/engineering-team/pi/phases/phase-3-development.md`
+  gains a "Closing sentinel is mandatory" block ruling that
+  conversational proposal-then-approval text without a
+  `pause-for-input` bracket is a contract violation.
+
+- **Operator-driven escape hatch.** `POST /api/runs/{id}/reopen`
+  flips a `failed` run whose last iter's `exit_reason` is
+  `"agent_end_no_signal"` back to `paused`. Implementation:
+  in the same DB transaction the route's core method writes
+  `run.status = "paused"`, clears `run.ended_at`, AND synthesises a
+  paused iter row on the LAST iter (`signal_kind="pause"`,
+  `signal_args={"id": f"reopen-{run_id}-{seq}", "question": …, "next_prompt": "", "review_paths": []}`).
+  This is load-bearing: `resume_run`'s `latest_paused_iter` query
+  matches on `signal_kind == "pause"`; without the iter-row synth,
+  the immediately-following resume would 409. The historical
+  `iter.exit_reason = "agent_end_no_signal"` is NOT overwritten —
+  the audit trail records what actually happened, and the
+  reopen-eligibility predicate continues to hold for a hypothetical
+  re-reopen. The dashboard `RunRightPane` renders a "Reopen as
+  paused" button on the failure-hint card when the predicate matches.
+
+**Alternatives considered.**
+
+- **Pattern-match the trailing assistant text** ("OK to proceed?",
+  "Awaiting your sign-off") and synthesise an implicit pause.
+  Rejected: brittle, false positives on legitimate conversational
+  asides inside an iter that DOES close correctly later.
+
+- **Auto-pause on every clean+no-signal without trying recovery
+  first.** Rejected: cheap-cost recovery (one extra iter) salvages
+  runs the agent can self-correct, without wasting operator
+  attention. The recovery iter is bounded one-shot via
+  `recovery_used`.
+
+- **Operator-only escape hatch (the reopen endpoint alone).**
+  Rejected: requires the operator to notice and act; the recovery
+  + auto-pause combination handles the common case automatically.
+  The reopen endpoint is preserved for legacy `failed` runs from
+  before this ADR landed AND as a safety net.
+
+- **Treat the autopause variant as a distinct iter `exit_reason`
+  value** (e.g. write `exit_reason="agent_end_no_signal_autopause"`
+  on the iter row). Rejected: the iter genuinely ended without a
+  sentinel — that is the historical truth. The `_autopause`
+  distinction is a relay-side decision, not pi's, and properly
+  lives on the `LoopResult.reason` axis (telemetry) rather than on
+  the iter row's `exit_reason` (audit). The reopen-eligibility
+  predicate is correspondingly a single-string compare.
+
+- **Make `pending_recovery` propagate via the existing `body`
+  assignment** (byte-compare `body == _RECOVERY_BODY` at the top of
+  the loop). Rejected: handoff carry-forward writes
+  agent-authored text into `body`; an explicit one-shot flag is
+  invariant-by-construction. Cost: one bool local. Benefit:
+  removes a 506-byte value-equality coupling.
+
+**Consequences.**
+
+- `LoopResult.reason` gains a new value
+  `"agent_end_no_signal_autopause"`, distinct from
+  `"agent_end_no_signal"`. OTel attribute `relay.iter.exit_reason`
+  is unaffected — it tracks the iter row's column, which remains
+  `"agent_end_no_signal"` on both the recovery iter and the
+  autopaused iter.
+
+- `iter_ended` event payload optionally carries
+  `recovery_iter: true` for the corrective iter. Schema-additive;
+  absent on normal iters. Frontend timeline rendering can opt in.
+
+- Existing test
+  `tests/orchestrator/test_loop.py::test_fenced_sentinel_no_real_signal_fails_cleanly`
+  was renamed to `test_fenced_sentinel_no_real_signal_recovers_or_autopauses`
+  and rewritten — the asserted failure mode no longer exists; the
+  rewrite asserts the recovery+autopause path. One existing
+  parametrize case in `test_loop_result_fanout_parent_ctx_default_none`
+  was rewired analogously.
+
+- Marker-contract violations and crashes still finalise as
+  `failed`; this ADR does NOT relax the loop's discipline for the
+  failure modes that represent real bugs.
+
+- Chat-mode unaffected. Its existing auto-pause (the loop's
+  chat-mode branch) predates this ADR and follows the same synth-
+  pause shape — intentional symmetry. Chat-mode and task-mode share
+  the auto-pause structural blueprint while keeping divergent
+  `iter_span.set_exit` semantics: chat-mode uses `"signal"` (the
+  distinction is moot — chat has no sentinel grammar); task-mode
+  uses `"agent_end_no_signal"` (the iter genuinely had no
+  sentinel; the synth pause is a relay-side decision, not pi's).
+
+- The reopen endpoint synthesises a paused iter row, which is a
+  mutation to a historical iter's `signal_kind` / `signal_args`
+  columns. The `iter.exit_reason` column is preserved as-is; only
+  the pause-shape columns are written. This is the first place
+  outside the active loop where iter columns are mutated post-close;
+  the alternative (a new "synth_pause" row) was rejected because
+  it would break seq-ordered timeline rendering and require event-
+  store schema additions. Reviewable inline by reading the reopen
+  method's single DB transaction.
+
+**Related ADRs:** ADR-04 (harness isolation — `_RECOVERY_BODY` is a
+loop-level concept, not a harness one); ADR-07 / ADR-15 (single
+write path via `RelayCore` — the reopen method, the recovery body
+assignment, and the autopause `_finish_iter` call all flow through
+the existing seams); ADR-10 (event store is the single source of
+truth — the `pause_requested` event on reopen makes the transition
+replayable); ADR-18 (opaque pi messages — unaffected); ADR-20 (pause
+/ resume contract — the reopen path is a new entrypoint that lands
+in the same paused state as a sentinel-emitted pause); ADR-29 (OTel
+mirror — the WU3 recovery iter and the WU4 autopaused iter each
+emit their own `relay.iter` spans automatically); ADR-39 (close-
+time `harness_session_ended` event — every close path still emits
+it, including the WU3 and WU4 paths); ADR-48 (iter `exit_reason`
+column — its semantics are preserved; only the new
+`"agent_end_no_signal_autopause"` LoopResult.reason value is added,
+and it never reaches `iter.exit_reason`).
