@@ -1,5 +1,15 @@
 # Robust bash + cancel arc — Implementation Plan
 
+**Status:** closed 2026-06-04. **Last updated:** 2026-06-04. **Supersedes:** none.
+
+All three tasks executed end-to-end and merged to `main` (merge commit
+`c14bce3`). Final gate: 414 backend tests + 499 frontend tests, ruff +
+mypy + eslint + vue-tsc clean, 95% backend coverage. Design doc remains
+active at `../plans/2026-06-04-robust-bash-and-cancel.md` for the
+deferred Layer 3+4 follow-ups. Triggered by horizons run
+`20260604-201957-62d5` (npm-run-dev cancel hang); journal in
+`../../journal/260604-robust-bash-and-cancel.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make relay's cancel finalisation correct and make the

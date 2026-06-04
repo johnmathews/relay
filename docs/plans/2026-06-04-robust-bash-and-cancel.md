@@ -1,6 +1,14 @@
 # Robust bash + cancel arc — design
 
-**Status:** design accepted 2026-06-04, awaiting implementation plan.
+**Status:** active 2026-06-04. **Last updated:** 2026-06-04. Layer 1+2
+(harness process group + cancel cascade) and Layer 5 relay-side fragments
+(RunHealthBadge classifier, ToolCallCard running chip) shipped via merge
+`c14bce3`; implementation plan archived at
+`../archive/2026-06-04-robust-bash-and-cancel-impl.md`. Layer 3 (pi-fork
+foreground bash timeout), Layer 4 (pi-fork bash_background tool family),
+and Layer 5 skill text + `RELAY_BG_REMINDER:` preamble line deferred to
+follow-up PRs paired with pi-fork retags `relay-bridge-v2` /
+`relay-bridge-v3`.
 
 ## Motivation
 
