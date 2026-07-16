@@ -15,7 +15,7 @@ dependencies = [
     "aiosqlite>=0.22.1",
     # MCP server (Phase 5). Bundled official SDK; `<2` cap is
     # load-bearing — v2 rearchitects the transport layer we mount. ADR-27.
-    "mcp>=1.27.1,<2",
+    "mcp>=1.28.1,<2",
     # OTel mirror → Langfuse (Phase 7, opt-in via RELAY_OTEL_EXPORT).
     # `<2` is precautionary (OTel 2.0 does not exist yet) — recorded
     # honestly as such, not as load-bearing, in ADR-29. We deliberately
